@@ -33,10 +33,10 @@ export default function App() {
           
           <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
             <Route index element={<ProtectedRoute requireAdmin><Dashboard /></ProtectedRoute>} />
-            <Route path="clients" element={<ProtectedRoute requireAdmin><Clients /></ProtectedRoute>} />
-            <Route path="clients/new" element={<ProtectedRoute requireAdmin><ClientForm /></ProtectedRoute>} />
-            <Route path="clients/:id" element={<ProtectedRoute requireAdmin><ClientForm /></ProtectedRoute>} />
-            <Route path="clients/:id/supplies" element={<ProtectedRoute requireAdmin><SuppliesForm /></ProtectedRoute>} />
+            <Route path="clients" element={<ProtectedRoute><Clients /></ProtectedRoute>} />
+            <Route path="clients/new" element={<ProtectedRoute><ClientForm /></ProtectedRoute>} />
+            <Route path="clients/:id" element={<ProtectedRoute><ClientForm /></ProtectedRoute>} />
+            <Route path="clients/:id/supplies" element={<ProtectedRoute><SuppliesForm /></ProtectedRoute>} />
             <Route path="employees" element={<ProtectedRoute requireAdmin><Employees /></ProtectedRoute>} />
             <Route path="employees/new" element={<ProtectedRoute requireAdmin><EmployeeForm /></ProtectedRoute>} />
             <Route path="employees/:id" element={<ProtectedRoute requireAdmin><EmployeeForm /></ProtectedRoute>} />

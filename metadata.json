@@ -1,5 +1,8 @@
 {
   "name": "GestãoPro",
   "description": "Sistema de gestão multi-tenant para rotas e clientes",
-  "requestFramePermissions": []
+  "requestFramePermissions": [
+    "geolocation",
+    "camera"
+  ]
 }

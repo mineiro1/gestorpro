@@ -3,10 +3,10 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { collection, query, where, onSnapshot, deleteDoc, doc, addDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { Edit, Trash2, Plus, DollarSign, RotateCcw, Package, Search } from 'lucide-react';
+import { Edit, Trash2, Plus, DollarSign, RotateCcw, Package, Search, MessageCircle } from 'lucide-react';
 
 export default function Clients() {
-  const { userProfile } = useAuth();
+  const { userProfile, isAdmin } = useAuth();
   const [clients, setClients] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
@@ -25,7 +25,15 @@ export default function Clients() {
   useEffect(() => {
     if (!userProfile?.uid) return;
 
-    const q = query(collection(db, 'clients'), where('adminId', '==', userProfile.uid));
+    const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
+    
+    let q = query(collection(db, 'clients'), where('adminId', '==', adminId));
+    
+    // Se não for admin, filtra apenas os clientes atribuídos a este colaborador
+    if (!isAdmin) {
+      q = query(q, where('employeeId', '==', userProfile.uid));
+    }
+
     const unsubscribeClients = onSnapshot(q, (snapshot) => {
       const clientsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setClients(clientsData);
@@ -41,14 +49,14 @@ export default function Clients() {
 
     const paymentsQuery = query(
       collection(db, 'payments'),
-      where('adminId', '==', userProfile.uid),
+      where('adminId', '==', adminId),
       where('month', '==', currentMonth),
       where('year', '==', currentYear)
     );
 
     const unsubscribePayments = onSnapshot(paymentsQuery, (snapshot) => {
       const paid: Record<string, any> = {};
-      const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as any[];
       // Sort by date descending so we store the most recent payment
       docs.sort((a, b) => (b.date?.toMillis() || 0) - (a.date?.toMillis() || 0));
       
@@ -229,13 +237,15 @@ export default function Clients() {
               className="pl-10 w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-colors"
             />
           </div>
-          <Link
-            to="/clients/new"
-            className="bg-primary text-white px-4 py-2 rounded-lg flex items-center hover:bg-primary-light transition-colors whitespace-nowrap"
-          >
-            <Plus size={20} className="mr-2" />
-            Novo Cliente
-          </Link>
+          {isAdmin && (
+            <Link
+              to="/clients/new"
+              className="bg-primary text-white px-4 py-2 rounded-lg flex items-center hover:bg-primary-light transition-colors whitespace-nowrap"
+            >
+              <Plus size={20} className="mr-2" />
+              Novo Cliente
+            </Link>
+          )}
         </div>
       </div>
 
@@ -246,8 +256,12 @@ export default function Clients() {
               <tr className="bg-gray-50 border-b border-gray-200">
                 <th className="p-4 font-semibold text-gray-600">Nome</th>
                 <th className="p-4 font-semibold text-gray-600">Telefone</th>
-                <th className="p-4 font-semibold text-gray-600">Mensalidade</th>
-                <th className="p-4 font-semibold text-gray-600">Vencimento</th>
+                {isAdmin && (
+                  <>
+                    <th className="p-4 font-semibold text-gray-600">Mensalidade</th>
+                    <th className="p-4 font-semibold text-gray-600">Vencimento</th>
+                  </>
+                )}
                 <th className="p-4 font-semibold text-gray-600 text-right">Ações</th>
               </tr>
             </thead>
@@ -263,12 +277,16 @@ export default function Clients() {
                   <tr key={client.id} className="border-b border-gray-100 hover:bg-gray-50">
                     <td className="p-4">{client.name}</td>
                     <td className="p-4">{client.phone}</td>
-                    <td className="p-4">R$ {client.monthlyFee?.toFixed(2)}</td>
-                    <td className="p-4">
-                      {client.dueDate ? new Date(client.dueDate + 'T12:00:00').toLocaleDateString('pt-BR') : 'N/A'}
-                    </td>
+                    {isAdmin && (
+                      <>
+                        <td className="p-4">R$ {client.monthlyFee?.toFixed(2)}</td>
+                        <td className="p-4">
+                          {client.dueDate ? new Date(client.dueDate + 'T12:00:00').toLocaleDateString('pt-BR') : 'N/A'}
+                        </td>
+                      </>
+                    )}
                     <td className="p-4 flex justify-end space-x-2">
-                      {paidClients[client.id] && (
+                      {isAdmin && paidClients[client.id] && (
                         <button
                           onClick={() => handleUndoClick(client)}
                           className="p-2 text-orange-600 hover:bg-orange-50 rounded-md transition-colors"
@@ -277,6 +295,18 @@ export default function Clients() {
                           <RotateCcw size={18} />
                         </button>
                       )}
+                      
+                      {client.phone && (
+                        <a
+                          href={`https://wa.me/55${client.phone.replace(/\D/g, '')}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-2 text-[#25D366] hover:bg-green-50 rounded-md transition-colors"
+                          title="Enviar WhatsApp"
+                        >
+                          <MessageCircle size={18} />
+                        </a>
+                      )}
                       <Link
                         to={`/clients/${client.id}/supplies`}
                         className="p-2 text-purple-600 hover:bg-purple-50 rounded-md transition-colors"
@@ -284,25 +314,31 @@ export default function Clients() {
                       >
                         <Package size={18} />
                       </Link>
-                      <button
-                        onClick={() => handlePaymentClick(client)}
-                        className="p-2 text-green-600 hover:bg-green-50 rounded-md transition-colors"
-                        title="Registrar Pagamento"
-                      >
-                        <DollarSign size={18} />
-                      </button>
-                      <Link
-                        to={`/clients/${client.id}`}
-                        className="p-2 text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
-                      >
-                        <Edit size={18} />
-                      </Link>
-                      <button
-                        onClick={() => handleDeleteClick(client)}
-                        className="p-2 text-red-600 hover:bg-red-50 rounded-md transition-colors"
-                      >
-                        <Trash2 size={18} />
-                      </button>
+                      {isAdmin && (
+                        <>
+                          <button
+                            onClick={() => handlePaymentClick(client)}
+                            className="p-2 text-green-600 hover:bg-green-50 rounded-md transition-colors"
+                            title="Registrar Pagamento"
+                          >
+                            <DollarSign size={18} />
+                          </button>
+                          <Link
+                            to={`/clients/${client.id}`}
+                            className="p-2 text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
+                            title="Editar"
+                          >
+                            <Edit size={18} />
+                          </Link>
+                          <button
+                            onClick={() => handleDeleteClick(client)}
+                            className="p-2 text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                            title="Excluir"
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        </>
+                      )}
                     </td>
                   </tr>
                 ))

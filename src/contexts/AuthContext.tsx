@@ -10,6 +10,7 @@ export interface UserProfile {
   phone: string;
   adminId: string;
   createdAt: any;
+  customProducts?: { name: string; defaultUnit: string }[];
   whatsappSettings?: {
     reminderDays: number;
     reminderMessage: string;

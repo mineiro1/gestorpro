@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { collection, query, where, onSnapshot, deleteDoc, doc, updateDoc } from 'firebase/firestore';
-import { Edit, Trash2, Plus } from 'lucide-react';
+import { Edit, Trash2, Plus, MapPin } from 'lucide-react';
 
 export default function Employees() {
   const { userProfile } = useAuth();
@@ -91,6 +91,17 @@ export default function Employees() {
                     <td className="p-4">{employee.name}</td>
                     <td className="p-4">{employee.phone}</td>
                     <td className="p-4 flex justify-end space-x-2">
+                      {employee.lastLocation && (
+                        <button
+                          onClick={() => {
+                            window.open(`https://www.google.com/maps/search/?api=1&query=${employee.lastLocation.lat},${employee.lastLocation.lng}`, '_blank');
+                          }}
+                          className="p-2 text-green-600 hover:bg-green-50 rounded-md transition-colors"
+                          title="Ver Localização Atual"
+                        >
+                          <MapPin size={18} />
+                        </button>
+                      )}
                       <Link
                         to={`/employees/${employee.id}`}
                         className="p-2 text-blue-600 hover:bg-blue-50 rounded-md transition-colors"

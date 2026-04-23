@@ -21,6 +21,7 @@ export default function Dashboard() {
     receivedThisMonth: 0,
     pendingThisMonth: 0,
   });
+  const [clientsWithoutVisits, setClientsWithoutVisits] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -41,9 +42,13 @@ export default function Dashboard() {
         let totalToReceive = 0;
         let actualDelayedClients = 0;
         let pendingThisMonth = 0;
+        const clientsNoVisit: any[] = [];
 
         const today = new Date();
         today.setHours(0, 0, 0, 0);
+
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(today.getDate() - 7);
 
         clientsSnap.docs.forEach(doc => {
           const data = doc.data();
@@ -63,6 +68,17 @@ export default function Dashboard() {
             if (due.getFullYear() < currentYear || (due.getFullYear() === currentYear && due.getMonth() + 1 <= currentMonth)) {
               pendingThisMonth += data.monthlyFee || 0;
             }
+          }
+
+          // Check if no visit in the last 7 days
+          if (data.lastVisitDate) {
+            const lastVisit = data.lastVisitDate.toDate();
+            if (lastVisit < sevenDaysAgo) {
+              clientsNoVisit.push({ id: doc.id, ...data });
+            }
+          } else {
+            // Client has never been visited (or created before feature added)
+            clientsNoVisit.push({ id: doc.id, ...data });
           }
         });
 
@@ -89,6 +105,8 @@ export default function Dashboard() {
           receivedThisMonth,
           pendingThisMonth,
         });
+
+        setClientsWithoutVisits(clientsNoVisit);
       } catch (error) {
         handleFirestoreError(error, OperationType.GET, 'dashboard_stats');
       } finally {
@@ -135,6 +153,31 @@ export default function Dashboard() {
           );
         })}
       </div>
+
+      {clientsWithoutVisits.length > 0 && (
+        <div className="mt-8 bg-red-50 border-l-4 border-red-500 p-6 rounded-r-xl shadow-sm">
+          <div className="flex items-center mb-2">
+            <AlertCircle className="text-red-500 mr-2" size={24} />
+            <h2 className="text-xl font-bold text-red-800">Alerta de Visitas Pendentes</h2>
+          </div>
+          <p className="text-red-700 font-medium mb-4">
+            Você possui {clientsWithoutVisits.length} clientes que não receberam visitas nos últimos 7 dias.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+            {clientsWithoutVisits.slice(0, 9).map(client => (
+              <div key={client.id} className="bg-white p-3 rounded shadow-sm border border-red-100 flex flex-col justify-center">
+                <span className="font-bold text-gray-800">{client.name}</span>
+                <span className="text-sm text-gray-500">
+                  {client.lastVisitDate ? `Última visita: ${client.lastVisitDate.toDate().toLocaleDateString('pt-BR')}` : 'Nenhuma visita registrada'}
+                </span>
+              </div>
+            ))}
+          </div>
+          {clientsWithoutVisits.length > 9 && (
+            <p className="text-sm text-red-600 mt-4 font-semibold italic">... e mais {clientsWithoutVisits.length - 9} clientes.</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

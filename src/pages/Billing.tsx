@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { collection, query, where, getDocs, doc, updateDoc } from 'firebase/firestore';
-import { MessageCircle, AlertCircle, Clock, History, Settings, X, Play } from 'lucide-react';
+import { MessageCircle, AlertCircle, Clock, History, Settings, X, Play, Calendar } from 'lucide-react';
 
 interface ClientBilling {
   id: string;
@@ -10,12 +10,13 @@ interface ClientBilling {
   phone: string;
   monthlyFee: number;
   dueDate: string;
-  status: 'delayed' | 'upcoming';
+  status: 'delayed' | 'upcoming' | 'today';
 }
 
 export default function Billing() {
   const { userProfile } = useAuth();
   const [delayedClients, setDelayedClients] = useState<ClientBilling[]>([]);
+  const [todayClients, setTodayClients] = useState<ClientBilling[]>([]);
   const [upcomingClients, setUpcomingClients] = useState<ClientBilling[]>([]);
   const [allClients, setAllClients] = useState<ClientBilling[]>([]);
   const [loading, setLoading] = useState(true);
@@ -24,6 +25,7 @@ export default function Billing() {
   const [selectedClientId, setSelectedClientId] = useState<string>('');
   const [clientPayments, setClientPayments] = useState<any[]>([]);
   const [loadingPayments, setLoadingPayments] = useState(false);
+  const [activeTab, setActiveTab] = useState<'all' | 'delayed' | 'today' | 'upcoming'>('all');
 
   // WhatsApp Settings State
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
@@ -194,6 +196,7 @@ export default function Billing() {
         const clientsSnap = await getDocs(clientsQuery);
         
         const delayed: ClientBilling[] = [];
+        const todayDues: ClientBilling[] = [];
         const upcoming: ClientBilling[] = [];
         const all: ClientBilling[] = [];
 
@@ -245,7 +248,11 @@ export default function Billing() {
               delayed.push(clientBilling);
               // Calculate next month to see if that is ALSO missed/upcoming
               currentDueDateStr = calculateNextDueDateHelper(currentDueDateStr, baseDay);
-            } else if (diffDays >= 0 && diffDays <= (userProfile.whatsappSettings?.reminderDays ?? 3)) {
+            } else if (diffDays === 0) {
+              clientBilling.status = 'today';
+              todayDues.push(clientBilling);
+              break;
+            } else if (diffDays > 0 && diffDays <= (userProfile.whatsappSettings?.reminderDays ?? 3)) {
               clientBilling.status = 'upcoming';
               upcoming.push(clientBilling);
               break; // No need to check the month after the upcoming one, as it will be > reminderDays
@@ -260,10 +267,12 @@ export default function Billing() {
 
         // Sort by due date
         delayed.sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
+        todayDues.sort((a, b) => a.name.localeCompare(b.name));
         upcoming.sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
         all.sort((a, b) => a.name.localeCompare(b.name));
 
         setDelayedClients(delayed);
+        setTodayClients(todayDues);
         setUpcomingClients(upcoming);
         setAllClients(all);
       } catch (error) {
@@ -403,115 +412,164 @@ export default function Billing() {
     return <div className="flex justify-center items-center h-64">Carregando notificações...</div>;
   }
 
+  const getBillingList = () => {
+    switch (activeTab) {
+      case 'delayed': return delayedClients;
+      case 'today': return todayClients;
+      case 'upcoming': return upcomingClients;
+      default: return [...delayedClients, ...todayClients, ...upcomingClients].sort((a,b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
+    }
+  };
+
+  const currentList = getBillingList();
+
+  const getStatusBadge = (status: string, dueDateStr: string) => {
+    const formattedDate = new Date(dueDateStr + 'T12:00:00').toLocaleDateString('pt-BR');
+    if (status === 'delayed') {
+      return (
+        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-800">
+          <AlertCircle size={14} className="mr-1" />
+          Atrasado ({formattedDate})
+        </span>
+      );
+    }
+    if (status === 'today') {
+      return (
+        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-800">
+          <Calendar size={14} className="mr-1" />
+          Vence Hoje
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-yellow-100 text-yellow-800">
+        <Clock size={14} className="mr-1" />
+        Vence em {formattedDate}
+      </span>
+    );
+  };
+
   return (
-    <div className="max-w-5xl mx-auto">
-      <div className="mb-8">
+    <div className="max-w-7xl mx-auto">
+      <div className="mb-8 flex flex-col sm:flex-row justify-between items-start sm:items-center">
         <div>
           <h1 className="text-2xl font-bold text-gray-800">Central de Cobranças e Notificações</h1>
           <p className="text-gray-600 mt-1">Gerencie os vencimentos e envie lembretes via WhatsApp.</p>
         </div>
+        <div className="flex gap-3 mt-4 sm:mt-0">
+          <button
+            onClick={() => setSettingsModalOpen(true)}
+            className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-200 transition-colors flex items-center font-medium"
+          >
+            <Settings size={20} className="mr-2" />
+            Configurar Mensagens
+          </button>
+        </div>
+      </div>
+
+      {/* Tabs Menu */}
+      <div className="flex overflow-x-auto space-x-2 mb-6 pb-2 hide-scrollbar">
         <button
-          onClick={() => setSettingsModalOpen(true)}
-          className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-200 transition-colors flex items-center font-medium mt-4 sm:mt-0"
+          onClick={() => setActiveTab('all')}
+          className={`px-5 py-2.5 rounded-xl font-semibold whitespace-nowrap transition-colors flex items-center ${activeTab === 'all' ? 'bg-gray-800 text-white' : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'}`}
         >
-          <Settings size={20} className="mr-2" />
-          Configurar Mensagens
+          Todos Pendentes
+          <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${activeTab === 'all' ? 'bg-gray-600 text-white' : 'bg-gray-100'}`}>
+            {delayedClients.length + todayClients.length + upcomingClients.length}
+          </span>
+        </button>
+        <button
+          onClick={() => setActiveTab('delayed')}
+          className={`px-5 py-2.5 rounded-xl font-semibold whitespace-nowrap transition-colors flex items-center ${activeTab === 'delayed' ? 'bg-red-50 border-2 border-red-200 text-red-700' : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'}`}
+        >
+          <AlertCircle size={18} className="mr-2" />
+          Atrasados
+          <span className={`ml-2 px-2 py-0.5 rounded-full text-xs font-bold ${activeTab === 'delayed' ? 'bg-red-200 text-red-800' : 'bg-gray-100'}`}>
+            {delayedClients.length}
+          </span>
+        </button>
+        <button
+          onClick={() => setActiveTab('today')}
+          className={`px-5 py-2.5 rounded-xl font-semibold whitespace-nowrap transition-colors flex items-center ${activeTab === 'today' ? 'bg-blue-50 border-2 border-blue-200 text-blue-700' : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'}`}
+        >
+          <Calendar size={18} className="mr-2" />
+          Hoje
+          <span className={`ml-2 px-2 py-0.5 rounded-full text-xs font-bold ${activeTab === 'today' ? 'bg-blue-200 text-blue-800' : 'bg-gray-100'}`}>
+            {todayClients.length}
+          </span>
+        </button>
+        <button
+          onClick={() => setActiveTab('upcoming')}
+          className={`px-5 py-2.5 rounded-xl font-semibold whitespace-nowrap transition-colors flex items-center ${activeTab === 'upcoming' ? 'bg-yellow-50 border-2 border-yellow-200 text-yellow-700' : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'}`}
+        >
+          <Clock size={18} className="mr-2" />
+          Em Breve
+          <span className={`ml-2 px-2 py-0.5 rounded-full text-xs font-bold ${activeTab === 'upcoming' ? 'bg-yellow-200 text-yellow-800' : 'bg-gray-100'}`}>
+            {upcomingClients.length}
+          </span>
         </button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* Atrasados */}
-        <div className="bg-white rounded-xl shadow-sm overflow-hidden border border-red-100">
-          <div className="bg-red-50 px-6 py-4 border-b border-red-100 flex items-center justify-between">
-            <div className="flex items-center text-red-700 font-bold">
-              <AlertCircle size={20} className="mr-2" />
-              Mensalidades Atrasadas
-            </div>
-            <div className="flex items-center space-x-3">
-              <span className="bg-red-200 text-red-800 text-xs px-2 py-1 rounded-full font-bold">
-                {delayedClients.length}
-              </span>
-              {delayedClients.length > 0 && (
-                 <button onClick={() => processQueue(delayedClients)} className="text-red-700 hover:text-red-900 bg-red-100 p-1.5 rounded-md" title="Iniciar Fila de Cobrança">
-                   <Play size={16} />
-                 </button>
-              )}
-            </div>
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+        {/* Bulk Action Header */}
+        {(activeTab === 'delayed' && delayedClients.length > 0) || 
+         (activeTab === 'today' && todayClients.length > 0) || 
+         (activeTab === 'upcoming' && upcomingClients.length > 0) ? (
+          <div className="bg-gray-50 px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+            <span className="text-sm font-medium text-gray-600">Ações em Lote:</span>
+            <button 
+              onClick={() => processQueue(getBillingList())} 
+              className={`flex items-center px-4 py-2 rounded-lg font-medium text-sm transition-colors text-white ${
+                activeTab === 'delayed' ? 'bg-red-600 hover:bg-red-700' : 
+                activeTab === 'today' ? 'bg-blue-600 hover:bg-blue-700' : 
+                'bg-yellow-500 hover:bg-yellow-600'
+              }`}
+            >
+              <Play size={16} className="mr-2" />
+              Notificar Fila Inteira ({currentList.length})
+            </button>
           </div>
-          
-          <div className="p-0">
-            {delayedClients.length === 0 ? (
-              <p className="text-gray-500 p-6 text-center">Nenhum cliente atrasado no momento.</p>
-            ) : (
-              <ul className="divide-y divide-gray-100">
-                {delayedClients.map(client => (
-                  <li key={client.id} className="p-6 hover:bg-gray-50 transition-colors">
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <h3 className="font-bold text-gray-800">{client.name}</h3>
-                        <p className="text-sm text-gray-500 mt-1">Venceu dia: <span className="font-semibold text-red-600">{new Date(client.dueDate + 'T12:00:00').toLocaleDateString('pt-BR')}</span></p>
-                        <p className="text-sm text-gray-500">Valor: R$ {client.monthlyFee.toFixed(2)}</p>
-                      </div>
-                      <button
-                        onClick={() => handleSendWhatsApp(client)}
-                        className="flex items-center bg-green-500 text-white px-3 py-2 rounded-lg hover:bg-green-600 transition-colors text-sm font-medium"
-                      >
-                        <MessageCircle size={16} className="mr-2" />
-                        Cobrar
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </div>
+        ) : null}
 
-        {/* Próximos do Vencimento */}
-        <div className="bg-white rounded-xl shadow-sm overflow-hidden border border-yellow-100">
-          <div className="bg-yellow-50 px-6 py-4 border-b border-yellow-100 flex items-center justify-between">
-            <div className="flex items-center text-yellow-700 font-bold">
-              <Clock size={20} className="mr-2" />
-              Vencendo em Breve (Próx. {waSettings.reminderDays} dias)
+        <div className="p-0">
+          {currentList.length === 0 ? (
+            <div className="text-center py-16 px-4">
+              <div className="bg-gray-50 rounded-full w-20 h-20 flex items-center justify-center mx-auto mb-4">
+                <AlertCircle size={32} className="text-gray-400" />
+              </div>
+              <p className="text-gray-500 font-medium">Nenhum cliente para esta categoria.</p>
             </div>
-            <div className="flex items-center space-x-3">
-              <span className="bg-yellow-200 text-yellow-800 text-xs px-2 py-1 rounded-full font-bold">
-                {upcomingClients.length}
-              </span>
-              {upcomingClients.length > 0 && (
-                 <button onClick={() => processQueue(upcomingClients)} className="text-yellow-700 hover:text-yellow-900 bg-yellow-200 p-1.5 rounded-md" title="Iniciar Fila de Lembretes">
-                   <Play size={16} />
-                 </button>
-              )}
-            </div>
-          </div>
-          
-          <div className="p-0">
-            {upcomingClients.length === 0 ? (
-              <p className="text-gray-500 p-6 text-center">Nenhum vencimento próximo.</p>
-            ) : (
-              <ul className="divide-y divide-gray-100">
-                {upcomingClients.map(client => (
-                  <li key={client.id} className="p-6 hover:bg-gray-50 transition-colors">
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <h3 className="font-bold text-gray-800">{client.name}</h3>
-                        <p className="text-sm text-gray-500 mt-1">Vence dia: <span className="font-semibold text-yellow-600">{new Date(client.dueDate + 'T12:00:00').toLocaleDateString('pt-BR')}</span></p>
-                        <p className="text-sm text-gray-500">Valor: R$ {client.monthlyFee.toFixed(2)}</p>
-                      </div>
-                      <button
-                        onClick={() => handleSendWhatsApp(client)}
-                        className="flex items-center bg-green-500 text-white px-3 py-2 rounded-lg hover:bg-green-600 transition-colors text-sm font-medium"
-                      >
-                        <MessageCircle size={16} className="mr-2" />
-                        Lembrar
-                      </button>
+          ) : (
+            <ul className="divide-y divide-gray-100">
+              {currentList.map(client => (
+                <li key={client.id} className="p-6 hover:bg-gray-50 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-3 mb-1">
+                      <h3 className="font-bold text-gray-900 text-lg">{client.name}</h3>
+                      {getStatusBadge(client.status, client.dueDate)}
                     </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-6 text-sm text-gray-500">
+                      <span className="font-semibold text-gray-700 font-mono text-base tracking-tight">R$ {client.monthlyFee.toFixed(2)}</span>
+                      <span>{client.phone}</span>
+                    </div>
+                  </div>
+                  <div className="shrink-0 flex items-center">
+                    <button
+                      onClick={() => handleSendWhatsApp(client)}
+                      className={`flex items-center px-4 py-2 rounded-lg transition-colors font-semibold shadow-sm border ${
+                        client.status === 'delayed' 
+                          ? 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100' 
+                          : 'bg-[#25D366] text-white border-transparent hover:bg-[#20b858]'
+                      }`}
+                    >
+                      <MessageCircle size={18} className="mr-2" />
+                      {client.status === 'delayed' ? 'Cobrar agora' : 'Mandar Lembrete'}
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </div>
 

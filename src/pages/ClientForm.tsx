@@ -20,16 +20,20 @@ export default function ClientForm() {
     monthlyFee: '',
     dueDate: '',
     visitDays: [] as string[],
+    extraVisits: [] as string[],
+    employeeId: '',
   });
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(!!id);
   const [error, setError] = useState('');
+  const [employees, setEmployees] = useState<any[]>([]);
 
   // Visit History State
   const [visits, setVisits] = useState<any[]>([]);
   const [newVisitNotes, setNewVisitNotes] = useState('');
   const [addingVisit, setAddingVisit] = useState(false);
   const [fullscreenImage, setFullscreenImage] = useState<string | null>(null);
+  const [extraVisitInput, setExtraVisitInput] = useState('');
 
   useEffect(() => {
     if (id) {
@@ -47,6 +51,8 @@ export default function ClientForm() {
               monthlyFee: data.monthlyFee?.toString() || '',
               dueDate: data.dueDate?.toString() || '',
               visitDays: data.visitDays || [],
+              extraVisits: data.extraVisits || [],
+              employeeId: data.employeeId || '',
             });
           }
         } catch (error) {
@@ -82,6 +88,25 @@ export default function ClientForm() {
     }
   }, [id, userProfile, isAdmin]);
 
+  useEffect(() => {
+    if (isAdmin && userProfile) {
+      const fetchEmployees = async () => {
+        try {
+          const empQuery = query(
+            collection(db, 'users'),
+            where('adminId', '==', userProfile.uid),
+            where('role', '==', 'employee')
+          );
+          const empSnap = await getDocs(empQuery);
+          setEmployees(empSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+        } catch (err) {
+          console.error("Erro ao buscar funcionários", err);
+        }
+      };
+      fetchEmployees();
+    }
+  }, [isAdmin, userProfile]);
+
   const handleDayToggle = (day: string) => {
     setFormData(prev => ({
       ...prev,
@@ -105,6 +130,8 @@ export default function ClientForm() {
       dueDate: formData.dueDate, // Now a string YYYY-MM-DD
       baseDueDay: parseInt(formData.dueDate.split('-')[2], 10) || 1, // Extract day
       visitDays: formData.visitDays,
+      extraVisits: formData.extraVisits,
+      employeeId: formData.employeeId,
     };
 
     try {
@@ -113,8 +140,8 @@ export default function ClientForm() {
       } else {
         await addDoc(collection(db, 'clients'), {
           ...clientData,
-          adminId: userProfile.uid,
-          employeeId: '',
+          adminId: isAdmin ? userProfile.uid : userProfile.adminId,
+          employeeId: isAdmin ? formData.employeeId : userProfile.uid,
           createdAt: serverTimestamp(),
         });
         // Clear form if adding new
@@ -126,6 +153,8 @@ export default function ClientForm() {
           monthlyFee: '',
           dueDate: '',
           visitDays: [],
+          extraVisits: [],
+          employeeId: '',
         });
       }
       navigate('/clients');
@@ -151,6 +180,12 @@ export default function ClientForm() {
         date: serverTimestamp(),
         notes: newVisitNotes.trim()
       });
+
+      // Update client with lastVisitDate
+      await updateDoc(doc(db, 'clients', id), {
+        lastVisitDate: serverTimestamp()
+      });
+
       setNewVisitNotes('');
 
       // Cleanup old visits (keep only the 3 most recent)
@@ -255,6 +290,20 @@ export default function ClientForm() {
                 onChange={e => setFormData({...formData, address: e.target.value})}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none"
               />
+              {formData.address && formData.address.length > 5 && (
+                <div className="mt-3 rounded-lg overflow-hidden border border-gray-200 h-48 sm:h-64 relative bg-gray-100">
+                  <iframe
+                    title="Map Preview"
+                    width="100%"
+                    height="100%"
+                    style={{ border: 0 }}
+                    loading="lazy"
+                    allowFullScreen
+                    referrerPolicy="no-referrer-when-downgrade"
+                    src={`https://maps.google.com/maps?q=${encodeURIComponent(formData.address)}&t=&z=16&ie=UTF8&iwloc=&output=embed`}
+                  ></iframe>
+                </div>
+              )}
             </div>
 
             <div>
@@ -267,6 +316,22 @@ export default function ClientForm() {
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none"
               />
             </div>
+
+            {isAdmin && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Atribuir a Colaborador</label>
+                <select
+                  value={formData.employeeId}
+                  onChange={e => setFormData({...formData, employeeId: e.target.value})}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none bg-white"
+                >
+                  <option value="">Não atribuído</option>
+                  {employees.map(emp => (
+                    <option key={emp.id} value={emp.id}>{emp.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             <div className="md:col-span-2">
               <label className="block text-sm font-medium text-gray-700 mb-2">Dias de Visita</label>
@@ -285,6 +350,59 @@ export default function ClientForm() {
                     {day}
                   </button>
                 ))}
+              </div>
+            </div>
+
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Adicionar Data de Visita Avulsa
+                <span className="block text-xs text-gray-500 font-normal">
+                  (Para uma visita excepcional fora do padrão semanal)
+                </span>
+              </label>
+              <div className="flex gap-2 mb-2">
+                <input 
+                  type="date"
+                  value={extraVisitInput}
+                  onChange={(e) => setExtraVisitInput(e.target.value)}
+                  className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (extraVisitInput) {
+                      if (!formData.extraVisits.includes(extraVisitInput)) {
+                        setFormData(prev => ({ ...prev, extraVisits: [...prev.extraVisits, extraVisitInput] }));
+                      }
+                      setExtraVisitInput('');
+                    }
+                  }}
+                  className="bg-gray-200 text-gray-700 px-4 py-2 rounded-lg font-medium hover:bg-gray-300 transition-colors"
+                >
+                  Adicionar
+                </button>
+              </div>
+              <p className="text-xs text-orange-600 mb-2 font-medium bg-orange-50 inline-block px-2 py-1 rounded">
+                Lembre-se: Você precisa clicar em "Finalizar Cadastro" no final da página para gravar as datas adicionadas.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {formData.extraVisits.map((evtDate, index) => {
+                  if (!evtDate) return null;
+                  const dateStr = String(evtDate);
+                  const parts = dateStr.split('-');
+                  const formattedDate = parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : dateStr;
+                  return (
+                  <span key={`evt-${index}`} className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm flex items-center">
+                    {formattedDate}
+                    <button 
+                      type="button"
+                      onClick={() => setFormData(prev => ({ ...prev, extraVisits: prev.extraVisits.filter(d => d !== evtDate) }))}
+                      className="ml-2 text-blue-500 hover:text-blue-700 focus:outline-none"
+                    >
+                      <X size={14} />
+                    </button>
+                  </span>
+                )})}
               </div>
             </div>
           </div>

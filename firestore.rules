@@ -87,7 +87,7 @@ service cloud.firestore {
     }
 
     function isValidUser(data) {
-      return hasOnlyAllowedFields(['uid', 'role', 'name', 'phone', 'adminId', 'createdAt', 'password', 'whatsappSettings']) &&
+      return hasOnlyAllowedFields(['uid', 'role', 'name', 'phone', 'adminId', 'createdAt', 'password', 'whatsappSettings', 'customProducts', 'lastLocation', 'lastLocationAt']) &&
              isValidString(data.uid, 1, 128) &&
              (data.role == 'admin' || data.role == 'employee') &&
              isValidString(data.name, 1, 100) &&
@@ -95,11 +95,14 @@ service cloud.firestore {
              isValidString(data.adminId, 1, 128) &&
              (!('password' in data) || isValidString(data.password, 6, 128)) &&
              (!('whatsappSettings' in data) || data.whatsappSettings is map) &&
+             (!('customProducts' in data) || data.customProducts is list) &&
+             (!('lastLocation' in data) || data.lastLocation is map) &&
+             (!('lastLocationAt' in data) || data.lastLocationAt is timestamp) &&
              data.createdAt is timestamp;
     }
 
     function isValidClient(data) {
-      return hasOnlyAllowedFields(['adminId', 'name', 'phone', 'address', 'monthlyFee', 'dueDate', 'baseDueDay', 'visitDays', 'employeeId', 'createdAt', 'cpfCnpj']) &&
+      return hasOnlyAllowedFields(['adminId', 'name', 'phone', 'address', 'monthlyFee', 'dueDate', 'baseDueDay', 'visitDays', 'employeeId', 'createdAt', 'cpfCnpj', 'extraVisits', 'lastVisitDate']) &&
              isValidString(data.adminId, 1, 128) &&
              isValidString(data.name, 0, 100) &&
              (!('phone' in data) || isValidString(data.phone, 0, 50)) &&
@@ -108,6 +111,8 @@ service cloud.firestore {
              (!('dueDate' in data) || data.dueDate is string || data.dueDate is number) &&
              (!('baseDueDay' in data) || data.baseDueDay is number || data.baseDueDay == null) &&
              (!('visitDays' in data) || (data.visitDays is list && data.visitDays.size() <= 7)) &&
+             (!('extraVisits' in data) || data.extraVisits is list) &&
+             (!('lastVisitDate' in data) || data.lastVisitDate is timestamp) &&
              (!('employeeId' in data) || data.employeeId == null || isValidString(data.employeeId, 0, 128)) &&
              (!('createdAt' in data) || data.createdAt is timestamp) &&
              (!('cpfCnpj' in data) || isValidString(data.cpfCnpj, 0, 20));
@@ -160,7 +165,8 @@ service cloud.firestore {
       // 2. Admin updating their employee's profile
       // Employees cannot update their own profiles (or we could allow it but restrict role/adminId)
       allow update: if isAuthenticated() && isValidUser(request.resource.data) && request.resource.data.uid == resource.data.uid && request.resource.data.adminId == resource.data.adminId && request.resource.data.role == resource.data.role && request.resource.data.createdAt == resource.data.createdAt && (
-        (isAdmin() && resource.data.adminId == request.auth.uid)
+        (isAdmin() && resource.data.adminId == request.auth.uid) ||
+        (isOwner(userId))
       );
 
       allow delete: if isAuthenticated() && isAdmin() && resource.data.adminId == request.auth.uid && resource.data.uid != request.auth.uid;
@@ -175,7 +181,10 @@ service cloud.firestore {
 
       allow create: if isAuthenticated() && isAdmin() && isValidClient(request.resource.data) && request.resource.data.adminId == request.auth.uid;
       
-      allow update: if isAuthenticated() && isAdmin() && isValidClient(request.resource.data) && resource.data.adminId == request.auth.uid && request.resource.data.adminId == resource.data.adminId && (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt);
+      allow update: if isAuthenticated() && isValidClient(request.resource.data) && resource.data.adminId == request.resource.data.adminId && (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt) && (
+        (isAdmin() && resource.data.adminId == request.auth.uid) ||
+        (isEmployee() && resource.data.adminId == getAdminId() && resource.data.employeeId == request.auth.uid)
+      );
       
       allow delete: if isAuthenticated() && isAdmin() && resource.data.adminId == request.auth.uid;
     }

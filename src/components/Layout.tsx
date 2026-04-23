@@ -5,6 +5,7 @@ import { auth } from '../lib/firebase';
 import { signOut } from 'firebase/auth';
 import { Menu, X, Home, Users, UserCircle, Map, LogOut, Bell } from 'lucide-react';
 import clsx from 'clsx';
+import EmployeeLocationTracker from './EmployeeLocationTracker';
 
 export default function Layout() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -27,10 +28,12 @@ export default function Layout() {
       ]
     : [
         { name: 'Rotas', path: '/routes', icon: Map },
+        { name: 'Clientes', path: '/clients', icon: Users },
       ];
 
   return (
     <div className="min-h-screen bg-gray-100 flex">
+      <EmployeeLocationTracker />
       {/* Mobile drawer overlay */}
       {isDrawerOpen && (
         <div 

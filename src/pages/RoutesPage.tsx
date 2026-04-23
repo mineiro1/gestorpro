@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, where, getDocs, addDoc, deleteDoc, doc, serverTimestamp, Timestamp } from 'firebase/firestore';
+import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, Timestamp } from 'firebase/firestore';
 import { jsPDF } from 'jspdf';
-import { Share2, FileText, Map, Camera, CheckCircle } from 'lucide-react';
+import { Share2, FileText, Map, Camera, CheckCircle, MapPin } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
 
 const DAYS_OF_WEEK = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 
@@ -12,6 +13,13 @@ export default function RoutesPage() {
   const [employees, setEmployees] = useState<any[]>([]);
   const [selectedEmployee, setSelectedEmployee] = useState('');
   const [selectedDay, setSelectedDay] = useState('');
+  const getLocalISODate = () => {
+    const d = new Date();
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+    return d.toISOString().split('T')[0];
+  };
+
+  const [routeDate, setRouteDate] = useState(getLocalISODate());
   const [routeClients, setRouteClients] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [generated, setGenerated] = useState(false);
@@ -22,7 +30,19 @@ export default function RoutesPage() {
   const [reportNotes, setReportNotes] = useState('');
   const [reportPhoto, setReportPhoto] = useState<string | null>(null);
   const [submittingReport, setSubmittingReport] = useState(false);
-  const [completedVisitsToday, setCompletedVisitsToday] = useState<Set<string>>(new Set());
+  const [completedVisitsOnRouteDate, setCompletedVisitsOnRouteDate] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (routeDate) {
+      const dateStr = routeDate + 'T12:00:00';
+      const dayIndex = new Date(dateStr).getDay();
+      if (dayIndex >= 1 && dayIndex <= 6) {
+        setSelectedDay(DAYS_OF_WEEK[dayIndex - 1]);
+      } else {
+        setSelectedDay(''); // Domingo
+      }
+    }
+  }, [routeDate]);
 
   useEffect(() => {
     if (isAdmin && userProfile?.uid) {
@@ -46,7 +66,7 @@ export default function RoutesPage() {
   }, [isAdmin, userProfile]);
 
   const handleGenerateRoute = async () => {
-    if (!selectedEmployee || !selectedDay || !userProfile) return;
+    if (!selectedEmployee || (!selectedDay && !routeDate) || !userProfile) return;
     setLoading(true);
     setGenerated(false);
 
@@ -56,33 +76,44 @@ export default function RoutesPage() {
       const q = query(
         collection(db, 'clients'),
         where('adminId', '==', adminId),
-        where('employeeId', '==', selectedEmployee),
-        where('visitDays', 'array-contains', selectedDay)
+        where('employeeId', '==', selectedEmployee)
       );
       
       const snap = await getDocs(q);
-      const clientsData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const allEmployeeClients = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      
+      // Filter memory for either visitDays matching selectedDay OR extraVisits containing routeDate
+      const clientsData = allEmployeeClients.filter((client: any) => {
+        const matchesDayOfWeek = selectedDay ? (client.visitDays && client.visitDays.includes(selectedDay)) : false;
+        const matchesExtraVisit = routeDate ? (client.extraVisits && client.extraVisits.includes(routeDate)) : false;
+        return matchesDayOfWeek || matchesExtraVisit;
+      });
+      
       setRouteClients(clientsData);
 
-      // Check which clients were already visited today
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
+      // Check which clients were already visited ON THE ROUTE DATE
+      const routeDateStart = new Date(routeDate + 'T00:00:00');
+      const routeDateEnd = new Date(routeDate + 'T23:59:59.999');
       
       const visitsQuery = query(
         collection(db, 'visits'),
         where('adminId', '==', adminId),
-        where('date', '>=', Timestamp.fromDate(todayStart))
+        where('date', '>=', Timestamp.fromDate(routeDateStart))
       );
       
       const visitsSnap = await getDocs(visitsQuery);
       const completedIds = new Set<string>();
       visitsSnap.docs.forEach(doc => {
         const data = doc.data();
-        if (data.employeeId === selectedEmployee || isAdmin) {
-          completedIds.add(data.clientId);
+        const visitDate = data.date?.toDate();
+        // Since we query >= routeDateStart, filter out visits after routeDateEnd
+        if (visitDate && visitDate <= routeDateEnd) {
+          if (data.employeeId === selectedEmployee || isAdmin) {
+            completedIds.add(data.clientId);
+          }
         }
       });
-      setCompletedVisitsToday(completedIds);
+      setCompletedVisitsOnRouteDate(completedIds);
 
       setGenerated(true);
     } catch (error) {
@@ -102,12 +133,13 @@ export default function RoutesPage() {
     doc.text('Rota do Dia', 14, 22);
     
     doc.setFontSize(12);
-    doc.text(`Dia da Semana: ${selectedDay}`, 14, 32);
-    doc.text(`Colaborador: ${employeeName}`, 14, 40);
+    doc.text(`Data da Rota: ${routeDate.split('-').reverse().join('/')}`, 14, 32);
+    doc.text(`Dia da Semana: ${selectedDay}`, 14, 40);
+    doc.text(`Colaborador: ${employeeName}`, 14, 48);
     
-    doc.line(14, 45, 196, 45);
+    doc.line(14, 53, 196, 53);
 
-    let yPos = 55;
+    let yPos = 63;
     
     if (routeClients.length === 0) {
       doc.text('Nenhum cliente para esta rota.', 14, yPos);
@@ -160,7 +192,7 @@ export default function RoutesPage() {
   };
 
   const handleOpenReport = (client: any) => {
-    if (completedVisitsToday.has(client.id)) return;
+    if (completedVisitsOnRouteDate.has(client.id)) return;
     setSelectedClientForReport(client);
     setReportNotes('');
     setReportPhoto(null);
@@ -233,6 +265,11 @@ export default function RoutesPage() {
         photoUrl: reportPhoto
       });
 
+      // Update client with lastVisitDate
+      await updateDoc(doc(db, 'clients', selectedClientForReport.id), {
+        lastVisitDate: serverTimestamp()
+      });
+
       // Cleanup old visits (keep only the 3 most recent)
       try {
         const q = query(collection(db, 'visits'), where('clientId', '==', selectedClientForReport.id), where('adminId', '==', adminId));
@@ -251,7 +288,7 @@ export default function RoutesPage() {
       }
 
       // Update local state to mark as completed
-      setCompletedVisitsToday(prev => new Set(prev).add(selectedClientForReport.id));
+      setCompletedVisitsOnRouteDate(prev => new Set(prev).add(selectedClientForReport.id));
       
       setReportModalOpen(false);
       setSelectedClientForReport(null);
@@ -285,6 +322,16 @@ export default function RoutesPage() {
           )}
 
           <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Data da Rota</label>
+            <input
+              type="date"
+              value={routeDate}
+              onChange={(e) => setRouteDate(e.target.value)}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none"
+            />
+          </div>
+
+          <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Dia da Semana</label>
             <select
               value={selectedDay}
@@ -301,7 +348,7 @@ export default function RoutesPage() {
 
         <button
           onClick={handleGenerateRoute}
-          disabled={!selectedEmployee || !selectedDay || loading}
+          disabled={!selectedEmployee || (!selectedDay && !routeDate) || loading}
           className="w-full md:w-auto bg-primary text-white px-6 py-2 rounded-lg font-semibold hover:bg-primary-light transition-colors disabled:opacity-50"
         >
           {loading ? 'Gerando...' : 'Gerar Rota'}
@@ -326,29 +373,88 @@ export default function RoutesPage() {
           ) : (
             <div className="space-y-4">
               {routeClients.map((client, index) => {
-                const isCompleted = completedVisitsToday.has(client.id);
+                const isCompleted = completedVisitsOnRouteDate.has(client.id);
+                const isFutureRoute = routeDate > getLocalISODate();
+                
                 return (
-                  <div 
+                  <motion.div 
                     key={client.id} 
-                    onClick={() => handleOpenReport(client)}
+                    onClick={() => {
+                      if (isFutureRoute && !isCompleted) {
+                        alert('A data da rota ainda não chegou. Não é possível preencher a visita antecipadamente.');
+                        return;
+                      }
+                      handleOpenReport(client);
+                    }}
+                    layout
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ 
+                      opacity: 1, 
+                      y: 0,
+                      scale: isCompleted ? [0.98, 1.02, 1] : 1,
+                    }}
+                    transition={{ duration: 0.3 }}
                     className={`border rounded-lg p-4 flex items-start transition-colors ${
                       isCompleted 
                         ? 'border-green-200 bg-green-50 cursor-default' 
-                        : 'border-gray-100 hover:border-primary/50 hover:bg-gray-50 cursor-pointer'
+                        : isFutureRoute
+                          ? 'border-gray-200 bg-gray-50 opacity-80 cursor-not-allowed'
+                          : 'border-gray-100 hover:border-primary/50 hover:bg-gray-50 cursor-pointer'
                     }`}
                   >
-                    <div className={`${isCompleted ? 'bg-green-500' : 'bg-primary/10 text-primary'} font-bold w-8 h-8 rounded-full flex items-center justify-center shrink-0 mr-4`}>
-                      {isCompleted ? <CheckCircle size={16} className="text-white" /> : index + 1}
-                    </div>
+                    <motion.div 
+                      layout
+                      className={`${isCompleted ? 'bg-green-500' : 'bg-primary/10 text-primary'} font-bold w-8 h-8 rounded-full flex items-center justify-center shrink-0 mr-4 text-white`}
+                    >
+                      <AnimatePresence mode="wait">
+                        {isCompleted ? (
+                          <motion.div
+                            key="checkmark"
+                            initial={{ scale: 0, rotate: -180 }}
+                            animate={{ scale: 1, rotate: 0 }}
+                            transition={{ type: "spring", stiffness: 200, damping: 10 }}
+                          >
+                            <CheckCircle size={16} className="text-white" />
+                          </motion.div>
+                        ) : (
+                          <motion.span
+                            key="number"
+                            initial={{ scale: 0 }}
+                            animate={{ scale: 1 }}
+                            exit={{ scale: 0 }}
+                            className="text-primary"
+                          >
+                            {index + 1}
+                          </motion.span>
+                        )}
+                      </AnimatePresence>
+                    </motion.div>
                     <div className="flex-1">
                       <div className="flex justify-between items-start">
-                        <h3 className={`font-semibold text-lg ${isCompleted ? 'text-green-800 line-through opacity-70' : 'text-gray-800'}`}>
-                          {client.name}
-                        </h3>
+                        <div className="flex items-center space-x-2">
+                          <h3 className={`font-semibold text-lg ${isCompleted ? 'text-green-800 line-through opacity-70' : 'text-gray-800'}`}>
+                            {client.name}
+                          </h3>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(client.address)}`, '_blank');
+                            }}
+                            className="p-1 text-blue-600 hover:bg-blue-100 rounded-md transition-colors"
+                            title="Abrir no Google Maps"
+                          >
+                            <MapPin size={20} />
+                          </button>
+                        </div>
                         {isCompleted && (
-                          <span className="text-xs font-bold bg-green-200 text-green-800 px-2 py-1 rounded-full">
+                          <motion.span 
+                            initial={{ opacity: 0, scale: 0.8 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            className="text-xs font-bold bg-green-200 text-green-800 px-2 py-1 rounded-full"
+                          >
                             Concluído
-                          </span>
+                          </motion.span>
                         )}
                       </div>
                       <p className={`mt-1 flex items-start ${isCompleted ? 'text-green-600/70' : 'text-gray-600'}`}>
@@ -360,8 +466,24 @@ export default function RoutesPage() {
                           Tel: {client.phone}
                         </p>
                       )}
+                      
+                      {isCompleted ? (
+                        <div className="mt-3 inline-flex items-center text-sm font-semibold text-green-600 bg-green-100 px-3 py-1 rounded-full">
+                          <CheckCircle size={16} className="mr-1" />
+                          Visita Concluída
+                        </div>
+                      ) : isFutureRoute ? (
+                        <div className="mt-3 text-sm text-gray-500 flex items-center font-medium bg-gray-100 px-3 py-1 rounded-full inline-flex">
+                          Disponível em {routeDate.split('-').reverse().join('/')}
+                        </div>
+                      ) : (
+                        <div className="mt-3 text-sm text-gray-500 flex items-center">
+                          <Camera size={16} className="mr-1" />
+                          Clique para registrar visita
+                        </div>
+                      )}
                     </div>
-                  </div>
+                  </motion.div>
                 );
               })}
             </div>
