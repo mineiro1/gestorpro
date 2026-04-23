@@ -1,0 +1,63 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Represents an Admin or Employee in the system.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "role": { "type": "string", "enum": ["admin", "employee"], "description": "Role of the user" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "adminId": { "type": "string", "description": "The ID of the admin this user belongs to. Admins have their own UID here." },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "role", "name", "phone", "adminId", "createdAt"]
+    },
+    "Client": {
+      "title": "Client",
+      "description": "Represents a client managed by an Admin.",
+      "type": "object",
+      "properties": {
+        "adminId": { "type": "string", "description": "Tenant ID (Admin UID)" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "address": { "type": "string" },
+        "monthlyFee": { "type": "number" },
+        "dueDate": { "type": "number", "description": "Day of the month (1-31)" },
+        "visitDays": { "type": "array", "items": { "type": "string" }, "description": "Days of the week to visit" },
+        "employeeId": { "type": "string", "description": "UID of the assigned employee, or empty string if unassigned" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["adminId", "name", "phone", "address", "monthlyFee", "dueDate", "visitDays", "createdAt"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "Represents a payment made by a client.",
+      "type": "object",
+      "properties": {
+        "adminId": { "type": "string" },
+        "clientId": { "type": "string" },
+        "amount": { "type": "number" },
+        "date": { "type": "string", "format": "date-time" },
+        "month": { "type": "number" },
+        "year": { "type": "number" }
+      },
+      "required": ["adminId", "clientId", "amount", "date", "month", "year"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Users collection"
+    },
+    "/clients/{clientId}": {
+      "schema": { "$ref": "#/entities/Client" },
+      "description": "Clients collection"
+    },
+    "/payments/{paymentId}": {
+      "schema": { "$ref": "#/entities/Payment" },
+      "description": "Payments collection"
+    }
+  }
+}
