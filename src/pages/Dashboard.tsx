@@ -186,8 +186,9 @@ export default function Dashboard() {
       if (!response.ok) throw new Error('Falha ao gerar link');
       const data = await response.json();
       if (data.init_point) window.location.href = data.init_point;
-    } catch (err) {
-      alert('Aviso: O pagamento no Mercado Pago ainda não está configurado. Verifique com o SuperAdmin.');
+    } catch (err: any) {
+      console.error(err);
+      alert('Houve um problema ao processar o pagamento: ' + err.message + '. Verifique com o SuperAdmin.');
     }
   };
 

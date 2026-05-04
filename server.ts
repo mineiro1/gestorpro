@@ -4,6 +4,9 @@ import path from "path";
 import cors from "cors";
 import { MercadoPagoConfig, Preference, Payment } from "mercadopago";
 import admin from "firebase-admin";
+import * as dotenv from 'dotenv';
+
+dotenv.config();
 
 // Initialize Firebase Admin if Service Account is provided
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
@@ -38,9 +41,11 @@ async function startServer() {
       const { title, price, quantity, adminId, email } = req.body;
 
       if (!process.env.MP_ACCESS_TOKEN) {
+        console.error("No MP access token");
         return res.status(500).json({ error: "Mercado Pago access token not configured." });
       }
 
+      console.log("Token:", process.env.MP_ACCESS_TOKEN.substring(0, 5) + "...");
       const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN });
       const preference = new Preference(client);
 

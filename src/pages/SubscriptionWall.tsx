@@ -46,9 +46,9 @@ export default function SubscriptionWall() {
       if (data.init_point) {
         window.location.href = data.init_point;
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      alert('Aviso: O pagamento no Mercado Pago ainda não está configurado. Como SuperAdmin não inseriu a chave, você precisa atualizar a assinatura manualmente pelo painel do desenvolvedor.');
+      alert('Houve um problema ao processar o pagamento: ' + err.message + '. Verifique com o SuperAdmin.');
     }
   };
 
