@@ -6,11 +6,11 @@ async function run() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        title: "Test",
-        price: 10,
+        title: "Assinatura Mensal - GestãoPro",
+        price: "99.90",
         quantity: 1,
-        adminId: "test",
-        email: "test@test.com"
+        adminId: "9p1a2d2PGKg0vWCyj7wygUpJRwR2",
+        email: "servincg@gmail.com"
       })
     });
     console.log(res.status, await res.text());

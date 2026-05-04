@@ -5,6 +5,7 @@ import cors from "cors";
 import { MercadoPagoConfig, Preference, Payment } from "mercadopago";
 import admin from "firebase-admin";
 import * as dotenv from 'dotenv';
+import fs from 'fs';
 
 dotenv.config();
 
@@ -40,13 +41,14 @@ async function startServer() {
     try {
       const { title, price, quantity, adminId, email } = req.body;
 
-      if (!process.env.MP_ACCESS_TOKEN) {
+      const mpToken = process.env.MP_ACCESS_TOKEN || "APP_USR-5520671839390863-031622-4f2fede32936291cc0567aebae0a319e-1434591190";
+      
+      if (!mpToken) {
         console.error("No MP access token");
         return res.status(500).json({ error: "Mercado Pago access token not configured." });
       }
 
-      console.log("Token:", process.env.MP_ACCESS_TOKEN.substring(0, 5) + "...");
-      const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN });
+      const client = new MercadoPagoConfig({ accessToken: mpToken });
       const preference = new Preference(client);
 
       const response = await preference.create({
@@ -61,25 +63,27 @@ async function startServer() {
             }
           ],
           payer: {
-            email: email,
+            email: email || "admin@gestaopro.com",
             name: "Cliente",
             surname: "GestãoPro",
           },
           external_reference: adminId, // We use this to identify the user on webhook
           back_urls: {
-            success: `${process.env.PUBLIC_URL || req.headers.origin}/`,
-            failure: `${process.env.PUBLIC_URL || req.headers.origin}/`,
-            pending: `${process.env.PUBLIC_URL || req.headers.origin}/`
+            success: `${process.env.PUBLIC_URL || req.headers.origin || 'https://gestaopro.com'}/`,
+            failure: `${process.env.PUBLIC_URL || req.headers.origin || 'https://gestaopro.com'}/`,
+            pending: `${process.env.PUBLIC_URL || req.headers.origin || 'https://gestaopro.com'}/`
           },
           auto_return: "approved",
-          notification_url: `${process.env.PUBLIC_URL || req.headers.origin}/api/mp-webhook`
+          notification_url: `${process.env.PUBLIC_URL || req.headers.origin || 'https://gestaopro.com'}/api/mp-webhook`
         }
       });
 
+      fs.appendFileSync('mp-debug.log', `Success: ${response.id}\n`);
       res.json({ id: response.id, init_point: response.init_point });
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      res.status(500).json({ error: "Failed to create preference" });
+      fs.appendFileSync('mp-debug.log', `Error: ${error?.message || JSON.stringify(error)}\n`);
+      res.status(500).json({ error: error?.message || "Failed to create preference" });
     }
   });
 
@@ -88,13 +92,15 @@ async function startServer() {
     const { "data.id": dataId, type } = req.query;
 
     if (type === "payment" && dataId) {
-      if (!process.env.MP_ACCESS_TOKEN || !admin.apps.length) {
+      const mpToken = process.env.MP_ACCESS_TOKEN || "APP_USR-5520671839390863-031622-4f2fede32936291cc0567aebae0a319e-1434591190";
+
+      if (!mpToken || !admin.apps.length) {
         console.error("Missing MP token or Firebase Admin is not initialized.");
         return res.status(200).send("OK. But not processed due to missing config.");
       }
 
       try {
-        const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN });
+        const client = new MercadoPagoConfig({ accessToken: mpToken });
         const paymentDetails = new Payment(client);
         const paymentInfo = await paymentDetails.get({ id: dataId as string });
         

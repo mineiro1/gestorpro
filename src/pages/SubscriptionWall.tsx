@@ -39,7 +39,8 @@ export default function SubscriptionWall() {
       });
 
       if (!response.ok) {
-        throw new Error('Falha ao gerar link de pagamento');
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || errData.message || 'Falha ao gerar link de pagamento');
       }
 
       const data = await response.json();

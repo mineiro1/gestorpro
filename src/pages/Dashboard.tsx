@@ -183,7 +183,10 @@ export default function Dashboard() {
         })
       });
 
-      if (!response.ok) throw new Error('Falha ao gerar link');
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || errData.message || 'Falha ao gerar link');
+      }
       const data = await response.json();
       if (data.init_point) window.location.href = data.init_point;
     } catch (err: any) {
