@@ -7,9 +7,9 @@ async function run() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         title: "Assinatura Mensal - GestãoPro",
-        price: "99.90",
+        price: 99.90,
         quantity: 1,
-        adminId: "9p1a2d2PGKg0vWCyj7wygUpJRwR2",
+        adminId: undefined,
         email: "servincg@gmail.com"
       })
     });

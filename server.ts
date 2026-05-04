@@ -36,6 +36,11 @@ async function startServer() {
   app.use(cors());
   app.use(express.json());
 
+  app.use((req, res, next) => {
+    fs.appendFileSync('mp-debug.log', `[${req.method}] ${req.url}\n`);
+    next();
+  });
+
   // API Routes
   app.post("/api/create-preference", async (req, res) => {
     try {
