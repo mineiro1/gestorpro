@@ -46,7 +46,10 @@ async function startServer() {
     try {
       const { title, price, quantity, adminId, email } = req.body;
 
-      const mpToken = process.env.MP_ACCESS_TOKEN || "APP_USR-5520671839390863-031622-4f2fede32936291cc0567aebae0a319e-1434591190";
+      let mpToken = process.env.MP_ACCESS_TOKEN;
+      if (!mpToken || mpToken.length < 40) {
+        mpToken = "APP_USR-5520671839390863-031622-4f2fede32936291cc0567aebae0a319e-1434591190";
+      }
       
       if (!mpToken) {
         console.error("No MP access token");
@@ -97,7 +100,10 @@ async function startServer() {
     const { "data.id": dataId, type } = req.query;
 
     if (type === "payment" && dataId) {
-      const mpToken = process.env.MP_ACCESS_TOKEN || "APP_USR-5520671839390863-031622-4f2fede32936291cc0567aebae0a319e-1434591190";
+      let mpToken = process.env.MP_ACCESS_TOKEN;
+      if (!mpToken || mpToken.length < 40) {
+        mpToken = "APP_USR-5520671839390863-031622-4f2fede32936291cc0567aebae0a319e-1434591190";
+      }
 
       if (!mpToken || !admin.apps.length) {
         console.error("Missing MP token or Firebase Admin is not initialized.");

@@ -39,8 +39,19 @@ export default function SubscriptionWall() {
       });
 
       if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || errData.message || 'Falha ao gerar link de pagamento');
+        let errMsg = 'Falha ao gerar link de pagamento';
+        try {
+          const text = await response.text();
+          try {
+            const errData = JSON.parse(text);
+            errMsg = errData.error || errData.message || errMsg;
+          } catch(e) {
+            errMsg = `Erro no servidor (${response.status}): ${text.substring(0, 50)}`;
+          }
+        } catch (e) {
+          // ignore
+        }
+        throw new Error(errMsg);
       }
 
       const data = await response.json();
