@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
-import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, setDoc, serverTimestamp, Timestamp } from 'firebase/firestore';
 
 export default function Register() {
   const [name, setName] = useState('');
@@ -18,24 +18,37 @@ export default function Register() {
     setLoading(true);
 
     try {
-      const cleanPhone = phone.replace(/\D/g, '');
-      if (cleanPhone.length < 10) {
-        throw new Error('Telefone inválido.');
+      let email = phone.trim();
+      let cleanPhone = phone.replace(/\D/g, '');
+      
+      if (!email.includes('@')) {
+        if (cleanPhone.length < 10) {
+          throw new Error('Telefone inválido.');
+        }
+        email = `${cleanPhone}@gestaopro.com`;
+      } else {
+        // Since it's an email, we don't have a phone number, just keep it empty or same as email.
+        cleanPhone = '';
       }
-      const email = `${cleanPhone}@gestaopro.com`;
       
       const userCredential = await createUserWithEmailAndPassword(auth, email, password);
       const user = userCredential.user;
 
       // Create user document in Firestore
       try {
+        const trialExpiry = new Date();
+        trialExpiry.setDate(trialExpiry.getDate() + 7); // 7 days trial
+        
         await setDoc(doc(db, 'users', user.uid), {
           uid: user.uid,
           role: 'admin',
           name,
           phone: cleanPhone,
+          email: email,
           adminId: user.uid, // Admin is their own admin
           createdAt: serverTimestamp(),
+          subscriptionStatus: 'trial',
+          subscriptionExpiresAt: Timestamp.fromDate(trialExpiry),
         });
       } catch (firestoreError) {
         handleFirestoreError(firestoreError, OperationType.CREATE, `users/${user.uid}`);
@@ -47,7 +60,10 @@ export default function Register() {
       if (err.message === 'Telefone inválido.') {
         setError(err.message);
       } else if (err.code === 'auth/email-already-in-use') {
-        setError('Este telefone já está cadastrado.');
+        setError('Este telefone ou e-mail já está em uso. Redirecionando para o login...');
+        setTimeout(() => {
+          navigate('/login', { state: { phone: phone }});
+        }, 2000);
       } else if (err.code === 'auth/operation-not-allowed') {
         setError('Autenticação por E-mail/Senha não está ativada no Firebase.');
       } else if (err.code === 'auth/network-request-failed') {
@@ -92,10 +108,10 @@ export default function Register() {
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Número de Telefone
+              Número de Telefone (WhatsApp)
             </label>
             <input
-              type="tel"
+              type="text"
               required
               value={phone}
               onChange={(e) => setPhone(e.target.value)}

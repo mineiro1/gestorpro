@@ -20,6 +20,7 @@ export default function EmployeeForm() {
     name: '',
     phone: '',
     password: '',
+    role: 'employee',
   });
   const [originalPassword, setOriginalPassword] = useState('');
   const [originalPhone, setOriginalPhone] = useState('');
@@ -35,7 +36,8 @@ export default function EmployeeForm() {
     const fetchData = async () => {
       try {
         // Fetch clients available for this admin
-        const clientsQuery = query(collection(db, 'clients'), where('adminId', '==', userProfile.uid));
+        const adminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
+        const clientsQuery = query(collection(db, 'clients'), where('adminId', '==', adminId));
         const clientsSnap = await getDocs(clientsQuery);
         
         const allClients = clientsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -50,6 +52,7 @@ export default function EmployeeForm() {
               name: data.name || '',
               phone: data.phone || '',
               password: data.password || '', // Load password if it exists
+              role: data.role === 'manager' ? 'manager' : 'employee',
             });
             setOriginalPassword(data.password || '');
             setOriginalPhone(data.phone || '');
@@ -110,7 +113,7 @@ export default function EmployeeForm() {
         // Create Firestore User
         await setDoc(doc(db, 'users', employeeUid), {
           uid: employeeUid,
-          role: 'employee',
+          role: formData.role,
           name: formData.name,
           phone: cleanPhone,
           password: formData.password, // Store password to allow future edits
@@ -154,6 +157,7 @@ export default function EmployeeForm() {
           name: formData.name,
           phone: cleanPhone,
           password: formData.password,
+          role: formData.role,
         });
       }
 
@@ -226,6 +230,34 @@ export default function EmployeeForm() {
                 onChange={e => setFormData({...formData, phone: e.target.value})}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none"
               />
+            </div>
+
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-2">Perfil de Acesso</label>
+              <div className="flex gap-4">
+                <label className="flex items-center space-x-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="role"
+                    value="employee"
+                    checked={formData.role === 'employee'}
+                    onChange={(e) => setFormData({ ...formData, role: e.target.value })}
+                    className="form-radio text-primary"
+                  />
+                  <span>Colaborador Padrão</span>
+                </label>
+                <label className="flex items-center space-x-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="role"
+                    value="manager"
+                    checked={formData.role === 'manager'}
+                    onChange={(e) => setFormData({ ...formData, role: e.target.value })}
+                    className="form-radio text-primary"
+                  />
+                  <span>Gestor (Acesso Amplo, Sem Ações Críticas)</span>
+                </label>
+              </div>
             </div>
 
             <div className="md:col-span-2">

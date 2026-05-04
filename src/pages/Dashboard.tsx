@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, where, getDocs } from 'firebase/firestore';
-import { Users, DollarSign, AlertCircle, CheckCircle, Clock } from 'lucide-react';
+import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore';
+import { Users, DollarSign, AlertCircle, CheckCircle, Clock, CreditCard } from 'lucide-react';
+import EmployeeMap from '../components/EmployeeMap';
 
 interface DashboardStats {
   totalClients: number;
@@ -34,8 +35,12 @@ export default function Dashboard() {
         const currentYear = currentDate.getFullYear();
         const currentDay = currentDate.getDate();
 
+        const adminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
         // Fetch Clients
-        const clientsQuery = query(collection(db, 'clients'), where('adminId', '==', userProfile.uid));
+        let clientsQuery = query(collection(db, 'clients'), where('adminId', '==', adminId));
+        if (userProfile.role === 'employee') {
+          clientsQuery = query(collection(db, 'clients'), where('adminId', '==', adminId), where('employeeId', '==', userProfile.uid));
+        }
         const clientsSnap = await getDocs(clientsQuery);
         
         let totalClients = 0;
@@ -82,21 +87,48 @@ export default function Dashboard() {
           }
         });
 
-        // Fetch Payments for current month
-        const paymentsQuery = query(
-          collection(db, 'payments'),
-          where('adminId', '==', userProfile.uid),
-          where('month', '==', currentMonth),
-          where('year', '==', currentYear)
-        );
-        const paymentsSnap = await getDocs(paymentsQuery);
-        
+        // Fetch One-Off Jobs (Avulsos)
         let receivedThisMonth = 0;
+        const currentMonthString = `${currentYear}-${currentMonth.toString().padStart(2, '0')}`;
+        let jobsQuery = query(collection(db, 'oneoffjobs'), where('adminId', '==', adminId));
+        if (userProfile.role === 'employee') {
+          jobsQuery = query(collection(db, 'oneoffjobs'), where('adminId', '==', adminId), where('employeeId', '==', userProfile.uid));
+        }
+        const jobsSnap = await getDocs(jobsQuery);
 
-        paymentsSnap.docs.forEach(doc => {
+        jobsSnap.docs.forEach(doc => {
           const data = doc.data();
-          receivedThisMonth += data.amount || 0;
+          if (data.status === 'pending' || data.status === 'needs_return') {
+            totalToReceive += data.price || 0;
+          } else if (data.status === 'completed') {
+            if (data.date && data.date.startsWith(currentMonthString)) {
+              receivedThisMonth += data.price || 0;
+            } else if (data.updatedAt) {
+              // Fallback to updatedAt if date format doesn't match
+              const dateObj = data.updatedAt.toDate ? data.updatedAt.toDate() : new Date(data.updatedAt);
+              if (dateObj.getMonth() + 1 === currentMonth && dateObj.getFullYear() === currentYear) {
+                receivedThisMonth += data.price || 0;
+              }
+            }
+          }
         });
+
+        // Fetch Payments for current month (Admins only for now or we must adjust rules)
+        
+        if (userProfile.role === 'admin' || userProfile.role === 'manager') {
+          const paymentsQuery = query(
+            collection(db, 'payments'),
+            where('adminId', '==', adminId),
+            where('month', '==', currentMonth),
+            where('year', '==', currentYear)
+          );
+          const paymentsSnap = await getDocs(paymentsQuery);
+          
+          paymentsSnap.docs.forEach(doc => {
+            const data = doc.data();
+            receivedThisMonth += data.amount || 0;
+          });
+        }
 
         setStats({
           totalClients,
@@ -125,6 +157,40 @@ export default function Dashboard() {
     return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
   };
 
+  const isTrial = userProfile?.role === 'admin' && userProfile?.subscriptionStatus === 'trial';
+
+  const handlePay = async () => {
+    try {
+      let price = 99.90;
+      try {
+        const settingsSnap = await getDoc(doc(db, 'settings', 'platform'));
+        if (settingsSnap.exists() && settingsSnap.data().monthlyPrice) {
+          price = settingsSnap.data().monthlyPrice;
+        }
+      } catch (e) {
+        console.error('Failed to get price', e);
+      }
+
+      const response = await fetch('/api/create-preference', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'Assinatura Mensal - GestãoPro',
+          price: price,
+          quantity: 1,
+          adminId: userProfile?.adminId,
+          email: userProfile?.email || 'admin@gestaopro.com'
+        })
+      });
+
+      if (!response.ok) throw new Error('Falha ao gerar link');
+      const data = await response.json();
+      if (data.init_point) window.location.href = data.init_point;
+    } catch (err) {
+      alert('Aviso: O pagamento no Mercado Pago ainda não está configurado. Verifique com o SuperAdmin.');
+    }
+  };
+
   const statCards = [
     { title: 'Total de Clientes', value: stats.totalClients, icon: Users, color: 'bg-blue-500' },
     { title: 'Valor Total a Receber', value: formatCurrency(stats.totalToReceive), icon: DollarSign, color: 'bg-primary' },
@@ -135,6 +201,25 @@ export default function Dashboard() {
 
   return (
     <div>
+      {isTrial && (
+        <div className="bg-gradient-to-r from-yellow-100 to-yellow-50 border border-yellow-200 rounded-xl p-4 flex flex-col sm:flex-row items-center justify-between shadow-sm mb-6">
+          <div className="flex items-center mb-4 sm:mb-0">
+            <Clock className="text-yellow-600 mr-3 hidden sm:block" size={24} />
+            <div>
+              <h3 className="font-bold text-yellow-800">Você está no período de teste (7 dias)</h3>
+              <p className="text-sm text-yellow-700">Evite a interrupção do serviço. Assine agora e garanta acesso contínuo.</p>
+            </div>
+          </div>
+          <button
+            onClick={handlePay}
+            className="w-full sm:w-auto px-6 py-2 bg-yellow-500 hover:bg-yellow-600 text-white font-semibold rounded-lg shadow-sm transition-colors flex items-center justify-center whitespace-nowrap"
+          >
+            <CreditCard size={18} className="mr-2" />
+            Assinar Agora
+          </button>
+        </div>
+      )}
+
       <h1 className="text-2xl font-bold text-gray-800 mb-6">Dashboard</h1>
       
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -177,6 +262,10 @@ export default function Dashboard() {
             <p className="text-sm text-red-600 mt-4 font-semibold italic">... e mais {clientsWithoutVisits.length - 9} clientes.</p>
           )}
         </div>
+      )}
+
+      {(userProfile?.role === 'admin' || userProfile?.role === 'manager') && (
+        <EmployeeMap />
       )}
     </div>
   );

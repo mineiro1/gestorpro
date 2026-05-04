@@ -121,7 +121,9 @@ export default function SuppliesForm() {
       alert('Erro ao salvar estoque.');
     }
   };
-  const handleSend = () => {
+  const [sendingMessage, setSendingMessage] = useState(false);
+
+  const handleSend = async () => {
     if (!client || !client.phone) {
       alert('Cliente não possui telefone cadastrado.');
       return;
@@ -147,79 +149,78 @@ export default function SuppliesForm() {
     const settings = userProfile?.whatsappSettings;
     
     if (settings?.useMetaApi && settings.metaToken && settings.metaPhoneNumberId) {
-      const sendMeta = async () => {
-        try {
-          if (!confirm(`Deseja enviar a lista via API Oficial (Meta) para ${client.name}?`)) return;
-
-          const url = `https://graph.facebook.com/v19.0/${settings.metaPhoneNumberId}/messages`;
-          const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${settings.metaToken}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              messaging_product: "whatsapp",
-              recipient_type: "individual",
-              to: number,
-              type: "text",
-              text: { preview_url: false, body: message }
-            })
-          });
-          
-          if (!response.ok) {
-            const err = await response.json();
-            throw new Error(`Erro na API (${response.status}): ${err.error?.message || JSON.stringify(err)}`);
-          }
-          alert('Mensagem de insumos enviada com sucesso (Cloud API)!');
-          navigate('/clients');
-        } catch (error: any) {
-          console.error(error);
-          alert(`Falha ao enviar via API Oficial. \n\nLembre-se: Textos livres exigem que o cliente tenha te enviado mensagem nas ultimas 24h.\n\nDetalhe: ${error.message}\n\nAbrindo WhatsApp Web como alternativa.`);
-          const encodedMessage = encodeURIComponent(message);
-          window.open(`https://wa.me/${number}?text=${encodedMessage}`, '_blank');
+      setSendingMessage(true);
+      try {
+        const url = `https://graph.facebook.com/v19.0/${settings.metaPhoneNumberId}/messages`;
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${settings.metaToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            messaging_product: "whatsapp",
+            recipient_type: "individual",
+            to: number,
+            type: "text",
+            text: { preview_url: false, body: message }
+          })
+        });
+        
+        if (!response.ok) {
+          const err = await response.json();
+          throw new Error(`Erro na API (${response.status}): ${err.error?.message || JSON.stringify(err)}`);
         }
-      };
-      sendMeta();
+        alert('Mensagem de insumos enviada com sucesso via API Oficial (Meta)!');
+        navigate('/clients');
+      } catch (error: any) {
+        console.error(error);
+        alert(`Falha ao enviar via API Oficial. Detalhe: ${error.message}`);
+      } finally {
+        setSendingMessage(false);
+      }
     }
     else if (settings?.useEvolutionApi && settings.evolutionApiUrl && settings.evolutionApiKey && settings.evolutionInstanceName) {
-      const sendEvolution = async () => {
-        try {
-          const baseUrl = settings.evolutionApiUrl.replace(/\/$/, '');
-          const url = `${baseUrl}/message/sendText/${settings.evolutionInstanceName}`;
-          
-          if (!confirm(`Deseja enviar a lista via Evolution API para ${client.name}?`)) return;
-
-          const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'apikey': settings.evolutionApiKey
+      setSendingMessage(true);
+      try {
+        const baseUrl = settings.evolutionApiUrl.replace(/\/$/, '');
+        const url = `${baseUrl}/message/sendText/${settings.evolutionInstanceName}`;
+        
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': settings.evolutionApiKey
+          },
+          body: JSON.stringify({
+            number: number,
+            text: message,
+            textMessage: {
+              text: message
             },
-            body: JSON.stringify({
-              number: number,
-              options: { delay: 1000, presence: "composing" },
-              textMessage: { text: message }
-            })
-          });
-          
-          if (!response.ok) {
-            throw new Error(`Erro na API (${response.status})`);
-          }
-          alert('Mensagem de insumos enviada com sucesso!');
-          navigate('/clients');
-        } catch (error) {
-          console.error(error);
-          alert('Falha ao enviar via API. Abrindo WhatsApp Web como alternativa.');
-          const encodedMessage = encodeURIComponent(message);
-          window.open(`https://wa.me/${number}?text=${encodedMessage}`, '_blank');
+            options: {
+              delay: 1000,
+              presence: "composing"
+            }
+          })
+        });
+        
+        if (!response.ok) {
+          throw new Error(`Erro na API (${response.status})`);
         }
-      };
-      
-      sendEvolution();
+        alert('Mensagem de insumos enviada com sucesso via Evolution API!');
+        navigate('/clients');
+      } catch (error: any) {
+        console.error(error);
+        alert(`Falha ao enviar via Evolution API. Detalhe: ${error.message}`);
+      } finally {
+        setSendingMessage(false);
+      }
     } else {
+      // Fallback to Web WhatsApp natively (synchronous to avoid popup block)
       const encodedMessage = encodeURIComponent(message);
       window.open(`https://wa.me/${number}?text=${encodedMessage}`, '_blank');
+      navigate('/clients');
     }
   };
 
@@ -296,10 +297,11 @@ export default function SuppliesForm() {
           <div className="mt-8 flex justify-end">
             <button
               onClick={handleSend}
-              className="flex items-center px-6 py-3 bg-green-500 text-white font-bold rounded-lg hover:bg-green-600 transition-colors shadow-sm"
+              disabled={sendingMessage}
+              className="flex items-center px-6 py-3 bg-green-500 text-white font-bold rounded-lg hover:bg-green-600 transition-colors shadow-sm disabled:opacity-50"
             >
               <Send size={20} className="mr-2" />
-              Enviar Lista via WhatsApp
+              {sendingMessage ? 'Enviando...' : 'Enviar Lista via WhatsApp'}
             </button>
           </div>
         </div>

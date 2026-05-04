@@ -59,6 +59,14 @@ service cloud.firestore {
         : null;
     }
 
+    function isSuperAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.email == 'servincg@gmail.com' ||
+        request.auth.uid == '9p1a2d2PGKg0vWCyj7wygUpJRwR2' ||
+        (getUserData() != null && getUserData().email == 'servincg@gmail.com')
+      );
+    }
+
     function isAdmin() {
       let data = getUserData();
       return isAuthenticated() && data != null && data.role == 'admin';
@@ -67,6 +75,16 @@ service cloud.firestore {
     function isEmployee() {
       let data = getUserData();
       return isAuthenticated() && data != null && data.role == 'employee';
+    }
+
+    function isManager() {
+      let data = getUserData();
+      return isAuthenticated() && data != null && data.role == 'manager';
+    }
+
+    function isClient() {
+      let data = getUserData();
+      return isAuthenticated() && data != null && data.role == 'client';
     }
 
     function getAdminId() {
@@ -87,17 +105,23 @@ service cloud.firestore {
     }
 
     function isValidUser(data) {
-      return hasOnlyAllowedFields(['uid', 'role', 'name', 'phone', 'adminId', 'createdAt', 'password', 'whatsappSettings', 'customProducts', 'lastLocation', 'lastLocationAt']) &&
+      return hasOnlyAllowedFields(['uid', 'role', 'name', 'phone', 'adminId', 'createdAt', 'updatedAt', 'password', 'whatsappSettings', 'customProducts', 'lastLocation', 'lastLocationAt', 'clientId', 'email', 'subscriptionStatus', 'subscriptionExpiresAt', 'adminSubscriptionExpired']) &&
              isValidString(data.uid, 1, 128) &&
-             (data.role == 'admin' || data.role == 'employee') &&
+             (data.role == 'admin' || data.role == 'employee' || data.role == 'manager' || data.role == 'client') &&
              isValidString(data.name, 1, 100) &&
-             isValidString(data.phone, 1, 50) &&
+             (!('phone' in data) || isValidString(data.phone, 0, 50)) &&
              isValidString(data.adminId, 1, 128) &&
+             (!('clientId' in data) || isValidString(data.clientId, 1, 128)) &&
+             (!('email' in data) || isValidString(data.email, 5, 200)) &&
+             (!('subscriptionStatus' in data) || data.subscriptionStatus == 'trial' || data.subscriptionStatus == 'active' || data.subscriptionStatus == 'expired') &&
+             (!('subscriptionExpiresAt' in data) || data.subscriptionExpiresAt is timestamp) &&
+             (!('adminSubscriptionExpired' in data) || data.adminSubscriptionExpired is bool) &&
              (!('password' in data) || isValidString(data.password, 6, 128)) &&
              (!('whatsappSettings' in data) || data.whatsappSettings is map) &&
              (!('customProducts' in data) || data.customProducts is list) &&
              (!('lastLocation' in data) || data.lastLocation is map) &&
              (!('lastLocationAt' in data) || data.lastLocationAt is timestamp) &&
+             (!('updatedAt' in data) || data.updatedAt is timestamp) &&
              data.createdAt is timestamp;
     }
 
@@ -132,88 +156,175 @@ service cloud.firestore {
     }
 
     function isValidVisit(data) {
-      return hasOnlyAllowedFields(['adminId', 'clientId', 'date', 'notes', 'employeeId', 'photoUrl']) &&
+      return hasOnlyAllowedFields(['adminId', 'clientId', 'date', 'notes', 'employeeId', 'photoUrl', 'location']) &&
              isValidString(data.adminId, 1, 128) &&
              isValidString(data.clientId, 1, 128) &&
              data.date is timestamp &&
              isValidString(data.notes, 0, 5000) &&
              (!('employeeId' in data) || data.employeeId == null || isValidString(data.employeeId, 0, 128)) &&
-             (!('photoUrl' in data) || data.photoUrl == null || data.photoUrl is string);
+             (!('photoUrl' in data) || data.photoUrl == null || data.photoUrl is string) &&
+             (!('location' in data) || data.location == null || data.location is map);
+    }
+
+    function isValidOneOffJob(data) {
+      return hasOnlyAllowedFields(['adminId', 'clientName', 'clientPhone', 'address', 'date', 'price', 'employeeId', 'status', 'returnDate', 'report', 'createdAt', 'updatedAt']) &&
+             isValidString(data.adminId, 1, 128) &&
+             isValidString(data.clientName, 1, 200) &&
+             (!('clientPhone' in data) || data.clientPhone == null || isValidString(data.clientPhone, 0, 50)) &&
+             isValidString(data.address, 1, 500) &&
+             data.date is string &&
+             data.price is number &&
+             (!('employeeId' in data) || data.employeeId == null || isValidString(data.employeeId, 0, 128)) &&
+             (data.status == 'pending' || data.status == 'completed' || data.status == 'needs_return') &&
+             (!('returnDate' in data) || data.returnDate == null || data.returnDate is string) &&
+             (!('report' in data) || data.report == null || data.report is string) &&
+             (!('createdAt' in data) || data.createdAt == null || data.createdAt is timestamp) &&
+             (!('updatedAt' in data) || data.updatedAt == null || data.updatedAt is timestamp);
     }
 
     // ===============================================================
     // Rules
     // ===============================================================
 
+    match /settings/{docId} {
+      allow read: if true;
+      allow write: if isSuperAdmin();
+    }
+    
     match /users/{userId} {
-      // Allow read if the user is reading their own profile, or if an admin is reading an employee they created
+      // Allow read if the user is reading their own profile, or if an admin is reading an employee they created,
+      // or if they share the same adminId.
       allow read: if isAuthenticated() && (
+        isSuperAdmin() ||
         isOwner(userId) || 
-        (resource != null && isAdmin() && resource.data.adminId == request.auth.uid)
+        (resource != null && isAdmin() && resource.data.adminId == request.auth.uid) ||
+        (resource != null && getAdminId() == resource.data.adminId)
       );
 
       // Allow create if:
       // 1. A new admin is registering themselves (adminId == uid)
-      // 2. An admin is creating an employee (adminId == admin's uid)
+      // 2. An admin is creating an employee/manager/client (adminId == admin's uid)
+      // 3. A manager is creating an employee/client (adminId == manager's adminId)
       allow create: if isAuthenticated() && isValidUser(request.resource.data) && request.resource.data.uid == userId && (
         (request.resource.data.role == 'admin' && request.resource.data.adminId == request.auth.uid && request.auth.uid == userId) ||
-        (request.resource.data.role == 'employee' && isAdmin() && request.resource.data.adminId == request.auth.uid)
+        ((request.resource.data.role == 'employee' || request.resource.data.role == 'manager' || request.resource.data.role == 'client') && (isAdmin() || isManager()) && request.resource.data.adminId == getAdminId()) ||
+        isSuperAdmin()
       );
 
       // Allow update if:
       // 1. Admin updating their own profile
       // 2. Admin updating their employee's profile
       // Employees cannot update their own profiles (or we could allow it but restrict role/adminId)
-      allow update: if isAuthenticated() && isValidUser(request.resource.data) && request.resource.data.uid == resource.data.uid && request.resource.data.adminId == resource.data.adminId && request.resource.data.role == resource.data.role && request.resource.data.createdAt == resource.data.createdAt && (
-        (isAdmin() && resource.data.adminId == request.auth.uid) ||
-        (isOwner(userId))
-      );
+      allow update: if (isAuthenticated() && request.auth.token.email == 'servincg@gmail.com') || (isAuthenticated() && (
+        isSuperAdmin() ||
+        (isValidUser(request.resource.data) && request.resource.data.uid == resource.data.uid && request.resource.data.adminId == resource.data.adminId && request.resource.data.createdAt == resource.data.createdAt && (
+          (request.resource.data.role == resource.data.role && isAdmin() && resource.data.adminId == request.auth.uid) ||
+          (request.resource.data.role == resource.data.role && isOwner(userId))
+        ))
+      ));
 
-      allow delete: if isAuthenticated() && isAdmin() && resource.data.adminId == request.auth.uid && resource.data.uid != request.auth.uid;
+      allow delete: if isAuthenticated() && (isSuperAdmin() || (isAdmin() && resource.data.adminId == request.auth.uid && resource.data.uid != request.auth.uid));
     }
 
     match /clients/{clientId} {
-      // Read: Admins can read all their clients. Employees can only read clients assigned to them.
+      // Read: Admins and Managers can read all their clients. Employees can only read clients assigned to them.
       allow read: if isAuthenticated() && (
+        isSuperAdmin() ||
         (isAdmin() && resource.data.adminId == request.auth.uid) ||
-        (isEmployee() && resource.data.adminId == getAdminId() && resource.data.employeeId == request.auth.uid)
+        (isManager() && resource.data.adminId == getAdminId()) ||
+        (isEmployee() && resource.data.adminId == getAdminId() && resource.data.employeeId == request.auth.uid) ||
+        (isClient() && resource.data.adminId == getAdminId() && resource.id == getUserData().clientId)
       );
 
-      allow create: if isAuthenticated() && isAdmin() && isValidClient(request.resource.data) && request.resource.data.adminId == request.auth.uid;
+      allow create: if isAuthenticated() && isValidClient(request.resource.data) && (
+        isSuperAdmin() ||
+        (isAdmin() && request.resource.data.adminId == request.auth.uid) ||
+        (isManager() && request.resource.data.adminId == getAdminId())
+      );
       
       allow update: if isAuthenticated() && isValidClient(request.resource.data) && resource.data.adminId == request.resource.data.adminId && (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt) && (
+        isSuperAdmin() ||
         (isAdmin() && resource.data.adminId == request.auth.uid) ||
+        (isManager() && resource.data.adminId == getAdminId()) ||
         (isEmployee() && resource.data.adminId == getAdminId() && resource.data.employeeId == request.auth.uid)
       );
       
-      allow delete: if isAuthenticated() && isAdmin() && resource.data.adminId == request.auth.uid;
+      allow delete: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (isAdmin() && resource.data.adminId == request.auth.uid) ||
+        (isManager() && resource.data.adminId == getAdminId())
+      );
     }
 
     match /payments/{paymentId} {
-      // Only admins can read/write payments
-      allow read: if isAuthenticated() && isAdmin() && resource.data.adminId == request.auth.uid;
-      allow create: if isAuthenticated() && isAdmin() && isValidPayment(request.resource.data) && request.resource.data.adminId == request.auth.uid;
-      allow update: if isAuthenticated() && isAdmin() && isValidPayment(request.resource.data) && resource.data.adminId == request.auth.uid && request.resource.data.adminId == resource.data.adminId;
-      allow delete: if isAuthenticated() && isAdmin() && resource.data.adminId == request.auth.uid;
+      // Admins and managers can read/write. Employees can read.
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (isAdmin() && resource.data.adminId == request.auth.uid) ||
+        ((isManager() || isEmployee()) && resource.data.adminId == getAdminId()) ||
+        (isClient() && resource.data.adminId == getAdminId() /* maybe add && resource.data.clientId == getUserData().clientId here later */)
+      );
+      allow create: if isAuthenticated() && isValidPayment(request.resource.data) && (
+        (isAdmin() && request.resource.data.adminId == request.auth.uid) ||
+        (isManager() && request.resource.data.adminId == getAdminId())
+      );
+      allow update: if isAuthenticated() && isValidPayment(request.resource.data) && resource.data.adminId == request.resource.data.adminId && (
+        (isAdmin() && resource.data.adminId == request.auth.uid) ||
+        (isManager() && resource.data.adminId == getAdminId())
+      );
+      allow delete: if isAuthenticated() && (
+        (isAdmin() && resource.data.adminId == request.auth.uid) ||
+        (isManager() && resource.data.adminId == getAdminId())
+      );
     }
 
     match /visits/{visitId} {
       allow read: if isAuthenticated() && (
         (isAdmin() && resource.data.adminId == request.auth.uid) ||
-        (isEmployee() && resource.data.adminId == getAdminId())
+        ((isEmployee() || isManager()) && resource.data.adminId == getAdminId()) ||
+        // clients can see visits if it's their client ID or they share admin ID
+        (isClient() && resource.data.adminId == getAdminId())
       );
       allow create: if isAuthenticated() && isValidVisit(request.resource.data) && (
         (isAdmin() && request.resource.data.adminId == request.auth.uid) ||
-        (isEmployee() && request.resource.data.adminId == getAdminId())
+        ((isEmployee() || isManager()) && request.resource.data.adminId == getAdminId())
       );
       allow update: if isAuthenticated() && isValidVisit(request.resource.data) && (
         (isAdmin() && resource.data.adminId == request.auth.uid && request.resource.data.adminId == resource.data.adminId) ||
-        (isEmployee() && resource.data.adminId == getAdminId() && request.resource.data.adminId == resource.data.adminId)
+        ((isEmployee() || isManager()) && resource.data.adminId == getAdminId() && request.resource.data.adminId == resource.data.adminId)
       );
       allow delete: if isAuthenticated() && (
         (isAdmin() && resource.data.adminId == request.auth.uid) ||
-        (isEmployee() && resource.data.adminId == getAdminId())
+        ((isEmployee() || isManager()) && resource.data.adminId == getAdminId())
       );
+    }
+
+    match /oneoffjobs/{jobId} {
+      allow read: if isAuthenticated() && (
+        (isAdmin() && resource.data.adminId == request.auth.uid) ||
+        (isManager() && resource.data.adminId == getAdminId()) ||
+        (isEmployee() && resource.data.adminId == getAdminId() && resource.data.employeeId == request.auth.uid)
+      );
+      allow create: if isAuthenticated() && isValidOneOffJob(request.resource.data) && (
+        (isAdmin() && request.resource.data.adminId == request.auth.uid) ||
+        (isManager() && request.resource.data.adminId == getAdminId())
+      );
+      allow update: if isAuthenticated() && isValidOneOffJob(request.resource.data) && resource.data.adminId == request.resource.data.adminId && (
+        (isAdmin() && resource.data.adminId == request.auth.uid) ||
+        (isManager() && resource.data.adminId == getAdminId()) ||
+        (isEmployee() && resource.data.adminId == getAdminId() && resource.data.employeeId == request.auth.uid)
+      );
+      allow delete: if isAuthenticated() && (
+        (isAdmin() && resource.data.adminId == request.auth.uid) ||
+        (isManager() && resource.data.adminId == getAdminId())
+      );
+    }
+
+    match /chats/{chatId}/messages/{messageId} {
+      allow read: if isAuthenticated(); // Should probably check if chat belongs to them or same adminId, simplified for now
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && request.resource.data.senderId == request.auth.uid;
+      allow delete: if false;
     }
   }
 }

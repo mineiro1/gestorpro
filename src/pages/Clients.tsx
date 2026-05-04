@@ -6,7 +6,7 @@ import { collection, query, where, onSnapshot, deleteDoc, doc, addDoc, updateDoc
 import { Edit, Trash2, Plus, DollarSign, RotateCcw, Package, Search, MessageCircle } from 'lucide-react';
 
 export default function Clients() {
-  const { userProfile, isAdmin } = useAuth();
+  const { userProfile, isAdmin, isManager } = useAuth();
   const [clients, setClients] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
@@ -22,6 +22,13 @@ export default function Clients() {
   const [undoModalOpen, setUndoModalOpen] = useState(false);
   const [clientToUndo, setClientToUndo] = useState<any>(null);
 
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 20;
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm]);
+
   useEffect(() => {
     if (!userProfile?.uid) return;
 
@@ -29,8 +36,8 @@ export default function Clients() {
     
     let q = query(collection(db, 'clients'), where('adminId', '==', adminId));
     
-    // Se não for admin, filtra apenas os clientes atribuídos a este colaborador
-    if (!isAdmin) {
+    // Se não for admin nem gestor, filtra apenas os clientes atribuídos a este colaborador
+    if (!isAdmin && !isManager) {
       q = query(q, where('employeeId', '==', userProfile.uid));
     }
 
@@ -219,6 +226,9 @@ export default function Clients() {
     (client.phone && client.phone.includes(searchTerm))
   );
 
+  const totalPages = Math.ceil(filteredClients.length / itemsPerPage);
+  const paginatedClients = filteredClients.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+
   return (
     <div>
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 space-y-4 sm:space-y-0">
@@ -256,7 +266,7 @@ export default function Clients() {
               <tr className="bg-gray-50 border-b border-gray-200">
                 <th className="p-4 font-semibold text-gray-600">Nome</th>
                 <th className="p-4 font-semibold text-gray-600">Telefone</th>
-                {isAdmin && (
+                {(isAdmin || isManager) && (
                   <>
                     <th className="p-4 font-semibold text-gray-600">Mensalidade</th>
                     <th className="p-4 font-semibold text-gray-600">Vencimento</th>
@@ -266,18 +276,18 @@ export default function Clients() {
               </tr>
             </thead>
             <tbody>
-              {filteredClients.length === 0 ? (
+              {paginatedClients.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="p-4 text-center text-gray-500">
                     {clients.length === 0 ? 'Nenhum cliente cadastrado.' : 'Nenhum cliente encontrado na busca.'}
                   </td>
                 </tr>
               ) : (
-                filteredClients.map((client) => (
+                paginatedClients.map((client) => (
                   <tr key={client.id} className="border-b border-gray-100 hover:bg-gray-50">
                     <td className="p-4">{client.name}</td>
                     <td className="p-4">{client.phone}</td>
-                    {isAdmin && (
+                    {(isAdmin || isManager) && (
                       <>
                         <td className="p-4">R$ {client.monthlyFee?.toFixed(2)}</td>
                         <td className="p-4">
@@ -314,7 +324,7 @@ export default function Clients() {
                       >
                         <Package size={18} />
                       </Link>
-                      {isAdmin && (
+                      {(isAdmin || isManager) && (
                         <>
                           <button
                             onClick={() => handlePaymentClick(client)}
@@ -330,6 +340,9 @@ export default function Clients() {
                           >
                             <Edit size={18} />
                           </Link>
+                        </>
+                      )}
+                      {isAdmin && (
                           <button
                             onClick={() => handleDeleteClick(client)}
                             className="p-2 text-red-600 hover:bg-red-50 rounded-md transition-colors"
@@ -337,7 +350,6 @@ export default function Clients() {
                           >
                             <Trash2 size={18} />
                           </button>
-                        </>
                       )}
                     </td>
                   </tr>
@@ -346,6 +358,66 @@ export default function Clients() {
             </tbody>
           </table>
         </div>
+        
+        {totalPages > 1 && (
+          <div className="flex justify-between items-center p-4 border-t border-gray-100 bg-white">
+            <span className="text-sm text-gray-500">
+              Mostrando de {(currentPage - 1) * itemsPerPage + 1} a {Math.min(currentPage * itemsPerPage, filteredClients.length)} de {filteredClients.length} clientes
+            </span>
+            <div className="flex space-x-1">
+              <button
+                onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                disabled={currentPage === 1}
+                className={`px-3 py-1 rounded-md text-sm font-medium ${
+                  currentPage === 1 
+                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed' 
+                    : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                Anterior
+              </button>
+              
+              {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                // Logic to show pages around current page
+                let pageNum = i + 1;
+                if (totalPages > 5) {
+                  if (currentPage > 3) {
+                    pageNum = currentPage - 2 + i;
+                  }
+                  if (currentPage > totalPages - 2) {
+                    pageNum = totalPages - 4 + i;
+                  }
+                }
+                
+                return (
+                  <button
+                    key={pageNum}
+                    onClick={() => setCurrentPage(pageNum)}
+                    className={`px-3 py-1 rounded-md text-sm font-medium ${
+                      currentPage === pageNum
+                        ? 'bg-primary text-white border border-primary'
+                        : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    {pageNum}
+                  </button>
+                );
+              })}
+
+              <button
+                onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                disabled={currentPage === totalPages}
+                className={`px-3 py-1 rounded-md text-sm font-medium ${
+                  currentPage === totalPages 
+                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed' 
+                    : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                Próxima
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Delete Modal */}

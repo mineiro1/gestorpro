@@ -9,7 +9,7 @@ import { motion, AnimatePresence } from 'motion/react';
 const DAYS_OF_WEEK = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 
 export default function RoutesPage() {
-  const { userProfile, isAdmin } = useAuth();
+  const { userProfile, isAdmin, isManager } = useAuth();
   const [employees, setEmployees] = useState<any[]>([]);
   const [selectedEmployee, setSelectedEmployee] = useState('');
   const [selectedDay, setSelectedDay] = useState('');
@@ -24,6 +24,10 @@ export default function RoutesPage() {
   const [loading, setLoading] = useState(false);
   const [generated, setGenerated] = useState(false);
 
+  // Anticipation state
+  const [selectedForAnticipation, setSelectedForAnticipation] = useState<Set<string>>(new Set());
+  const [anticipating, setAnticipating] = useState(false);
+
   // Report Modal State
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [selectedClientForReport, setSelectedClientForReport] = useState<any>(null);
@@ -31,6 +35,10 @@ export default function RoutesPage() {
   const [reportPhoto, setReportPhoto] = useState<string | null>(null);
   const [submittingReport, setSubmittingReport] = useState(false);
   const [completedVisitsOnRouteDate, setCompletedVisitsOnRouteDate] = useState<Set<string>>(new Set());
+  
+  // Specific for One-Off Jobs (Avulsos)
+  const [needsReturn, setNeedsReturn] = useState(false);
+  const [returnDate, setReturnDate] = useState('');
 
   useEffect(() => {
     if (routeDate) {
@@ -45,13 +53,14 @@ export default function RoutesPage() {
   }, [routeDate]);
 
   useEffect(() => {
-    if (isAdmin && userProfile?.uid) {
+    if ((isAdmin || isManager) && userProfile?.uid) {
       const fetchEmployees = async () => {
         try {
+          const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
           const q = query(
             collection(db, 'users'),
-            where('adminId', '==', userProfile.uid),
-            where('role', '==', 'employee')
+            where('adminId', '==', adminId),
+            where('role', 'in', ['employee', 'manager'])
           );
           const snap = await getDocs(q);
           setEmployees(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
@@ -63,7 +72,7 @@ export default function RoutesPage() {
     } else if (userProfile?.uid) {
       setSelectedEmployee(userProfile.uid);
     }
-  }, [isAdmin, userProfile]);
+  }, [isAdmin, isManager, userProfile]);
 
   const handleGenerateRoute = async () => {
     if (!selectedEmployee || (!selectedDay && !routeDate) || !userProfile) return;
@@ -80,16 +89,34 @@ export default function RoutesPage() {
       );
       
       const snap = await getDocs(q);
-      const allEmployeeClients = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const allEmployeeClients = snap.docs.map(doc => ({ id: doc.id, ...doc.data(), isOneOffJob: false }));
       
-      // Filter memory for either visitDays matching selectedDay OR extraVisits containing routeDate
       const clientsData = allEmployeeClients.filter((client: any) => {
         const matchesDayOfWeek = selectedDay ? (client.visitDays && client.visitDays.includes(selectedDay)) : false;
         const matchesExtraVisit = routeDate ? (client.extraVisits && client.extraVisits.includes(routeDate)) : false;
         return matchesDayOfWeek || matchesExtraVisit;
       });
       
-      setRouteClients(clientsData);
+      // Fetch OneOffJobs
+      const jobsQ = query(
+        collection(db, 'oneoffjobs'),
+        where('adminId', '==', adminId),
+        where('employeeId', '==', selectedEmployee)
+      );
+      const jobsSnap = await getDocs(jobsQ);
+      const allJobs = jobsSnap.docs.map(doc => ({ 
+        id: doc.id, 
+        ...doc.data(), 
+        isOneOffJob: true,
+        name: doc.data().clientName,
+        phone: doc.data().clientPhone
+      })) as any[];
+      
+      const filteredJobs = allJobs.filter((job: any) => {
+        return job.date === routeDate || job.returnDate === routeDate;
+      });
+
+      setRouteClients([...clientsData, ...filteredJobs]);
 
       // Check which clients were already visited ON THE ROUTE DATE
       const routeDateStart = new Date(routeDate + 'T00:00:00');
@@ -108,14 +135,29 @@ export default function RoutesPage() {
         const visitDate = data.date?.toDate();
         // Since we query >= routeDateStart, filter out visits after routeDateEnd
         if (visitDate && visitDate <= routeDateEnd) {
-          if (data.employeeId === selectedEmployee || isAdmin) {
+          if (data.employeeId === selectedEmployee || isAdmin || isManager) {
             completedIds.add(data.clientId);
           }
         }
       });
+      
+      // Add one-off jobs that are completed or already handled for this route date
+      filteredJobs.forEach(job => {
+        const updatedAtDate = job.updatedAt?.toDate();
+        const updatedToday = updatedAtDate && updatedAtDate >= routeDateStart && updatedAtDate <= routeDateEnd;
+        if (job.status === 'completed' || (job.status === 'needs_return' && updatedToday)) {
+            // Alternatively, if it's 'needs_return' but today is the original date, it was already handled today.
+            // If today is the returnDate, and it's 'needs_return', it is still pending for today unless updated today.
+            if ((job.date === routeDate && job.status !== 'pending') || (job.returnDate === routeDate && job.status === 'completed') || updatedToday) {
+                completedIds.add(job.id);
+            }
+        }
+      });
+
       setCompletedVisitsOnRouteDate(completedIds);
 
       setGenerated(true);
+      setSelectedForAnticipation(new Set());
     } catch (error) {
       handleFirestoreError(error, OperationType.LIST, 'clients');
     } finally {
@@ -123,9 +165,50 @@ export default function RoutesPage() {
     }
   };
 
+  const handleAnticipate = async () => {
+    if (selectedForAnticipation.size === 0) return;
+    if (!confirm('Deseja antecipar as visitas dos clientes selecionados para hoje? Eles passarão a aparecer na rota de hoje.')) return;
+    
+    setAnticipating(true);
+    const today = getLocalISODate();
+    try {
+      for (const clientId of selectedForAnticipation) {
+        const client = routeClients.find(c => c.id === clientId);
+        if (!client) continue;
+
+        if (client.isOneOffJob) {
+          // It's a one-off job. We change its primary date or returnDate to today.
+          // If returnDate was what placed it here, change returnDate. Else change date.
+          const updates: any = { updatedAt: serverTimestamp() };
+          if (client.returnDate === routeDate) {
+            updates.returnDate = today;
+          } else {
+            updates.date = today;
+          }
+          await updateDoc(doc(db, 'oneoffjobs', client.id), updates);
+        } else {
+          // Regular client, add today to extraVisits if not present
+          const extraVisits = client.extraVisits || [];
+          if (!extraVisits.includes(today)) {
+            await updateDoc(doc(db, 'clients', client.id), {
+              extraVisits: [...extraVisits, today]
+            });
+          }
+        }
+      }
+      alert('Visitas antecipadas com sucesso!');
+      setSelectedForAnticipation(new Set());
+    } catch (error) {
+      console.error(error);
+      alert('Erro ao tentar antecipar visitas.');
+    } finally {
+      setAnticipating(false);
+    }
+  };
+
   const generatePDF = () => {
     const doc = new jsPDF();
-    const employeeName = isAdmin 
+    const employeeName = (isAdmin || isManager)
       ? employees.find(e => e.id === selectedEmployee)?.name 
       : userProfile?.name;
 
@@ -169,6 +252,41 @@ export default function RoutesPage() {
     return doc;
   };
 
+  const handleOpenGoogleMaps = () => {
+    if (routeClients.length === 0) return;
+    
+    const addresses = routeClients
+      .map(c => c.address)
+      .filter(addr => addr && addr.trim() !== '')
+      .map(addr => encodeURIComponent(addr));
+      
+    if (addresses.length === 0) {
+      alert("Nenhum de seus clientes nesta rota possui endereço preenchido.");
+      return;
+    }
+    
+    const url = `https://www.google.com/maps/dir/${addresses.join('/')}`;
+    window.open(url, '_blank');
+  };
+
+  const handleOpenWaze = () => {
+    if (routeClients.length === 0) return;
+    
+    const addresses = routeClients
+      .map(c => c.address)
+      .filter(addr => addr && addr.trim() !== '');
+      
+    if (addresses.length === 0) {
+      alert("Nenhum de seus clientes nesta rota possui endereço preenchido.");
+      return;
+    }
+    
+    // Waze via URL only really supports one destination reliably. 
+    // We'll send them to the first uncompleted one or just the first one.
+    const url = `https://waze.com/ul?q=${encodeURIComponent(addresses[0])}&navigate=yes`;
+    window.open(url, '_blank');
+  };
+
   const handleShare = async () => {
     const doc = generatePDF();
     const pdfBlob = doc.output('blob');
@@ -196,6 +314,8 @@ export default function RoutesPage() {
     setSelectedClientForReport(client);
     setReportNotes('');
     setReportPhoto(null);
+    setNeedsReturn(false);
+    setReturnDate('');
     setReportModalOpen(true);
   };
 
@@ -253,38 +373,65 @@ export default function RoutesPage() {
     if (!selectedClientForReport || !userProfile || !reportNotes.trim()) return;
     
     setSubmittingReport(true);
+    
+    let locationData = null;
+    try {
+      if (navigator.geolocation) {
+        const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000 });
+        });
+        locationData = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      }
+    } catch(err) {
+      console.warn("Não foi possível obter a localização", err);
+    }
+
     try {
       const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
       
-      await addDoc(collection(db, 'visits'), {
-        adminId,
-        clientId: selectedClientForReport.id,
-        employeeId: isAdmin ? null : userProfile.uid,
-        date: serverTimestamp(),
-        notes: reportNotes.trim(),
-        photoUrl: reportPhoto
-      });
+      if (selectedClientForReport.isOneOffJob) {
+        // Avulso Update
+        await updateDoc(doc(db, 'oneoffjobs', selectedClientForReport.id), {
+          status: needsReturn ? 'needs_return' : 'completed',
+          returnDate: needsReturn ? returnDate : null,
+          report: reportNotes.trim(),
+          updatedAt: serverTimestamp()
+        });
+        // One-off jobs do not store visit locations for the client history yet, they are just jobs.
+        // Or if we want them, we could add visit logic. I'll stick to what was there.
+      } else {
+        // Normal Client Visit
+        await addDoc(collection(db, 'visits'), {
+          adminId,
+          clientId: selectedClientForReport.id,
+          employeeId: isAdmin ? null : userProfile.uid,
+          date: serverTimestamp(),
+          notes: reportNotes.trim(),
+          photoUrl: reportPhoto,
+          location: locationData
+        });
 
-      // Update client with lastVisitDate
-      await updateDoc(doc(db, 'clients', selectedClientForReport.id), {
-        lastVisitDate: serverTimestamp()
-      });
+        // Update client with lastVisitDate
+        await updateDoc(doc(db, 'clients', selectedClientForReport.id), {
+          lastVisitDate: serverTimestamp()
+        });
 
-      // Cleanup old visits (keep only the 3 most recent)
-      try {
-        const q = query(collection(db, 'visits'), where('clientId', '==', selectedClientForReport.id), where('adminId', '==', adminId));
-        const snap = await getDocs(q);
-        const visitsData = snap.docs.map(d => ({ id: d.id, date: d.data().date?.toMillis() || 0 }));
-        visitsData.sort((a, b) => b.date - a.date);
-        
-        if (visitsData.length > 3) {
-          const toDelete = visitsData.slice(3);
-          for (const v of toDelete) {
-            await deleteDoc(doc(db, 'visits', v.id));
+        // Cleanup old visits (keep only the 3 most recent)
+        try {
+          const q = query(collection(db, 'visits'), where('clientId', '==', selectedClientForReport.id), where('adminId', '==', adminId));
+          const snap = await getDocs(q);
+          const visitsData = snap.docs.map(d => ({ id: d.id, date: d.data().date?.toMillis() || 0 }));
+          visitsData.sort((a, b) => b.date - a.date);
+          
+          if (visitsData.length > 3) {
+            const toDelete = visitsData.slice(3);
+            for (const v of toDelete) {
+              await deleteDoc(doc(db, 'visits', v.id));
+            }
           }
+        } catch (cleanupErr) {
+          console.error("Erro ao limpar visitas antigas:", cleanupErr);
         }
-      } catch (cleanupErr) {
-        console.error("Erro ao limpar visitas antigas:", cleanupErr);
       }
 
       // Update local state to mark as completed
@@ -293,7 +440,11 @@ export default function RoutesPage() {
       setReportModalOpen(false);
       setSelectedClientForReport(null);
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'visits');
+      if (selectedClientForReport.isOneOffJob) {
+        handleFirestoreError(error, OperationType.UPDATE, 'oneoffjobs');
+      } else {
+        handleFirestoreError(error, OperationType.CREATE, 'visits');
+      }
     } finally {
       setSubmittingReport(false);
     }
@@ -305,7 +456,7 @@ export default function RoutesPage() {
 
       <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-          {isAdmin && (
+          {(isAdmin || isManager) && (
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Selecione o Colaborador</label>
               <select
@@ -357,15 +508,43 @@ export default function RoutesPage() {
 
       {generated && (
         <div className="bg-white rounded-xl shadow-sm p-6">
-          <div className="flex justify-between items-center mb-6">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 space-y-4 md:space-y-0">
             <h2 className="text-lg font-bold text-gray-800">Resultado da Rota</h2>
-            <button
-              onClick={handleShare}
-              className="flex items-center bg-secondary-dark text-white px-4 py-2 rounded-lg hover:bg-secondary transition-colors"
-            >
-              <Share2 size={18} className="mr-2" />
-              Compartilhar PDF
-            </button>
+            <div className="flex flex-wrap gap-2">
+              {(isAdmin || isManager) && routeDate > getLocalISODate() && routeClients.length > 0 && (
+                <button
+                  onClick={handleAnticipate}
+                  disabled={selectedForAnticipation.size === 0 || anticipating}
+                  className="flex items-center bg-orange-500 text-white px-4 py-2 rounded-lg hover:bg-orange-600 transition-colors disabled:opacity-50"
+                  title="Antecipar clientes selecionados para hoje"
+                >
+                  {anticipating ? 'Processando...' : `Antecipar ${selectedForAnticipation.size > 0 ? `(${selectedForAnticipation.size})` : ''} para Hoje`}
+                </button>
+              )}
+              <button
+                onClick={handleOpenGoogleMaps}
+                className="flex items-center bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+                title="Google Maps"
+              >
+                <Map size={18} className="md:mr-2" />
+                <span className="hidden md:inline">Google Maps</span>
+              </button>
+              <button
+                onClick={handleOpenWaze}
+                className="flex items-center bg-sky-500 text-white px-4 py-2 rounded-lg hover:bg-sky-600 transition-colors"
+                title="Waze"
+              >
+                <Map size={18} className="md:mr-2" />
+                <span className="hidden md:inline">Waze</span>
+              </button>
+              <button
+                onClick={handleShare}
+                className="flex items-center bg-secondary-dark text-white px-4 py-2 rounded-lg hover:bg-secondary transition-colors"
+              >
+                <Share2 size={18} className="mr-2" />
+                Compartilhar PDF
+              </button>
+            </div>
           </div>
 
           {routeClients.length === 0 ? (
@@ -375,12 +554,13 @@ export default function RoutesPage() {
               {routeClients.map((client, index) => {
                 const isCompleted = completedVisitsOnRouteDate.has(client.id);
                 const isFutureRoute = routeDate > getLocalISODate();
+                const isSelectedForAnticipation = selectedForAnticipation.has(client.id);
                 
                 return (
                   <motion.div 
                     key={client.id} 
                     onClick={() => {
-                      if (isFutureRoute && !isCompleted) {
+                      if (isFutureRoute && !isCompleted && !isAdmin && !isManager) {
                         alert('A data da rota ainda não chegou. Não é possível preencher a visita antecipadamente.');
                         return;
                       }
@@ -394,14 +574,31 @@ export default function RoutesPage() {
                       scale: isCompleted ? [0.98, 1.02, 1] : 1,
                     }}
                     transition={{ duration: 0.3 }}
-                    className={`border rounded-lg p-4 flex items-start transition-colors ${
+                    className={`border rounded-lg p-4 flex items-start transition-colors relative ${
                       isCompleted 
                         ? 'border-green-200 bg-green-50 cursor-default' 
-                        : isFutureRoute
+                        : isFutureRoute && !isAdmin && !isManager
                           ? 'border-gray-200 bg-gray-50 opacity-80 cursor-not-allowed'
-                          : 'border-gray-100 hover:border-primary/50 hover:bg-gray-50 cursor-pointer'
+                          : isSelectedForAnticipation
+                            ? 'border-orange-300 bg-orange-50'
+                            : 'border-gray-100 hover:border-primary/50 hover:bg-gray-50 cursor-pointer'
                     }`}
                   >
+                    {(isAdmin || isManager) && isFutureRoute && !isCompleted && (
+                      <div className="flex items-center justify-center mr-3 mt-1" onClick={e => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={isSelectedForAnticipation}
+                          onChange={(e) => {
+                            const newSet = new Set(selectedForAnticipation);
+                            if (e.target.checked) newSet.add(client.id);
+                            else newSet.delete(client.id);
+                            setSelectedForAnticipation(newSet);
+                          }}
+                          className="w-5 h-5 rounded text-orange-500 focus:ring-orange-500 border-gray-300 cursor-pointer"
+                        />
+                      </div>
+                    )}
                     <motion.div 
                       layout
                       className={`${isCompleted ? 'bg-green-500' : 'bg-primary/10 text-primary'} font-bold w-8 h-8 rounded-full flex items-center justify-center shrink-0 mr-4 text-white`}
@@ -539,6 +736,32 @@ export default function RoutesPage() {
                   </div>
                 )}
               </div>
+
+              {selectedClientForReport?.isOneOffJob && (
+                <div className="p-4 bg-orange-50 border border-orange-200 rounded-lg space-y-3">
+                  <label className="flex items-center space-x-2 text-orange-900 font-medium">
+                    <input 
+                      type="checkbox" 
+                      checked={needsReturn} 
+                      onChange={(e) => setNeedsReturn(e.target.checked)} 
+                      className="rounded text-orange-600 focus:ring-orange-500 w-4 h-4 cursor-pointer"
+                    />
+                    <span>Agendar Retorno</span>
+                  </label>
+                  {needsReturn && (
+                    <div>
+                      <label className="block text-sm font-medium text-orange-800 mb-1">Data do Retorno</label>
+                      <input 
+                        type="date" 
+                        required={needsReturn}
+                        value={returnDate} 
+                        onChange={(e) => setReturnDate(e.target.value)} 
+                        className="w-full px-4 py-2 border border-orange-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="pt-4 flex justify-end space-x-3 border-t border-gray-100">
                 <button

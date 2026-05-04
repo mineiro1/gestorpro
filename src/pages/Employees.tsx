@@ -6,7 +6,7 @@ import { collection, query, where, onSnapshot, deleteDoc, doc, updateDoc } from 
 import { Edit, Trash2, Plus, MapPin } from 'lucide-react';
 
 export default function Employees() {
-  const { userProfile } = useAuth();
+  const { userProfile, isAdmin, isManager } = useAuth();
   const [employees, setEmployees] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
@@ -15,10 +15,11 @@ export default function Employees() {
   useEffect(() => {
     if (!userProfile?.uid) return;
 
+    const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
     const q = query(
       collection(db, 'users'), 
-      where('adminId', '==', userProfile.uid),
-      where('role', '==', 'employee')
+      where('adminId', '==', adminId),
+      where('role', 'in', ['employee', 'manager'])
     );
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -61,13 +62,15 @@ export default function Employees() {
     <div>
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-bold text-gray-800">Colaboradores</h1>
-        <Link
-          to="/employees/new"
-          className="bg-primary text-white px-4 py-2 rounded-lg flex items-center hover:bg-primary-light transition-colors"
-        >
-          <Plus size={20} className="mr-2" />
-          Novo Colaborador
-        </Link>
+        {isAdmin && (
+          <Link
+            to="/employees/new"
+            className="bg-primary text-white px-4 py-2 rounded-lg flex items-center hover:bg-primary-light transition-colors"
+          >
+            <Plus size={20} className="mr-2" />
+            Novo Colaborador
+          </Link>
+        )}
       </div>
 
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
@@ -88,7 +91,7 @@ export default function Employees() {
               ) : (
                 employees.map((employee) => (
                   <tr key={employee.id} className="border-b border-gray-100 hover:bg-gray-50">
-                    <td className="p-4">{employee.name}</td>
+                    <td className="p-4">{employee.name} {employee.role === 'manager' && '(Gestor)'}</td>
                     <td className="p-4">{employee.phone}</td>
                     <td className="p-4 flex justify-end space-x-2">
                       {employee.lastLocation && (
@@ -102,18 +105,22 @@ export default function Employees() {
                           <MapPin size={18} />
                         </button>
                       )}
-                      <Link
-                        to={`/employees/${employee.id}`}
-                        className="p-2 text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
-                      >
-                        <Edit size={18} />
-                      </Link>
-                      <button
-                        onClick={() => handleDeleteClick(employee)}
-                        className="p-2 text-red-600 hover:bg-red-50 rounded-md transition-colors"
-                      >
-                        <Trash2 size={18} />
-                      </button>
+                      {isAdmin && (
+                        <>
+                          <Link
+                            to={`/employees/${employee.id}`}
+                            className="p-2 text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
+                          >
+                            <Edit size={18} />
+                          </Link>
+                          <button
+                            onClick={() => handleDeleteClick(employee)}
+                            className="p-2 text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        </>
+                      )}
                     </td>
                   </tr>
                 ))

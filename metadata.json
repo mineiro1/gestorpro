@@ -3,6 +3,7 @@
   "description": "Sistema de gestão multi-tenant para rotas e clientes",
   "requestFramePermissions": [
     "geolocation",
-    "camera"
+    "camera",
+    "microphone"
   ]
 }

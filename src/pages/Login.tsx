@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { auth } from '../lib/firebase';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { signInWithEmailAndPassword } from 'firebase/auth';
+import { doc, getDoc, setDoc, serverTimestamp, Timestamp } from 'firebase/firestore';
 
 export default function Login() {
-  const [phone, setPhone] = useState('');
+  const location = useLocation();
+  const [phone, setPhone] = useState(location.state?.phone || '');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -16,19 +18,65 @@ export default function Login() {
     setLoading(true);
 
     try {
-      // Format phone to a pseudo-email for Firebase Auth
-      const cleanPhone = phone.replace(/\D/g, '');
-      const emailGestao = `${cleanPhone}@gestaopro.com`;
+      let emailGestao = phone.trim();
+      let emailServi = phone.trim();
+      let cleanPhone = phone.replace(/\D/g, '');
+      
+      if (!emailGestao.includes('@')) {
+        emailGestao = `${cleanPhone}@gestaopro.com`;
+        emailServi = `${cleanPhone}@serviplay.com`;
+      } else {
+        cleanPhone = '';
+      }
       
       try {
         await signInWithEmailAndPassword(auth, emailGestao, password);
       } catch (err: any) {
-        if (err.code === 'auth/invalid-credential') {
+        if (err.code === 'auth/invalid-credential' && !phone.includes('@')) {
           // Fallback para usuários criados antes da mudança de nome do app
-          const emailServi = `${cleanPhone}@serviplay.com`;
           await signInWithEmailAndPassword(auth, emailServi, password);
         } else {
           throw err;
+        }
+      }
+      
+      if (auth.currentUser) {
+        const userDocRef = doc(db, 'users', auth.currentUser.uid);
+        const userDoc = await getDoc(userDocRef);
+        const isSuperAdmin = auth.currentUser.email === 'servincg@gmail.com';
+        
+        if (!userDoc.exists()) {
+          console.warn('User document missing. Recreating for:', auth.currentUser.email);
+          const trialExpiry = new Date();
+          trialExpiry.setDate(trialExpiry.getDate() + 7);
+          
+          try {
+            await setDoc(userDocRef, {
+              uid: auth.currentUser.uid,
+              role: 'admin',
+              name: isSuperAdmin ? 'Renivaldo Servin dos Santos' : 'Usuário Recuperado',
+              phone: cleanPhone,
+              email: auth.currentUser.email || emailGestao,
+              adminId: auth.currentUser.uid,
+              createdAt: serverTimestamp(),
+              subscriptionStatus: isSuperAdmin ? 'active' : 'trial',
+              subscriptionExpiresAt: isSuperAdmin ? Timestamp.fromDate(new Date('2099-12-31')) : Timestamp.fromDate(trialExpiry),
+            });
+          } catch (firestoreError) {
+            handleFirestoreError(firestoreError, OperationType.CREATE, `users/${auth.currentUser.uid}`);
+          }
+        } else if (isSuperAdmin) {
+           // Ensure super admin retains correct info
+           try {
+             await setDoc(userDocRef, {
+               ...userDoc.data(),
+               name: 'Renivaldo Servin dos Santos',
+               subscriptionStatus: 'active',
+               subscriptionExpiresAt: Timestamp.fromDate(new Date('2099-12-31')),
+             });
+           } catch (e) {
+             console.error('Error updating super admin info', e);
+           }
         }
       }
       
@@ -67,10 +115,10 @@ export default function Login() {
         <form onSubmit={handleLogin} className="space-y-6">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Número de Telefone
+              Número de Telefone (WhatsApp)
             </label>
             <input
-              type="tel"
+              type="text"
               required
               value={phone}
               onChange={(e) => setPhone(e.target.value)}

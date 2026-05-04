@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { collection, query, where, getDocs, doc, updateDoc } from 'firebase/firestore';
-import { MessageCircle, AlertCircle, Clock, History, Settings, X, Play, Calendar } from 'lucide-react';
+import { MessageCircle, AlertCircle, Clock, History, Settings, X, Play, Calendar, CheckCircle, XCircle } from 'lucide-react';
 
 interface ClientBilling {
   id: string;
@@ -14,7 +14,7 @@ interface ClientBilling {
 }
 
 export default function Billing() {
-  const { userProfile } = useAuth();
+  const { userProfile, isAdmin, isManager } = useAuth();
   const [delayedClients, setDelayedClients] = useState<ClientBilling[]>([]);
   const [todayClients, setTodayClients] = useState<ClientBilling[]>([]);
   const [upcomingClients, setUpcomingClients] = useState<ClientBilling[]>([]);
@@ -31,6 +31,8 @@ export default function Billing() {
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [sendingBatch, setSendingBatch] = useState(false);
+  const [sendingProgress, setSendingProgress] = useState({ current: 0, total: 0 });
+  const [sentClients, setSentClients] = useState<Record<string, 'success'|'error'>>({});
   const [waSettings, setWaSettings] = useState({
     reminderDays: 3,
     reminderMessage: 'Olá {nome}, tudo bem? Passando para lembrar que sua mensalidade no valor de R$ {valor} vence no dia {vencimento}.',
@@ -106,12 +108,13 @@ export default function Billing() {
       },
       body: JSON.stringify({
         number: number,
+        text: text,
+        textMessage: {
+          text: text
+        },
         options: {
           delay: 1000,
           presence: "composing"
-        },
-        textMessage: {
-          text: text
         }
       })
     });
@@ -191,8 +194,12 @@ export default function Billing() {
 
     const fetchBillingData = async () => {
       try {
+        const adminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
         // Fetch Clients
-        const clientsQuery = query(collection(db, 'clients'), where('adminId', '==', userProfile.uid));
+        let clientsQuery = query(collection(db, 'clients'), where('adminId', '==', adminId));
+        if (userProfile.role === 'employee') {
+          clientsQuery = query(collection(db, 'clients'), where('adminId', '==', adminId), where('employeeId', '==', userProfile.uid));
+        }
         const clientsSnap = await getDocs(clientsQuery);
         
         const delayed: ClientBilling[] = [];
@@ -294,9 +301,10 @@ export default function Billing() {
     const fetchPayments = async () => {
       setLoadingPayments(true);
       try {
+        const adminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
         const paymentsQuery = query(
           collection(db, 'payments'),
-          where('adminId', '==', userProfile.uid),
+          where('adminId', '==', adminId),
           where('clientId', '==', selectedClientId)
         );
         const paymentsSnap = await getDocs(paymentsQuery);
@@ -340,16 +348,20 @@ export default function Billing() {
     if (waSettings.useMetaApi) {
       try {
         await sendMetaMessage(client, message);
+        setSentClients(prev => ({ ...prev, [client.id]: 'success' }));
         alert(`Mensagem enviada com sucesso para ${client.name} (via WhatsApp Oficial Meta)!`);
       } catch (error: any) {
+        setSentClients(prev => ({ ...prev, [client.id]: 'error' }));
         console.error(error);
         alert(`Falha ao enviar via API Oficial para ${client.name}:\n\n${error.message}\n\nLembre-se: Para enviar textos livres, o cliente precisa ter te enviado uma mensagem nas últimas 24 horas.`);
       }
     } else if (waSettings.useEvolutionApi) {
       try {
         await sendEvolutionMessage(client, message);
+        setSentClients(prev => ({ ...prev, [client.id]: 'success' }));
         alert(`Mensagem enviada com sucesso para ${client.name}!`);
       } catch (error: any) {
+        setSentClients(prev => ({ ...prev, [client.id]: 'error' }));
         console.error(error);
         alert(`Falha ao enviar mensagem para ${client.name}: ${error.message}`);
       }
@@ -362,18 +374,32 @@ export default function Billing() {
 
   const processQueue = async (clients: ClientBilling[]) => {
     if (waSettings.useMetaApi || waSettings.useEvolutionApi) {
+      if (waSettings.useEvolutionApi && (!waSettings.evolutionApiUrl || !waSettings.evolutionApiKey || !waSettings.evolutionInstanceName)) {
+        alert("Credenciais da Evolution API incompletas nas configurações.");
+        return;
+      }
+      if (waSettings.useMetaApi && (!waSettings.metaToken || !waSettings.metaPhoneNumberId)) {
+        alert("Credenciais da API Oficial (Meta) incompletas nas configurações.");
+        return;
+      }
+
       const apiName = waSettings.useMetaApi ? "API Oficial do WhatsApp (Meta)" : "Evolution API";
       if (!confirm(`Deseja enviar ${clients.length} mensagens automaticamente via ${apiName}?`)) return;
       
       setSendingBatch(true);
+      setSendingProgress({ current: 0, total: clients.length });
       let successCount = 0;
       let errorCount = 0;
+      let lastError = '';
       
       for (let i = 0; i < clients.length; i++) {
         const client = clients[i];
+        setSendingProgress({ current: i + 1, total: clients.length });
         
         if (!client.phone) {
           errorCount++;
+          lastError = 'Telefone ausente';
+          setSentClients(prev => ({ ...prev, [client.id]: 'error' }));
           continue;
         }
 
@@ -389,17 +415,27 @@ export default function Billing() {
             await sendEvolutionMessage(client, message);
           }
           successCount++;
-        } catch (e) {
+          setSentClients(prev => ({ ...prev, [client.id]: 'success' }));
+        } catch (e: any) {
           console.error("Erro ao enviar para", client.name, e);
           errorCount++;
+          lastError = e?.message || 'Erro desconhecido';
+          setSentClients(prev => ({ ...prev, [client.id]: 'error' }));
         }
         
         // Sleep to avoid rate limiting / block
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        if (i < clients.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
       }
       
       setSendingBatch(false);
-      alert(`Envio via ${apiName} concluído!\nSucesso: ${successCount}\nErros: ${errorCount}`);
+      setSendingProgress({ current: 0, total: 0 });
+      let alertMsg = `Envio via ${apiName} concluído!\nSucesso: ${successCount}\nErros: ${errorCount}`;
+      if (errorCount > 0) {
+        alertMsg += `\n\nÚltimo erro: ${lastError}`;
+      }
+      alert(alertMsg);
     } else {
       alert("Como o WhatsApp Web bloqueia a abertura não autorizada de várias abas, você abrirá a primeira mensagem agora. Após o envio, retorne e clique diretamente no botão 'Lembrar' ou 'Cobrar' do próximo cliente.");
       if(clients.length > 0) {
@@ -457,13 +493,15 @@ export default function Billing() {
           <p className="text-gray-600 mt-1">Gerencie os vencimentos e envie lembretes via WhatsApp.</p>
         </div>
         <div className="flex gap-3 mt-4 sm:mt-0">
-          <button
-            onClick={() => setSettingsModalOpen(true)}
-            className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-200 transition-colors flex items-center font-medium"
-          >
-            <Settings size={20} className="mr-2" />
-            Configurar Mensagens
-          </button>
+          {isAdmin && (
+            <button
+              onClick={() => setSettingsModalOpen(true)}
+              className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-200 transition-colors flex items-center font-medium"
+            >
+              <Settings size={20} className="mr-2" />
+              Configurar Mensagens
+            </button>
+          )}
         </div>
       </div>
 
@@ -512,21 +550,23 @@ export default function Billing() {
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
         {/* Bulk Action Header */}
-        {(activeTab === 'delayed' && delayedClients.length > 0) || 
+        {(isAdmin || isManager) && ((activeTab === 'delayed' && delayedClients.length > 0) || 
          (activeTab === 'today' && todayClients.length > 0) || 
-         (activeTab === 'upcoming' && upcomingClients.length > 0) ? (
+         (activeTab === 'upcoming' && upcomingClients.length > 0)) ? (
           <div className="bg-gray-50 px-6 py-4 border-b border-gray-100 flex items-center justify-between">
             <span className="text-sm font-medium text-gray-600">Ações em Lote:</span>
             <button 
               onClick={() => processQueue(getBillingList())} 
+              disabled={sendingBatch}
               className={`flex items-center px-4 py-2 rounded-lg font-medium text-sm transition-colors text-white ${
+                sendingBatch ? 'bg-gray-400 cursor-not-allowed' :
                 activeTab === 'delayed' ? 'bg-red-600 hover:bg-red-700' : 
                 activeTab === 'today' ? 'bg-blue-600 hover:bg-blue-700' : 
                 'bg-yellow-500 hover:bg-yellow-600'
               }`}
             >
               <Play size={16} className="mr-2" />
-              Notificar Fila Inteira ({currentList.length})
+              {sendingBatch ? `Enviando... (${sendingProgress.current}/${sendingProgress.total})` : `Notificar Fila Inteira (${currentList.length})`}
             </button>
           </div>
         ) : null}
@@ -547,6 +587,16 @@ export default function Billing() {
                     <div className="flex items-center gap-3 mb-1">
                       <h3 className="font-bold text-gray-900 text-lg">{client.name}</h3>
                       {getStatusBadge(client.status, client.dueDate)}
+                      {sentClients[client.id] === 'success' && (
+                        <span className="flex items-center text-xs font-semibold text-green-600 bg-green-50 px-2 py-1 rounded-full">
+                          <CheckCircle size={14} className="mr-1" /> Enviado
+                        </span>
+                      )}
+                      {sentClients[client.id] === 'error' && (
+                        <span className="flex items-center text-xs font-semibold text-red-600 bg-red-50 px-2 py-1 rounded-full">
+                          <XCircle size={14} className="mr-1" /> Falha
+                        </span>
+                      )}
                     </div>
                     <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-6 text-sm text-gray-500">
                       <span className="font-semibold text-gray-700 font-mono text-base tracking-tight">R$ {client.monthlyFee.toFixed(2)}</span>
@@ -554,17 +604,19 @@ export default function Billing() {
                     </div>
                   </div>
                   <div className="shrink-0 flex items-center">
-                    <button
-                      onClick={() => handleSendWhatsApp(client)}
-                      className={`flex items-center px-4 py-2 rounded-lg transition-colors font-semibold shadow-sm border ${
-                        client.status === 'delayed' 
-                          ? 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100' 
-                          : 'bg-[#25D366] text-white border-transparent hover:bg-[#20b858]'
-                      }`}
-                    >
-                      <MessageCircle size={18} className="mr-2" />
-                      {client.status === 'delayed' ? 'Cobrar agora' : 'Mandar Lembrete'}
-                    </button>
+                    {(isAdmin || isManager) && (
+                      <button
+                        onClick={() => handleSendWhatsApp(client)}
+                        className={`flex items-center px-4 py-2 rounded-lg transition-colors font-semibold shadow-sm border ${
+                          client.status === 'delayed' 
+                            ? 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100' 
+                            : 'bg-[#25D366] text-white border-transparent hover:bg-[#20b858]'
+                        }`}
+                      >
+                        <MessageCircle size={18} className="mr-2" />
+                        {client.status === 'delayed' ? 'Cobrar agora' : 'Mandar Lembrete'}
+                      </button>
+                    )}
                   </div>
                 </li>
               ))}

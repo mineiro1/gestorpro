@@ -2,15 +2,22 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { doc, getDoc, getDocs, addDoc, updateDoc, deleteDoc, collection, serverTimestamp, query, where, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc, getDocs, addDoc, updateDoc, deleteDoc, collection, serverTimestamp, query, where, onSnapshot, setDoc } from 'firebase/firestore';
 import { History, Plus, X, Download } from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, createUserWithEmailAndPassword } from 'firebase/auth';
+import firebaseConfig from '../../firebase-applet-config.json';
+
+// Secondary app for creating/updating users without logging out the current admin
+const secondaryApp = initializeApp(firebaseConfig, 'SecondaryClient');
+const secondaryAuth = getAuth(secondaryApp);
 
 const DAYS_OF_WEEK = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 
 export default function ClientForm() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { userProfile, isAdmin } = useAuth();
+  const { userProfile, isAdmin, isManager } = useAuth();
   
   const [formData, setFormData] = useState({
     name: '',
@@ -89,13 +96,14 @@ export default function ClientForm() {
   }, [id, userProfile, isAdmin]);
 
   useEffect(() => {
-    if (isAdmin && userProfile) {
+    if ((isAdmin || isManager) && userProfile) {
       const fetchEmployees = async () => {
         try {
+          const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
           const empQuery = query(
             collection(db, 'users'),
-            where('adminId', '==', userProfile.uid),
-            where('role', '==', 'employee')
+            where('adminId', '==', adminId),
+            where('role', 'in', ['employee', 'manager'])
           );
           const empSnap = await getDocs(empQuery);
           setEmployees(empSnap.docs.map(d => ({ id: d.id, ...d.data() })));
@@ -105,7 +113,7 @@ export default function ClientForm() {
       };
       fetchEmployees();
     }
-  }, [isAdmin, userProfile]);
+  }, [isAdmin, isManager, userProfile]);
 
   const handleDayToggle = (day: string) => {
     setFormData(prev => ({
@@ -138,12 +146,40 @@ export default function ClientForm() {
       if (id) {
         await updateDoc(doc(db, 'clients', id), clientData);
       } else {
-        await addDoc(collection(db, 'clients'), {
+        const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
+        
+        // Add client to 'clients' collection
+        const newClientRef = await addDoc(collection(db, 'clients'), {
           ...clientData,
-          adminId: isAdmin ? userProfile.uid : userProfile.adminId,
-          employeeId: isAdmin ? formData.employeeId : userProfile.uid,
+          adminId: adminId,
+          employeeId: (isAdmin || isManager) ? formData.employeeId : userProfile.uid,
           createdAt: serverTimestamp(),
         });
+
+        // Add client user to auth so they can login
+        if (formData.phone) {
+          try {
+            const cleanPhone = formData.phone.replace(/\D/g, '');
+            if (cleanPhone.length >= 10) {
+              const emailGestao = `${cleanPhone}@gestaopro.com`;
+              const userCredential = await createUserWithEmailAndPassword(secondaryAuth, emailGestao, cleanPhone);
+              const clientUid = userCredential.user.uid;
+
+              await setDoc(doc(db, 'users', clientUid), {
+                uid: clientUid,
+                role: 'client',
+                name: formData.name,
+                phone: cleanPhone,
+                adminId: adminId,
+                clientId: newClientRef.id,
+                createdAt: serverTimestamp(),
+              });
+            }
+          } catch(authErr) {
+             console.error("Não foi possível criar login para o cliente", authErr);
+          }
+        }
+
         // Clear form if adding new
         setFormData({
           name: '',
@@ -171,6 +207,19 @@ export default function ClientForm() {
     e.preventDefault();
     if (!id || !userProfile || !newVisitNotes.trim()) return;
     setAddingVisit(true);
+    
+    let locationData = null;
+    try {
+      if (navigator.geolocation) {
+        const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000 });
+        });
+        locationData = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      }
+    } catch(err) {
+      console.warn("Não foi possível obter a localização", err);
+    }
+
     try {
       const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
       await addDoc(collection(db, 'visits'), {
@@ -178,7 +227,8 @@ export default function ClientForm() {
         clientId: id,
         employeeId: isAdmin ? null : userProfile.uid,
         date: serverTimestamp(),
-        notes: newVisitNotes.trim()
+        notes: newVisitNotes.trim(),
+        location: locationData
       });
 
       // Update client with lastVisitDate
@@ -317,7 +367,7 @@ export default function ClientForm() {
               />
             </div>
 
-            {isAdmin && (
+            {(isAdmin || isManager) && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Atribuir a Colaborador</label>
                 <select
@@ -466,6 +516,16 @@ export default function ClientForm() {
                           day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'
                         }) : 'Data não disponível'}
                       </span>
+                      {isAdmin && visit.location && (
+                        <a 
+                          href={`https://www.google.com/maps/search/?api=1&query=${visit.location.lat},${visit.location.lng}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs font-semibold text-blue-600 bg-blue-50 px-2 py-1 rounded hover:bg-blue-100 flex items-center transition-colors"
+                        >
+                          Ver Localização
+                        </a>
+                      )}
                     </div>
                     <p className="text-gray-800 whitespace-pre-wrap">{visit.notes}</p>
                     {visit.photoUrl && (

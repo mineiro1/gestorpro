@@ -3,13 +3,13 @@ import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { auth } from '../lib/firebase';
 import { signOut } from 'firebase/auth';
-import { Menu, X, Home, Users, UserCircle, Map, LogOut, Bell } from 'lucide-react';
+import { Menu, X, Home, Users, UserCircle, Map, LogOut, Bell, MessageSquare, Headphones, Briefcase, History } from 'lucide-react';
 import clsx from 'clsx';
 import EmployeeLocationTracker from './EmployeeLocationTracker';
 
 export default function Layout() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
-  const { isAdmin, userProfile } = useAuth();
+  const { isAdmin, isManager, isClient, userProfile } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -18,18 +18,29 @@ export default function Layout() {
     navigate('/login');
   };
 
-  const navItems = isAdmin
+  let navItems = isClient ? [
+    { name: 'Meu Painel', path: '/client-panel', icon: Home }
+  ] : (isAdmin || isManager)
     ? [
         { name: 'Dashboard', path: '/', icon: Home },
         { name: 'Clientes', path: '/clients', icon: Users },
         { name: 'Cobranças', path: '/billing', icon: Bell },
+        { name: 'Mensagens', path: '/messages', icon: MessageSquare },
+        { name: 'Contatos', path: '/chat', icon: Headphones },
         { name: 'Colaboradores', path: '/employees', icon: UserCircle },
         { name: 'Rotas', path: '/routes', icon: Map },
+        { name: 'Visitas', path: '/visits', icon: History },
+        { name: 'Avulsos', path: '/one-off-jobs', icon: Briefcase },
       ]
     : [
         { name: 'Rotas', path: '/routes', icon: Map },
         { name: 'Clientes', path: '/clients', icon: Users },
+        { name: 'Contatos', path: '/chat', icon: Headphones },
       ];
+
+  if (userProfile?.email === 'servincg@gmail.com') {
+    navItems.push({ name: 'SuperAdmin', path: '/superadmin', icon: Briefcase });
+  }
 
   return (
     <div className="min-h-screen bg-gray-100 flex">
@@ -69,7 +80,7 @@ export default function Layout() {
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-white truncate">{userProfile?.name}</p>
               <p className="text-xs text-secondary-light uppercase tracking-wider mt-1 font-semibold">
-                {userProfile?.role === 'admin' ? 'Administrador' : 'Colaborador'}
+                {userProfile?.role === 'admin' ? 'Administrador' : userProfile?.role === 'manager' ? 'Gestor' : userProfile?.role === 'client' ? 'Cliente' : 'Colaborador'}
               </p>
             </div>
           </div>

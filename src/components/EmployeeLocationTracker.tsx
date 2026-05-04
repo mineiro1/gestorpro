@@ -50,7 +50,7 @@ export default function EmployeeLocationTracker() {
         navigator.geolocation.clearWatch(watchId);
       }
     };
-  }, [isAdmin, userProfile]);
+  }, [isAdmin, userProfile?.uid]);
 
   return null;
 }
