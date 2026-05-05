@@ -135,9 +135,8 @@ export default function RoutesPage() {
         const visitDate = data.date?.toDate();
         // Since we query >= routeDateStart, filter out visits after routeDateEnd
         if (visitDate && visitDate <= routeDateEnd) {
-          if (data.employeeId === selectedEmployee || isAdmin || isManager) {
-            completedIds.add(data.clientId);
-          }
+          // If any visit exists for this client today (even by admin), mark as completed
+          completedIds.add(data.clientId);
         }
       });
       
@@ -404,7 +403,7 @@ export default function RoutesPage() {
         await addDoc(collection(db, 'visits'), {
           adminId,
           clientId: selectedClientForReport.id,
-          employeeId: isAdmin ? null : userProfile.uid,
+          employeeId: (isAdmin || isManager) && selectedEmployee ? selectedEmployee : userProfile.uid,
           date: serverTimestamp(),
           notes: reportNotes.trim(),
           photoUrl: reportPhoto,
