@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, Timestamp } from 'firebase/firestore';
+import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, Timestamp, onSnapshot } from 'firebase/firestore';
 import { jsPDF } from 'jspdf';
 import { Share2, FileText, Map, Camera, CheckCircle, MapPin } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -73,6 +73,74 @@ export default function RoutesPage() {
       setSelectedEmployee(userProfile.uid);
     }
   }, [isAdmin, isManager, userProfile]);
+
+  useEffect(() => {
+    if (!generated || !userProfile || !routeDate) return;
+
+    const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
+    const routeDateStart = new Date(routeDate + 'T00:00:00');
+    const routeDateEnd = new Date(routeDate + 'T23:59:59.999');
+
+    const visitsQuery = query(
+      collection(db, 'visits'),
+      where('adminId', '==', adminId),
+      where('date', '>=', Timestamp.fromDate(routeDateStart))
+    );
+
+    const unsubscribeVisits = onSnapshot(visitsQuery, (visitsSnap) => {
+      setCompletedVisitsOnRouteDate(prev => {
+        const next = new Set(prev);
+        visitsSnap.docs.forEach(doc => {
+          const data = doc.data();
+          const visitDate = data.date?.toDate();
+          if (visitDate && visitDate <= routeDateEnd) {
+            next.add(data.clientId);
+          }
+        });
+        return next;
+      });
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'visits');
+    });
+
+    let jobsQueryRaw = query(
+      collection(db, 'oneoffjobs'),
+      where('adminId', '==', adminId)
+    );
+    if (!isAdmin && !isManager) {
+      jobsQueryRaw = query(
+        collection(db, 'oneoffjobs'),
+        where('adminId', '==', adminId),
+        where('employeeId', '==', userProfile.uid)
+      );
+    }
+    const jobsQuery = jobsQueryRaw;
+
+    const unsubscribeJobs = onSnapshot(jobsQuery, (jobsSnap) => {
+      setCompletedVisitsOnRouteDate(prev => {
+        const next = new Set(prev);
+        jobsSnap.docs.forEach(doc => {
+          const job = { id: doc.id, ...doc.data() } as any;
+          const updatedAtDate = job.updatedAt?.toDate();
+          const updatedToday = updatedAtDate && updatedAtDate >= routeDateStart && updatedAtDate <= routeDateEnd;
+          
+          if (job.status === 'completed' || (job.status === 'needs_return' && updatedToday)) {
+            if ((job.date === routeDate && job.status !== 'pending') || (job.returnDate === routeDate && job.status === 'completed') || updatedToday) {
+               next.add(job.id);
+            }
+          }
+        });
+        return next;
+      });
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'oneoffjobs');
+    });
+
+    return () => {
+      unsubscribeVisits();
+      unsubscribeJobs();
+    };
+  }, [generated, routeDate, userProfile, isAdmin]);
 
   const handleGenerateRoute = async () => {
     if (!selectedEmployee || (!selectedDay && !routeDate) || !userProfile) return;
