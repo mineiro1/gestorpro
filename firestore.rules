@@ -126,12 +126,14 @@ service cloud.firestore {
     }
 
     function isValidClient(data) {
-      return hasOnlyAllowedFields(['adminId', 'name', 'phone', 'address', 'monthlyFee', 'dueDate', 'baseDueDay', 'visitDays', 'employeeId', 'createdAt', 'cpfCnpj', 'extraVisits', 'lastVisitDate']) &&
+      return hasOnlyAllowedFields(['adminId', 'name', 'phone', 'address', 'monthlyFee', 'dueDate', 'baseDueDay', 'visitDays', 'employeeId', 'createdAt', 'cpfCnpj', 'extraVisits', 'lastVisitDate', 'extraAmount', 'extraReason']) &&
              isValidString(data.adminId, 1, 128) &&
              isValidString(data.name, 0, 100) &&
              (!('phone' in data) || isValidString(data.phone, 0, 50)) &&
              (!('address' in data) || isValidString(data.address, 0, 500)) &&
              (!('monthlyFee' in data) || (data.monthlyFee is number && data.monthlyFee >= 0)) &&
+             (!('extraAmount' in data) || (data.extraAmount is number && data.extraAmount >= 0)) &&
+             (!('extraReason' in data) || data.extraReason is string) &&
              (!('dueDate' in data) || data.dueDate is string || data.dueDate is number) &&
              (!('baseDueDay' in data) || data.baseDueDay is number || data.baseDueDay == null) &&
              (!('visitDays' in data) || (data.visitDays is list && data.visitDays.size() <= 7)) &&
@@ -143,10 +145,13 @@ service cloud.firestore {
     }
 
     function isValidPayment(data) {
-      return hasOnlyAllowedFields(['adminId', 'clientId', 'amount', 'date', 'month', 'year', 'previousDueDate', 'refMonth', 'refYear']) &&
+      return hasOnlyAllowedFields(['adminId', 'clientId', 'amount', 'baseAmount', 'extraAmount', 'extraReason', 'date', 'month', 'year', 'previousDueDate', 'refMonth', 'refYear']) &&
              isValidString(data.adminId, 1, 128) &&
              isValidString(data.clientId, 1, 128) &&
              data.amount is number && data.amount >= 0 &&
+             (!('baseAmount' in data) || data.baseAmount is number) &&
+             (!('extraAmount' in data) || data.extraAmount is number) &&
+             (!('extraReason' in data) || data.extraReason == null || data.extraReason is string) &&
              data.date is timestamp &&
              data.month is number && data.month >= 1 && data.month <= 12 &&
              data.year is number && data.year >= 2000 &&
@@ -318,6 +323,18 @@ service cloud.firestore {
         (isAdmin() && resource.data.adminId == request.auth.uid) ||
         (isManager() && resource.data.adminId == getAdminId())
       );
+    }
+
+    match /notifications/{userId} {
+      allow read: if isAuthenticated() && request.auth.uid == userId;
+      allow create, update: if isAuthenticated();
+      allow delete: if isAuthenticated() && request.auth.uid == userId;
+    }
+
+    match /chats/{chatId} {
+      allow read: if isAuthenticated() && request.auth.uid in resource.data.participants;
+      allow create, update: if isAuthenticated();
+      allow delete: if false;
     }
 
     match /chats/{chatId}/messages/{messageId} {

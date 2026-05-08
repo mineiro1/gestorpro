@@ -11,6 +11,8 @@ interface ClientBilling {
   monthlyFee: number;
   dueDate: string;
   status: 'delayed' | 'upcoming' | 'today';
+  extraAmount?: number;
+  extraReason?: string;
 }
 
 export default function Billing() {
@@ -82,10 +84,18 @@ export default function Billing() {
 
   const processMessageTemplate = (template: string, client: ClientBilling) => {
     const formattedDate = new Date(client.dueDate + 'T12:00:00').toLocaleDateString('pt-BR');
-    return template
+    const totalAmount = client.monthlyFee + (client.extraAmount || 0);
+
+    let message = template
       .replace(/{nome}/g, client.name)
-      .replace(/{valor}/g, client.monthlyFee.toFixed(2).replace('.', ','))
+      .replace(/{valor}/g, totalAmount.toFixed(2).replace('.', ','))
       .replace(/{vencimento}/g, formattedDate);
+
+    if (client.extraAmount && client.extraAmount > 0) {
+      message += `\n\n*Acréscimo (já incluso no valor total):* R$ ${client.extraAmount.toFixed(2).replace('.', ',')}\n*Motivo:* ${client.extraReason || 'Não especificado'}`;
+    }
+
+    return message;
   };
 
   const sendEvolutionMessage = async (client: ClientBilling, text: string) => {
@@ -223,7 +233,9 @@ export default function Billing() {
             phone: data.phone,
             monthlyFee: data.monthlyFee,
             dueDate: data.dueDate,
-            status: 'upcoming'
+            status: 'upcoming',
+            extraAmount: data.extraAmount,
+            extraReason: data.extraReason
           });
 
           // Generate multiple missing installments logic
@@ -231,6 +243,10 @@ export default function Billing() {
           let currentDueDateStr = data.dueDate;
           let iterations = 0;
           const maxIterations = 24; // limit to prevent infinite loops (2 years max)
+
+          // Only the CURRENT / FIRST due iteration should get the extraAmount, 
+          // because it resets after payment. If it's already delayed, they owe it now.
+          let isFirstIteration = true;
 
           while (iterations < maxIterations) {
             const [year, month, day] = currentDueDateStr.split('-').map(Number);
@@ -247,8 +263,11 @@ export default function Billing() {
               phone: data.phone,
               monthlyFee: data.monthlyFee,
               dueDate: currentDueDateStr,
-              status: 'upcoming'
+              status: 'upcoming',
+              extraAmount: isFirstIteration ? data.extraAmount : undefined,
+              extraReason: isFirstIteration ? data.extraReason : undefined
             };
+            isFirstIteration = false;
 
             if (diffDays < 0) {
               clientBilling.status = 'delayed';
@@ -599,7 +618,14 @@ export default function Billing() {
                       )}
                     </div>
                     <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-6 text-sm text-gray-500">
-                      <span className="font-semibold text-gray-700 font-mono text-base tracking-tight">R$ {client.monthlyFee.toFixed(2)}</span>
+                      <span className="font-semibold text-gray-700 font-mono text-base tracking-tight">
+                        R$ {(client.monthlyFee + (client.extraAmount || 0)).toFixed(2)}
+                      </span>
+                      {client.extraAmount && client.extraAmount > 0 && (
+                        <span className="text-xs text-pink-600 bg-pink-50 px-2 py-0.5 rounded-full font-medium">
+                          + R$ {client.extraAmount.toFixed(2)} Extra
+                        </span>
+                      )}
                       <span>{client.phone}</span>
                     </div>
                   </div>

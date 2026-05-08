@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { doc, getDoc, getDocs, addDoc, updateDoc, deleteDoc, collection, serverTimestamp, query, where, onSnapshot, setDoc } from 'firebase/firestore';
 import { History, Plus, X, Download } from 'lucide-react';
+import { openMap } from '../lib/maps';
 import { initializeApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
@@ -517,14 +518,13 @@ export default function ClientForm() {
                         }) : 'Data não disponível'}
                       </span>
                       {isAdmin && visit.location && (
-                        <a 
-                          href={`https://www.google.com/maps/search/?api=1&query=${visit.location.lat},${visit.location.lng}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-xs font-semibold text-blue-600 bg-blue-50 px-2 py-1 rounded hover:bg-blue-100 flex items-center transition-colors"
+                        <button 
+                          type="button"
+                          onClick={() => openMap({ lat: visit.location.lat, lng: visit.location.lng })}
+                          className="text-xs font-semibold text-blue-600 bg-blue-50 px-2 py-1 rounded hover:bg-blue-100 flex items-center transition-colors border-none"
                         >
                           Ver Localização
-                        </a>
+                        </button>
                       )}
                     </div>
                     <p className="text-gray-800 whitespace-pre-wrap">{visit.notes}</p>

@@ -5,6 +5,7 @@ import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, s
 import { jsPDF } from 'jspdf';
 import { Share2, FileText, Map, Camera, CheckCircle, MapPin } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { openMap, openRouteMap } from '../lib/maps';
 
 const DAYS_OF_WEEK = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 
@@ -324,16 +325,14 @@ export default function RoutesPage() {
     
     const addresses = routeClients
       .map(c => c.address)
-      .filter(addr => addr && addr.trim() !== '')
-      .map(addr => encodeURIComponent(addr));
+      .filter(addr => addr && addr.trim() !== '');
       
     if (addresses.length === 0) {
       alert("Nenhum de seus clientes nesta rota possui endereço preenchido.");
       return;
     }
     
-    const url = `https://www.google.com/maps/dir/${addresses.join('/')}`;
-    window.open(url, '_blank');
+    openRouteMap(addresses);
   };
 
   const handleOpenWaze = () => {
@@ -576,7 +575,16 @@ export default function RoutesPage() {
       {generated && (
         <div className="bg-white rounded-xl shadow-sm p-6">
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 space-y-4 md:space-y-0">
-            <h2 className="text-lg font-bold text-gray-800">Resultado da Rota</h2>
+            <div>
+              <h2 className="text-lg font-bold text-gray-800">Resultado da Rota</h2>
+              {routeClients.length > 0 && (
+                <p className="text-sm text-gray-600 mt-1">
+                  Total: <span className="font-semibold">{routeClients.length}</span> |
+                  Concluídos: <span className="font-semibold text-green-600">{routeClients.filter(c => completedVisitsOnRouteDate.has(c.id)).length}</span> |
+                  Faltam: <span className="font-semibold text-red-600">{routeClients.length - routeClients.filter(c => completedVisitsOnRouteDate.has(c.id)).length}</span>
+                </p>
+              )}
+            </div>
             <div className="flex flex-wrap gap-2">
               {(isAdmin || isManager) && routeDate > getLocalISODate() && routeClients.length > 0 && (
                 <button
@@ -703,7 +711,7 @@ export default function RoutesPage() {
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(client.address)}`, '_blank');
+                              openMap(client.address);
                             }}
                             className="p-1 text-blue-600 hover:bg-blue-100 rounded-md transition-colors"
                             title="Abrir no Google Maps"

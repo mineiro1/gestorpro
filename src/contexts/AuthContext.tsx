@@ -78,7 +78,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           doc(db, 'users', user.uid),
           (docSnap) => {
             if (docSnap.exists()) {
-              const profileData = docSnap.data() as UserProfile;
+              const profileData = { id: docSnap.id, uid: user.uid, ...docSnap.data() } as UserProfile;
               
               if (user.email === 'servincg@gmail.com' && (profileData.name !== 'Renivaldo Servin dos Santos' || profileData.subscriptionStatus !== 'active')) {
                 import('firebase/firestore').then(({ setDoc, Timestamp, doc }) => {

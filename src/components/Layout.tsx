@@ -6,6 +6,7 @@ import { signOut } from 'firebase/auth';
 import { Menu, X, Home, Users, UserCircle, Map, LogOut, Bell, MessageSquare, Headphones, Briefcase, History } from 'lucide-react';
 import clsx from 'clsx';
 import EmployeeLocationTracker from './EmployeeLocationTracker';
+import GlobalNotificationListener from './GlobalNotificationListener';
 
 export default function Layout() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -45,6 +46,7 @@ export default function Layout() {
   return (
     <div className="min-h-screen bg-gray-100 flex">
       <EmployeeLocationTracker />
+      <GlobalNotificationListener />
       {/* Mobile drawer overlay */}
       {isDrawerOpen && (
         <div 
@@ -132,7 +134,7 @@ export default function Layout() {
       </aside>
 
       {/* Main content */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden relative pb-16 lg:pb-0">
         <header className="bg-white shadow-sm h-16 flex items-center px-4 lg:hidden shrink-0">
           <button
             onClick={() => setIsDrawerOpen(true)}
@@ -149,6 +151,38 @@ export default function Layout() {
         <main className="flex-1 p-4 lg:p-8 overflow-y-auto bg-gray-100">
           <Outlet />
         </main>
+        
+        {/* Mobile Bottom Navigation */}
+        <nav className="lg:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 h-16 flex justify-around items-center z-40 px-2 pb-safe">
+          {(isClient ? [
+             { name: 'Painel', path: '/client-panel', icon: Home }
+           ] : (isAdmin || isManager) ? [
+             { name: 'Painel', path: '/', icon: Home },
+             { name: 'Clientes', path: '/clients', icon: Users },
+             { name: 'Rotas', path: '/routes', icon: Map },
+             { name: 'Mensagens', path: '/messages', icon: MessageSquare }
+           ] : [
+             { name: 'Rotas', path: '/routes', icon: Map },
+             { name: 'Clientes', path: '/clients', icon: Users },
+             { name: 'Contatos', path: '/chat', icon: Headphones }
+           ]).map((item) => {
+            const Icon = item.icon;
+            const isActive = location.pathname === item.path || (item.path !== '/' && location.pathname.startsWith(item.path));
+            return (
+              <Link
+                key={item.name}
+                to={item.path}
+                className={clsx(
+                  "flex flex-col items-center justify-center w-full h-full space-y-1 transition-colors",
+                  isActive ? "text-primary" : "text-gray-500 hover:text-primary"
+                )}
+              >
+                <Icon size={20} className={isActive ? "text-primary" : ""} />
+                <span className="text-[10px] font-medium leading-none truncate w-full text-center px-1">{item.name}</span>
+              </Link>
+            );
+          })}
+        </nav>
       </div>
     </div>
   );

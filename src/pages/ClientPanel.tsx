@@ -2,13 +2,14 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { collection, query, where, getDocs, orderBy, doc, getDoc } from 'firebase/firestore';
-import { Calendar, CheckCircle } from 'lucide-react';
+import { Calendar, CheckCircle, X, Download } from 'lucide-react';
 
 export default function ClientPanel() {
   const { userProfile } = useAuth();
   const [clientData, setClientData] = useState<any>(null);
   const [visits, setVisits] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [fullscreenImage, setFullscreenImage] = useState<string | null>(null);
 
   useEffect(() => {
     if (!userProfile) return;
@@ -101,7 +102,12 @@ export default function ClientPanel() {
                 {v.notes && <p className="text-sm text-gray-600 bg-gray-100 p-3 rounded-lg">{v.notes}</p>}
                 {v.photoUrl && (
                   <div className="mt-3">
-                    <img src={v.photoUrl} alt="Foto da visita" className="w-32 h-32 object-cover rounded-lg shadow-sm border border-gray-200" />
+                    <img 
+                      src={v.photoUrl} 
+                      alt="Foto da visita" 
+                      onClick={() => setFullscreenImage(v.photoUrl)}
+                      className="w-32 h-32 object-cover rounded-lg shadow-sm border border-gray-200 cursor-pointer hover:opacity-90 transition-opacity" 
+                    />
                   </div>
                 )}
              </div>
@@ -111,6 +117,31 @@ export default function ClientPanel() {
           )}
         </div>
       </div>
+
+      {/* Fullscreen Image Modal */}
+      {fullscreenImage && (
+        <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4">
+          <button 
+            onClick={() => setFullscreenImage(null)}
+            className="absolute top-4 right-4 text-white hover:text-gray-300 p-2"
+          >
+            <X size={32} />
+          </button>
+          <img 
+            src={fullscreenImage} 
+            alt="Foto em tela cheia" 
+            className="max-w-full max-h-[85vh] object-contain"
+          />
+          <a 
+            href={fullscreenImage} 
+            download={`visita_${new Date().getTime()}.jpg`}
+            className="absolute bottom-8 bg-primary text-white px-6 py-3 rounded-full font-semibold hover:bg-primary-light transition-colors flex items-center"
+          >
+            <Download size={20} className="mr-2" />
+            Baixar Foto
+          </a>
+        </div>
+      )}
     </div>
   );
 }

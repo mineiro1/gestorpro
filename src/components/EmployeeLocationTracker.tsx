@@ -39,7 +39,7 @@ export default function EmployeeLocationTracker() {
         },
         {
           enableHighAccuracy: true,
-          maximumAge: 60000,
+          maximumAge: 0,
           timeout: 27000,
         }
       );

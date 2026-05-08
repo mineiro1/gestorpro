@@ -35,16 +35,31 @@ export default async function handler(req: any, res: any) {
       const paymentDetails = new Payment(client);
       const paymentInfo = await paymentDetails.get({ id: dataId as string });
       
-      if (paymentInfo.status === "approved" && paymentInfo.external_reference) {
+      if (paymentInfo && paymentInfo.status === "approved" && paymentInfo.external_reference) {
         const adminId = paymentInfo.external_reference;
-        const newExpiry = new Date();
+        
+        const userRef = admin.firestore().collection("users").doc(adminId);
+        const userDoc = await userRef.get();
+        const userData = userDoc.data();
+        
+        // Determina a data base para expiração: a data atual, ou a data de expiração atual se for no futuro
+        let baseDate = new Date();
+        if (userData?.subscriptionExpiresAt) {
+          const currentExpiry = userData.subscriptionExpiresAt.toDate ? userData.subscriptionExpiresAt.toDate() : new Date(userData.subscriptionExpiresAt);
+          if (currentExpiry > baseDate) {
+            baseDate = currentExpiry;
+          }
+        }
+        
+        const newExpiry = new Date(baseDate.getTime());
+        // Adiciona um mês (30 dias)
         newExpiry.setDate(newExpiry.getDate() + 30);
 
-        await admin.firestore().collection("users").doc(adminId).update({
+        await userRef.set({
           subscriptionStatus: 'active',
           subscriptionExpiresAt: admin.firestore.Timestamp.fromDate(newExpiry),
           updatedAt: admin.firestore.FieldValue.serverTimestamp()
-        });
+        }, { merge: true });
       }
     } catch (error) {
       console.error("Webhook processing error:", error);

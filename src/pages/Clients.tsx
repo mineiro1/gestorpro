@@ -2,8 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, where, onSnapshot, deleteDoc, doc, addDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { Edit, Trash2, Plus, DollarSign, RotateCcw, Package, Search, MessageCircle } from 'lucide-react';
+import { collection, query, where, onSnapshot, deleteDoc, doc, addDoc, updateDoc, serverTimestamp, limit } from 'firebase/firestore';
+import { Edit, Trash2, Plus, DollarSign, RotateCcw, Package, Search, MessageCircle, PlusCircle } from 'lucide-react';
 
 export default function Clients() {
   const { userProfile, isAdmin, isManager } = useAuth();
@@ -22,6 +22,15 @@ export default function Clients() {
   const [undoModalOpen, setUndoModalOpen] = useState(false);
   const [clientToUndo, setClientToUndo] = useState<any>(null);
 
+  // Extra Modal
+  const [extraModalOpen, setExtraModalOpen] = useState(false);
+  const [clientToExtra, setClientToExtra] = useState<any>(null);
+  const [extraAmount, setExtraAmount] = useState('');
+  const [extraReason, setExtraReason] = useState('');
+  const [isSubmittingExtra, setIsSubmittingExtra] = useState(false);
+  const [loadLimit, setLoadLimit] = useState(50);
+  const [hasMore, setHasMore] = useState(true);
+
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 20;
 
@@ -36,14 +45,21 @@ export default function Clients() {
     
     let q = query(collection(db, 'clients'), where('adminId', '==', adminId));
     
-    // Se não for admin nem gestor, filtra apenas os clientes atribuídos a este colaborador
     if (!isAdmin && !isManager) {
       q = query(q, where('employeeId', '==', userProfile.uid));
+    }
+    
+    // Only apply limit if there's no search term, to allow local search to work on everything if they search
+    if (!searchTerm) {
+       q = query(q, limit(loadLimit));
+    } else {
+       q = query(q, limit(10000));
     }
 
     const unsubscribeClients = onSnapshot(q, (snapshot) => {
       const clientsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setClients(clientsData);
+      setHasMore(snapshot.docs.length >= loadLimit);
       setLoading(false);
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, 'clients');
@@ -146,10 +162,17 @@ export default function Clients() {
         refYear = due.getFullYear();
       }
 
+      const extraAmt = clientToPay.extraAmount || 0;
+      const extraRsn = clientToPay.extraReason || null;
+      const totalAmountPaid = clientToPay.monthlyFee + extraAmt;
+
       await addDoc(collection(db, 'payments'), {
         adminId: userProfile.uid,
         clientId: clientToPay.id,
-        amount: clientToPay.monthlyFee,
+        amount: totalAmountPaid,
+        baseAmount: clientToPay.monthlyFee,
+        extraAmount: extraAmt,
+        extraReason: extraRsn,
         date: serverTimestamp(),
         month: currentDate.getMonth() + 1,
         year: currentDate.getFullYear(),
@@ -179,11 +202,19 @@ export default function Clients() {
           
           await updateDoc(doc(db, 'clients', clientToPay.id), {
             dueDate: nextDueDate,
-            baseDueDay: baseDay
+            baseDueDay: baseDay,
+            extraAmount: 0,
+            extraReason: ''
           });
         } catch (err) {
           console.error("Erro ao atualizar data de vencimento:", err);
         }
+      } else {
+        // Just clear extra if no due date
+        await updateDoc(doc(db, 'clients', clientToPay.id), {
+          extraAmount: 0,
+          extraReason: ''
+        });
       }
 
       setPaymentModalOpen(false);
@@ -216,6 +247,31 @@ export default function Clients() {
       setClientToUndo(null);
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, `payments/${paidClients[clientToUndo.id]?.id}`);
+    }
+  };
+
+  const handleExtraClick = (client: any) => {
+    setClientToExtra(client);
+    setExtraAmount(client.extraAmount ? client.extraAmount.toString() : '');
+    setExtraReason(client.extraReason || '');
+    setExtraModalOpen(true);
+  };
+
+  const confirmExtra = async () => {
+    if (!clientToExtra || isSubmittingExtra) return;
+    setIsSubmittingExtra(true);
+    try {
+      await updateDoc(doc(db, 'clients', clientToExtra.id), {
+        extraAmount: parseFloat(extraAmount) || 0,
+        extraReason: extraReason.trim(),
+      });
+      setExtraModalOpen(false);
+      setClientToExtra(null);
+    } catch (err) {
+      console.error(err);
+      handleFirestoreError(err, OperationType.UPDATE, 'clients');
+    } finally {
+      setIsSubmittingExtra(false);
     }
   };
 
@@ -289,10 +345,19 @@ export default function Clients() {
                     <td className="p-4">{client.phone}</td>
                     {(isAdmin || isManager) && (
                       <>
-                        <td className="p-4">R$ {client.monthlyFee?.toFixed(2)}</td>
-                        <td className="p-4">
-                          {client.dueDate ? new Date(client.dueDate + 'T12:00:00').toLocaleDateString('pt-BR') : 'N/A'}
-                        </td>
+                      <td className="p-4">
+                        <div className="flex flex-col">
+                          <span>R$ {((client.monthlyFee || 0) + (client.extraAmount || 0)).toFixed(2)}</span>
+                          {client.extraAmount && client.extraAmount > 0 && (
+                            <span className="text-[10px] text-pink-600 font-semibold bg-pink-50 px-1.5 py-0.5 rounded-full inline-block w-max mt-1">
+                              +R$ {client.extraAmount.toFixed(2)} Extra
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="p-4">
+                        {client.dueDate ? new Date(client.dueDate + 'T12:00:00').toLocaleDateString('pt-BR') : 'N/A'}
+                      </td>
                       </>
                     )}
                     <td className="p-4 flex justify-end space-x-2">
@@ -332,6 +397,13 @@ export default function Clients() {
                             title="Registrar Pagamento"
                           >
                             <DollarSign size={18} />
+                          </button>
+                          <button
+                            onClick={() => handleExtraClick(client)}
+                            className="p-2 text-pink-600 hover:bg-pink-50 rounded-md transition-colors"
+                            title="Extra"
+                          >
+                            <PlusCircle size={18} />
                           </button>
                           <Link
                             to={`/clients/${client.id}`}
@@ -418,6 +490,17 @@ export default function Clients() {
             </div>
           </div>
         )}
+        
+        {!searchTerm && hasMore && (
+           <div className="flex justify-center p-4 bg-gray-50 rounded-b-xl border-t border-gray-100">
+             <button
+               onClick={() => setLoadLimit(prev => prev + 50)}
+               className="px-6 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium text-sm shadow-sm"
+             >
+               Carregar Mais Clientes do Banco de Dados
+             </button>
+           </div>
+        )}
       </div>
 
       {/* Delete Modal */}
@@ -450,7 +533,12 @@ export default function Clients() {
           <div className="bg-white rounded-xl p-6 max-w-sm w-full">
             <h3 className="text-lg font-bold text-gray-900 mb-2">Registrar Pagamento</h3>
             <p className="text-gray-600 mb-6">
-              Confirmar pagamento de R$ {clientToPay?.monthlyFee?.toFixed(2)} para {clientToPay?.name} neste mês?
+              Confirmar pagamento de R$ {((clientToPay?.monthlyFee || 0) + (clientToPay?.extraAmount || 0)).toFixed(2)} para {clientToPay?.name} neste mês?
+              {clientToPay?.extraAmount && clientToPay.extraAmount > 0 ? (
+                <span className="block mt-2 text-sm text-pink-600 font-medium">
+                  Inclui R$ {clientToPay.extraAmount.toFixed(2)} de extra ({clientToPay.extraReason || 'Sem motivo'}).
+                </span>
+              ) : null}
             </p>
             <div className="flex justify-end space-x-3">
               <button
@@ -491,6 +579,56 @@ export default function Clients() {
                 className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors"
               >
                 Sim, desfazer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Extra Modal */}
+      {extraModalOpen && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl p-6 max-w-sm w-full">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Adicionar Extra</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              Valor extra que será cobrado na próxima mensalidade vigente de {clientToExtra?.name}.
+            </p>
+            <div className="space-y-4 mb-6">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Valor Extra (R$)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={extraAmount}
+                  onChange={(e) => setExtraAmount(e.target.value)}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary outline-none"
+                  placeholder="0.00"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Motivo</label>
+                <input
+                  type="text"
+                  value={extraReason}
+                  onChange={(e) => setExtraReason(e.target.value)}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary outline-none"
+                  placeholder="Ex: Instalação, material, etc."
+                />
+              </div>
+            </div>
+            <div className="flex justify-end space-x-3">
+              <button
+                onClick={() => setExtraModalOpen(false)}
+                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={confirmExtra}
+                disabled={isSubmittingExtra}
+                className="px-4 py-2 bg-pink-600 text-white rounded-lg hover:bg-pink-700 transition-colors disabled:opacity-50"
+              >
+                {isSubmittingExtra ? 'Salvando...' : 'Salvar Extra'}
               </button>
             </div>
           </div>

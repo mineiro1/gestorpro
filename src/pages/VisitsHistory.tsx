@@ -4,8 +4,9 @@ import { db } from '../lib/firebase';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { History, MapPin, X, Download, Filter } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { openMap } from '../lib/maps';
 import jsPDF from 'jspdf';
-import 'jspdf-autotable';
+import autoTable from 'jspdf-autotable';
 
 export default function VisitsHistory() {
   const { userProfile, isAdmin, isManager } = useAuth();
@@ -30,16 +31,20 @@ export default function VisitsHistory() {
     const clientsQ = query(collection(db, 'clients'), where('adminId', '==', adminId));
     const unsubClients = onSnapshot(clientsQ, (snap) => {
       const cMap: Record<string, any> = {};
-      snap.docs.forEach(doc => { cMap[doc.id] = doc.data(); });
+      snap.docs.forEach(doc => { cMap[doc.id] = { id: doc.id, ...doc.data() }; });
       setClients(cMap);
+    }, (error) => {
+      console.error("Clients snapshot error:", error);
     });
 
     // Fetch Employees for mapping
     const empQ = query(collection(db, 'users'), where('adminId', '==', adminId));
     const unsubEmp = onSnapshot(empQ, (snap) => {
       const eMap: Record<string, any> = {};
-      snap.docs.forEach(doc => { eMap[doc.id] = doc.data(); });
+      snap.docs.forEach(doc => { eMap[doc.id] = { id: doc.id, ...doc.data() }; });
       setEmployees(eMap);
+    }, (error) => {
+      console.error("Employees snapshot error:", error);
     });
 
     // Fetch Visits
@@ -118,7 +123,7 @@ export default function VisitsHistory() {
       ];
     });
 
-    (doc as any).autoTable({
+    autoTable(doc, {
       startY: subtitle ? 35 : 30,
       head: [['Data/Hora', 'Cliente', 'Colaborador', 'Observações']],
       body: tableData,
@@ -239,14 +244,13 @@ export default function VisitsHistory() {
                             </button>
                           )}
                           {isAdmin && visit.location && (
-                            <a 
-                              href={`https://www.google.com/maps/search/?api=1&query=${visit.location.lat},${visit.location.lng}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-xs font-semibold text-blue-600 bg-blue-50 px-2 py-1 rounded hover:bg-blue-100 flex items-center transition-colors"
+                            <button 
+                              type="button"
+                              onClick={() => openMap({ lat: visit.location.lat, lng: visit.location.lng })}
+                              className="text-xs font-semibold text-blue-600 bg-blue-50 px-2 py-1 rounded hover:bg-blue-100 flex items-center transition-colors border-none"
                             >
                               <MapPin size={12} className="mr-1" /> Mapa
-                            </a>
+                            </button>
                           )}
                         </div>
                       </td>

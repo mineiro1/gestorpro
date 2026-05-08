@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, where, orderBy, onSnapshot, addDoc, serverTimestamp, getDocs } from 'firebase/firestore';
+import { collection, query, where, orderBy, onSnapshot, addDoc, serverTimestamp, getDocs, doc, setDoc, increment } from 'firebase/firestore';
 import { Send, Mic, Square, User as UserIcon, MessageCircle, ArrowLeft } from 'lucide-react';
 
 const BEEP_SOUND = 'data:audio/mp3;base64,//NExAAAAANIAAAAAExBTUUzLjEwMKqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NExAAAAANIAAAAAExBTUUzLjEwMKqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq'; 
@@ -37,6 +37,7 @@ export default function Chat() {
   const [contacts, setContacts] = useState<any[]>([]);
   const [selectedContact, setSelectedContact] = useState<any>(null);
   const [messages, setMessages] = useState<any[]>([]);
+  const [chatsData, setChatsData] = useState<Record<string, any>>({});
   const [newMessage, setNewMessage] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -68,6 +69,34 @@ export default function Chat() {
     
     fetchContacts();
   }, [userProfile, isAdmin, isManager]);
+
+  // Global chats listener for unread counts
+  useEffect(() => {
+    if (!userProfile) return;
+    const qChats = query(collection(db, 'chats'), where('participants', 'array-contains', userProfile.uid));
+    const unsubChats = onSnapshot(qChats, (snapshot) => {
+      const data: Record<string, any> = {};
+      snapshot.docs.forEach(doc => {
+        data[doc.id] = doc.data();
+      });
+      setChatsData(data);
+    }, (error) => {
+      console.error("Chats list error:", error);
+    });
+    return () => unsubChats();
+  }, [userProfile]);
+
+  // Clear unread count when contact is selected
+  useEffect(() => {
+    if (!userProfile || !selectedContact) return;
+    const chatId = [userProfile.uid, selectedContact.id].sort().join('_');
+    const chatInfo = chatsData[chatId];
+    if (chatInfo && chatInfo[`unreadCount_${userProfile.uid}`] > 0) {
+      setDoc(doc(db, 'chats', chatId), {
+        [`unreadCount_${userProfile.uid}`]: 0
+      }, { merge: true }).catch(console.error);
+    }
+  }, [userProfile, selectedContact, chatsData]);
 
   // Messages listener
   useEffect(() => {
@@ -108,12 +137,27 @@ export default function Chat() {
     const msgText = newMessage.trim();
     
     try {
+      await setDoc(doc(db, 'chats', chatId), {
+        participants: [userProfile.uid, selectedContact.id],
+        lastMessageAt: serverTimestamp(),
+        [`unreadCount_${selectedContact.id}`]: increment(1)
+      }, { merge: true });
+
       await addDoc(collection(db, 'chats', chatId, 'messages'), {
         senderId: userProfile.uid,
         text: msgText,
         type: 'text',
         timestamp: serverTimestamp()
       });
+      
+      // Notify receiver
+      await setDoc(doc(db, 'notifications', selectedContact.id), {
+        unreadMessages: increment(1),
+        lastMessageAt: serverTimestamp(),
+        senderName: userProfile.name,
+        timestamp: new Date().getTime() // Force change detection
+      }, { merge: true });
+
       setNewMessage('');
     } catch (e) {
        console.error("Error sending", e);
@@ -143,12 +187,25 @@ export default function Chat() {
            if (base64Audio && selectedContact && userProfile) {
               const chatId = [userProfile.uid, selectedContact.id].sort().join('_');
               try {
+                await setDoc(doc(db, 'chats', chatId), {
+                  participants: [userProfile.uid, selectedContact.id],
+                  lastMessageAt: serverTimestamp(),
+                  [`unreadCount_${selectedContact.id}`]: increment(1)
+                }, { merge: true });
+
                 await addDoc(collection(db, 'chats', chatId, 'messages'), {
                   senderId: userProfile.uid,
                   audioBase64: base64Audio,
                   type: 'audio',
                   timestamp: serverTimestamp()
                 });
+                
+                await setDoc(doc(db, 'notifications', selectedContact.id), {
+                  unreadMessages: increment(1),
+                  lastMessageAt: serverTimestamp(),
+                  senderName: userProfile.name,
+                  timestamp: new Date().getTime()
+                }, { merge: true });
               } catch(e) {
                  console.error("Error sending voice message", e);
               }
@@ -180,21 +237,30 @@ export default function Chat() {
       <div className={`${selectedContact ? 'hidden' : 'flex'} w-full md:w-1/3 border-r border-gray-200 bg-gray-50 flex-col`}>
         <div className="p-4 bg-primary text-white font-bold text-lg">Contatos</div>
         <div className="flex-1 overflow-y-auto">
-          {contacts.map(c => (
-            <button
-              key={c.id}
-              onClick={() => setSelectedContact(c)}
-              className={`w-full flex items-center p-4 border-b border-gray-100 hover:bg-gray-100 transition-colors text-left ${selectedContact?.id === c.id ? 'bg-primary/5 border-l-4 border-l-primary' : ''}`}
-            >
-              <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center text-primary font-bold mr-3 shrink-0">
-                <UserIcon size={20} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="font-semibold text-gray-800 truncate">{c.name}</p>
-                <p className="text-xs text-gray-500 uppercase">{c.role === 'admin' ? 'Administrador' : c.role === 'manager' ? 'Gestor' : 'Colaborador'}</p>
-              </div>
-            </button>
-          ))}
+          {contacts.map(c => {
+            const chatId = userProfile ? [userProfile.uid, c.id].sort().join('_') : '';
+            const unread = chatsData[chatId]?.[`unreadCount_${userProfile?.uid}`] || 0;
+            return (
+              <button
+                key={c.id}
+                onClick={() => setSelectedContact(c)}
+                className={`w-full flex items-center p-4 border-b border-gray-100 hover:bg-gray-100 transition-colors text-left ${selectedContact?.id === c.id ? 'bg-primary/5 border-l-4 border-l-primary' : ''}`}
+              >
+                <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center text-primary font-bold mr-3 shrink-0">
+                  <UserIcon size={20} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-gray-800 truncate">{c.name}</p>
+                  <p className="text-xs text-gray-500 uppercase">{c.role === 'admin' ? 'Administrador' : c.role === 'manager' ? 'Gestor' : 'Colaborador'}</p>
+                </div>
+                {unread > 0 && (
+                  <div className="bg-red-500 text-white text-xs font-bold w-6 h-6 rounded-full flex items-center justify-center shrink-0 ml-2">
+                    {unread}
+                  </div>
+                )}
+              </button>
+            );
+          })}
           {contacts.length === 0 && <p className="p-4 text-gray-500 text-sm">Nenhum contato disponível.</p>}
         </div>
       </div>

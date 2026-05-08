@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { collection, query, where, onSnapshot, deleteDoc, doc, updateDoc } from 'firebase/firestore';
 import { Edit, Trash2, Plus, MapPin } from 'lucide-react';
+import { openMap } from '../lib/maps';
 
 export default function Employees() {
   const { userProfile, isAdmin, isManager } = useAuth();
@@ -97,7 +98,7 @@ export default function Employees() {
                       {employee.lastLocation && (
                         <button
                           onClick={() => {
-                            window.open(`https://www.google.com/maps/search/?api=1&query=${employee.lastLocation.lat},${employee.lastLocation.lng}`, '_blank');
+                            openMap({ lat: employee.lastLocation.lat, lng: employee.lastLocation.lng });
                           }}
                           className="p-2 text-green-600 hover:bg-green-50 rounded-md transition-colors"
                           title="Ver Localização Atual"
