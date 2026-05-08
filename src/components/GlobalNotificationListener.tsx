@@ -1,7 +1,9 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../lib/firebase';
 import { doc, onSnapshot } from 'firebase/firestore';
+import { MessageSquare, X } from 'lucide-react';
+import { useNavigate, useLocation } from 'react-router-dom';
 
 let sharedAudioCtx: AudioContext | null = null;
 let hasInteracted = false;
@@ -23,6 +25,9 @@ if (typeof window !== 'undefined') {
   const resumeAudio = () => {
     hasInteracted = true;
     initAudio();
+    if ('Notification' in window && Notification.permission !== 'granted' && Notification.permission !== 'denied') {
+      Notification.requestPermission().catch(() => {});
+    }
     window.removeEventListener('click', resumeAudio);
     window.removeEventListener('keydown', resumeAudio);
     window.removeEventListener('touchstart', resumeAudio);
@@ -45,12 +50,9 @@ export default function GlobalNotificationListener() {
   const { userProfile } = useAuth();
   const initialLoadRef = useRef(true);
   const lastTimestampRef = useRef<number>(0);
-
-  useEffect(() => {
-    if ('Notification' in window && Notification.permission !== 'granted' && Notification.permission !== 'denied') {
-      Notification.requestPermission();
-    }
-  }, []);
+  const [toast, setToast] = useState<{show: boolean, senderName: string}>({ show: false, senderName: '' });
+  const navigate = useNavigate();
+  const location = useLocation();
 
   useEffect(() => {
     if (!userProfile) return;
@@ -67,15 +69,28 @@ export default function GlobalNotificationListener() {
         if (data.timestamp && data.timestamp > lastTimestampRef.current) {
           lastTimestampRef.current = data.timestamp;
           
-          // Trigger Audio
-          playNotificationSound();
+          // Only show notification if we are not already on the chat page
+          if (!location.pathname.startsWith('/chat')) {
+            // Trigger Audio
+            playNotificationSound();
 
-          // Push Notification
-          if ('Notification' in window && Notification.permission === 'granted') {
-            new Notification('Nova Mensagem', {
-              body: `Você tem uma nova mensagem de ${data.senderName || 'um contato'}.`,
-              icon: '/logo.png'
-            });
+            // Push Notification
+            if ('Notification' in window && Notification.permission === 'granted') {
+              try {
+                new Notification('Nova Mensagem', {
+                  body: `Você tem uma nova mensagem de ${data.senderName || 'um contato'}.`,
+                  icon: '/logo.png'
+                });
+              } catch(e) {
+                console.warn('Notification failed', e);
+              }
+            }
+
+            // In-app Toast
+            setToast({ show: true, senderName: data.senderName || 'um contato' });
+            setTimeout(() => {
+              setToast(prev => ({ ...prev, show: false }));
+            }, 5000);
           }
         }
       } else {
@@ -86,7 +101,38 @@ export default function GlobalNotificationListener() {
     });
 
     return () => unsub();
-  }, [userProfile]);
+  }, [userProfile, location.pathname]);
 
-  return null;
+  if (!toast.show) return null;
+
+  return (
+    <div className="fixed top-4 right-4 z-50 animate-in slide-in-from-top fade-in duration-300">
+      <div 
+        className="bg-white rounded-lg shadow-lg border border-gray-200 p-4 flex items-start gap-4 max-w-sm cursor-pointer hover:bg-gray-50 transition-colors"
+        onClick={() => {
+          setToast({ show: false, senderName: '' });
+          navigate('/chat');
+        }}
+      >
+        <div className="bg-primary/20 p-2 rounded-full text-primary shrink-0">
+          <MessageSquare size={24} />
+        </div>
+        <div className="flex-1">
+          <h4 className="font-bold text-gray-900 text-sm">Nova Mensagem</h4>
+          <p className="text-gray-600 text-sm mt-1 leading-tight">
+            Você recebeu uma mensagem de {toast.senderName}.
+          </p>
+        </div>
+        <button 
+          onClick={(e) => {
+            e.stopPropagation();
+            setToast({ show: false, senderName: '' });
+          }}
+          className="text-gray-400 hover:text-gray-600 p-1 -mt-1 -mr-1"
+        >
+          <X size={16} />
+        </button>
+      </div>
+    </div>
+  );
 }
