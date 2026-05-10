@@ -3,7 +3,7 @@ import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { auth } from '../lib/firebase';
 import { signOut } from 'firebase/auth';
-import { Menu, X, Home, Users, UserCircle, Map, LogOut, Bell, MessageSquare, Headphones, Briefcase, History } from 'lucide-react';
+import { Menu, X, Home, Users, UserCircle, Map, LogOut, Bell, MessageSquare, Headphones, Briefcase, History, Contact } from 'lucide-react';
 import clsx from 'clsx';
 import EmployeeLocationTracker from './EmployeeLocationTracker';
 import GlobalNotificationListener from './GlobalNotificationListener';
@@ -25,6 +25,7 @@ export default function Layout() {
     ? [
         { name: 'Dashboard', path: '/', icon: Home },
         { name: 'Clientes', path: '/clients', icon: Users },
+        { name: 'Agenda', path: '/agenda', icon: Contact },
         { name: 'Cobranças', path: '/billing', icon: Bell },
         { name: 'Mensagens', path: '/messages', icon: MessageSquare },
         { name: 'Contatos', path: '/chat', icon: Headphones },

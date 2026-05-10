@@ -18,6 +18,7 @@ import OneOffJobs from './pages/OneOffJobs';
 import VisitsHistory from './pages/VisitsHistory';
 import SubscriptionWall from './pages/SubscriptionWall';
 import SuperAdminPage from './pages/SuperAdminPage';
+import Agenda from './pages/Agenda';
 import Layout from './components/Layout';
 
 const ProtectedRoute = ({ children, allowedRoles }: { children: React.ReactNode, allowedRoles?: ('admin' | 'employee' | 'manager' | 'client')[] }) => {
@@ -54,6 +55,7 @@ export default function App() {
             <Route path="clients/:id/supplies" element={<ProtectedRoute allowedRoles={['admin', 'manager', 'employee']}><SuppliesForm /></ProtectedRoute>} />
             <Route path="messages" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><Messages /></ProtectedRoute>} />
             <Route path="chat" element={<ProtectedRoute allowedRoles={['admin', 'manager', 'employee']}><Chat /></ProtectedRoute>} />
+            <Route path="agenda" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><Agenda /></ProtectedRoute>} />
             <Route path="employees" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><Employees /></ProtectedRoute>} />
             <Route path="employees/new" element={<ProtectedRoute allowedRoles={['admin']}><EmployeeForm /></ProtectedRoute>} />
             <Route path="employees/:id" element={<ProtectedRoute allowedRoles={['admin']}><EmployeeForm /></ProtectedRoute>} />

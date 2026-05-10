@@ -1,5 +1,17 @@
 {
   "entities": {
+    "AgendaContact": {
+      "title": "Agenda Contact",
+      "description": "Represents a contact saved in the agenda.",
+      "type": "object",
+      "properties": {
+        "adminId": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["adminId", "name", "phone", "createdAt"]
+    },
     "User": {
       "title": "User",
       "description": "Represents an Admin or Employee in the system.",
@@ -47,6 +59,10 @@
     }
   },
   "firestore": {
+    "/agenda_contacts/{contactId}": {
+      "schema": { "$ref": "#/entities/AgendaContact" },
+      "description": "Agenda contacts collection"
+    },
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/User" },
       "description": "Users collection"

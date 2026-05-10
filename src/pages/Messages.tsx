@@ -17,17 +17,29 @@ export default function Messages() {
   useEffect(() => {
     if (!userProfile) return;
 
-    const fetchClients = async () => {
+    const fetchRecipients = async () => {
       try {
         const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
-        let q = query(collection(db, 'clients'), where('adminId', '==', adminId));
+        
+        // Fetch clients
+        let qClients = query(collection(db, 'clients'), where('adminId', '==', adminId));
         if (userProfile.role === 'employee') {
-          q = query(q, where('employeeId', '==', userProfile.uid));
+          qClients = query(qClients, where('employeeId', '==', userProfile.uid));
         }
-        const snap = await getDocs(q);
-        const clientsData = snap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) }));
-        clientsData.sort((a, b) => a.name.localeCompare(b.name));
-        setClients(clientsData);
+        const snapClients = await getDocs(qClients);
+        const clientsData = snapClients.docs.map(doc => ({ id: doc.id, type: 'client', ...(doc.data() as any) }));
+        
+        // Fetch agenda contacts (only for admin/manager)
+        let agendaData: any[] = [];
+        if (isAdmin || isManager) {
+          const qAgenda = query(collection(db, 'agenda_contacts'), where('adminId', '==', adminId));
+          const snapAgenda = await getDocs(qAgenda);
+          agendaData = snapAgenda.docs.map(doc => ({ id: doc.id, type: 'agenda', ...(doc.data() as any) }));
+        }
+
+        const combinedData = [...clientsData, ...agendaData];
+        combinedData.sort((a, b) => a.name.localeCompare(b.name));
+        setClients(combinedData);
       } catch (error) {
         handleFirestoreError(error, OperationType.LIST, 'clients');
       } finally {
@@ -35,7 +47,7 @@ export default function Messages() {
       }
     };
 
-    fetchClients();
+    fetchRecipients();
   }, [userProfile, isAdmin]);
 
   const handleSelectAll = (checked: boolean) => {
@@ -354,9 +366,14 @@ export default function Messages() {
                         {isSelected && <CheckSquare size={20} className="text-primary absolute inset-0 pointer-events-none scale-110" />}
                         {!isSelected && <Square size={20} className="text-transparent absolute inset-0 pointer-events-none" />}
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-semibold text-gray-800 truncate">{client.name}</p>
-                        <p className="text-xs text-gray-500 font-mono">{client.phone}</p>
+                      <div className="flex-1 min-w-0 flex items-center justify-between">
+                        <div>
+                          <p className="text-sm font-semibold text-gray-800 truncate">{client.name}</p>
+                          <p className="text-xs text-gray-500 font-mono">{client.phone}</p>
+                        </div>
+                        {client.type === 'agenda' && (
+                          <span className="text-[10px] uppercase font-bold px-2 py-0.5 bg-gray-200 text-gray-600 rounded-full">Agenda</span>
+                        )}
                       </div>
                     </label>
                   </li>
@@ -364,7 +381,7 @@ export default function Messages() {
               })}
             </ul>
             {clients.length === 0 && (
-              <p className="text-center text-gray-500 text-sm mt-8">Nenhum cliente disponível.</p>
+              <p className="text-center text-gray-500 text-sm mt-8">Nenhum destinatário disponível.</p>
             )}
           </div>
         </div>

@@ -191,9 +191,24 @@ service cloud.firestore {
     // Rules
     // ===============================================================
 
+    function isValidAgendaContact(data) {
+      return hasOnlyAllowedFields(['adminId', 'name', 'phone', 'createdAt']) &&
+             isValidString(data.adminId, 1, 128) &&
+             isValidString(data.name, 1, 100) &&
+             isValidString(data.phone, 1, 50) &&
+             data.createdAt is timestamp;
+    }
+
     match /settings/{docId} {
       allow read: if true;
       allow write: if isSuperAdmin();
+    }
+    
+    match /agenda_contacts/{contactId} {
+      allow read: if isAuthenticated() && resource.data.adminId == getAdminId();
+      allow create: if isAuthenticated() && (isAdmin() || isManager()) && request.resource.data.adminId == getAdminId() && isValidAgendaContact(request.resource.data);
+      allow update: if isAuthenticated() && (isAdmin() || isManager()) && resource.data.adminId == getAdminId() && request.resource.data.adminId == getAdminId() && isValidAgendaContact(request.resource.data);
+      allow delete: if isAuthenticated() && (isAdmin() || isManager()) && resource.data.adminId == getAdminId();
     }
     
     match /users/{userId} {
