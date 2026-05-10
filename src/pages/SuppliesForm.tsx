@@ -218,8 +218,9 @@ export default function SuppliesForm() {
       }
     } else {
       // Fallback to Web WhatsApp natively (synchronous to avoid popup block)
-      const encodedMessage = encodeURIComponent(message);
-      window.open(`https://wa.me/${number}?text=${encodedMessage}`, '_blank');
+      import('../lib/whatsapp').then(({ openWhatsApp }) => {
+        openWhatsApp(number, message);
+      });
       navigate('/clients');
     }
   };

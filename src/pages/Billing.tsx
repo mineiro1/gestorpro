@@ -385,25 +385,25 @@ export default function Billing() {
         alert(`Falha ao enviar mensagem para ${client.name}: ${error.message}`);
       }
     } else {
-      const encodedMessage = encodeURIComponent(message);
-      const whatsappUrl = `https://wa.me/55${cleanPhone}?text=${encodedMessage}`;
-      window.open(whatsappUrl, '_blank');
+      import('../lib/whatsapp').then(({ openWhatsApp }) => {
+        openWhatsApp(`55${cleanPhone}`, message);
+      });
     }
   };
 
-  const processQueue = async (clients: ClientBilling[]) => {
+  const processQueue = async (clients: ClientBilling[], silent = false) => {
     if (waSettings.useMetaApi || waSettings.useEvolutionApi) {
       if (waSettings.useEvolutionApi && (!waSettings.evolutionApiUrl || !waSettings.evolutionApiKey || !waSettings.evolutionInstanceName)) {
-        alert("Credenciais da Evolution API incompletas nas configurações.");
+        if(!silent) alert("Credenciais da Evolution API incompletas nas configurações.");
         return;
       }
       if (waSettings.useMetaApi && (!waSettings.metaToken || !waSettings.metaPhoneNumberId)) {
-        alert("Credenciais da API Oficial (Meta) incompletas nas configurações.");
+        if(!silent) alert("Credenciais da API Oficial (Meta) incompletas nas configurações.");
         return;
       }
 
       const apiName = waSettings.useMetaApi ? "API Oficial do WhatsApp (Meta)" : "Evolution API";
-      if (!confirm(`Deseja enviar ${clients.length} mensagens automaticamente via ${apiName}?`)) return;
+      if (!silent && !confirm(`Deseja enviar ${clients.length} mensagens automaticamente via ${apiName}?`)) return;
       
       setSendingBatch(true);
       setSendingProgress({ current: 0, total: clients.length });
@@ -454,14 +454,43 @@ export default function Billing() {
       if (errorCount > 0) {
         alertMsg += `\n\nÚltimo erro: ${lastError}`;
       }
-      alert(alertMsg);
+      if(!silent) alert(alertMsg);
     } else {
-      alert("Como o WhatsApp Web bloqueia a abertura não autorizada de várias abas, você abrirá a primeira mensagem agora. Após o envio, retorne e clique diretamente no botão 'Lembrar' ou 'Cobrar' do próximo cliente.");
+      if(!silent) alert("Como o WhatsApp Web bloqueia a abertura não autorizada de várias abas, você abrirá a primeira mensagem agora. Após o envio, retorne e clique diretamente no botão 'Lembrar' ou 'Cobrar' do próximo cliente.");
       if(clients.length > 0) {
         handleSendWhatsApp(clients[0]);
       }
     }
   };
+
+  useEffect(() => {
+    if (!waSettings.useEvolutionApi && !waSettings.useMetaApi) return;
+
+    const interval = setInterval(() => {
+      const now = new Date();
+      const currentHourMin = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+      if (currentHourMin === waSettings.autoScheduleTime) {
+        const lastSentDate = localStorage.getItem('lastAutoSendDate');
+        const todayStr = now.toLocaleDateString('pt-BR');
+
+        if (lastSentDate !== todayStr && !sendingBatch) {
+          // Process current queue silently
+          const list = [...delayedClients, ...todayClients, ...upcomingClients]
+            .sort((a,b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
+          
+          if (list.length > 0) {
+            localStorage.setItem('lastAutoSendDate', todayStr);
+            console.log("Auto-schedule init...");
+            processQueue(list, true);
+          }
+        }
+      }
+    }, 60000); // Check every minute // Remove the alert on automatic
+
+    return () => clearInterval(interval);
+  }, [waSettings, delayedClients, todayClients, upcomingClients, sendingBatch]);
+
 
   if (loading) {
     return <div className="flex justify-center items-center h-64">Carregando notificações...</div>;

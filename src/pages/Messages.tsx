@@ -201,8 +201,9 @@ export default function Messages() {
         }
         const phoneInfo = client.phone.replace(/\D/g, '');
         const message = messageText.replace(/\{nome\}/g, client.name || '');
-        const encodedMessage = encodeURIComponent(message);
-        window.open(`https://wa.me/55${phoneInfo}?text=${encodedMessage}`, '_blank');
+        import('../lib/whatsapp').then(({ openWhatsApp }) => {
+          openWhatsApp(`55${phoneInfo}`, message);
+        });
         successCount++;
         // Short pause between opening tabs to avoid browser blocking
         await new Promise(r => setTimeout(r, 1000));

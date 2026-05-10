@@ -372,15 +372,17 @@ export default function Clients() {
                       )}
                       
                       {client.phone && (
-                        <a
-                          href={`https://wa.me/55${client.phone.replace(/\D/g, '')}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                        <button
+                          onClick={() => {
+                            import('../lib/whatsapp').then(({ openWhatsApp }) => {
+                              openWhatsApp(`55${client.phone.replace(/\\D/g, '')}`);
+                            });
+                          }}
                           className="p-2 text-[#25D366] hover:bg-green-50 rounded-md transition-colors"
                           title="Enviar WhatsApp"
                         >
                           <MessageCircle size={18} />
-                        </a>
+                        </button>
                       )}
                       <Link
                         to={`/clients/${client.id}/supplies`}
