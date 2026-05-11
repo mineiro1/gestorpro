@@ -389,13 +389,13 @@ export default function RoutesPage() {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.readAsDataURL(file);
+      
       reader.onload = (event) => {
         const img = new Image();
-        img.src = event.target?.result as string;
         img.onload = () => {
           const canvas = document.createElement('canvas');
-          const MAX_WIDTH = 800;
-          const MAX_HEIGHT = 800;
+          const MAX_WIDTH = 1200;
+          const MAX_HEIGHT = 1200;
           let width = img.width;
           let height = img.height;
 
@@ -416,9 +416,19 @@ export default function RoutesPage() {
           ctx?.drawImage(img, 0, 0, width, height);
           resolve(canvas.toDataURL('image/jpeg', 0.6));
         };
-        img.onerror = (error) => reject(error);
+        
+        img.onerror = (error) => {
+          console.error("Erro ao carregar a imagem", error);
+          reject(error);
+        };
+        
+        img.src = event.target?.result as string;
       };
-      reader.onerror = (error) => reject(error);
+      
+      reader.onerror = (error) => {
+        console.error("Erro ao ler o arquivo", error);
+        reject(error);
+      };
     });
   };
 
@@ -791,8 +801,7 @@ export default function RoutesPage() {
                     Tirar Foto / Galeria
                     <input 
                       type="file" 
-                      accept="image/*" 
-                      capture="environment"
+                      accept="image/jpeg,image/png,image/jpg" 
                       onChange={handlePhotoUpload}
                       className="hidden" 
                     />

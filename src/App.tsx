@@ -12,7 +12,6 @@ import RoutesPage from './pages/RoutesPage';
 import Billing from './pages/Billing';
 import SuppliesForm from './pages/SuppliesForm';
 import Messages from './pages/Messages';
-import Chat from './pages/Chat';
 import ClientPanel from './pages/ClientPanel';
 import OneOffJobs from './pages/OneOffJobs';
 import VisitsHistory from './pages/VisitsHistory';
@@ -54,7 +53,6 @@ export default function App() {
             <Route path="clients/:id" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><ClientForm /></ProtectedRoute>} />
             <Route path="clients/:id/supplies" element={<ProtectedRoute allowedRoles={['admin', 'manager', 'employee']}><SuppliesForm /></ProtectedRoute>} />
             <Route path="messages" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><Messages /></ProtectedRoute>} />
-            <Route path="chat" element={<ProtectedRoute allowedRoles={['admin', 'manager', 'employee']}><Chat /></ProtectedRoute>} />
             <Route path="agenda" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><Agenda /></ProtectedRoute>} />
             <Route path="employees" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><Employees /></ProtectedRoute>} />
             <Route path="employees/new" element={<ProtectedRoute allowedRoles={['admin']}><EmployeeForm /></ProtectedRoute>} />

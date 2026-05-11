@@ -6,7 +6,6 @@ import { signOut } from 'firebase/auth';
 import { Menu, X, Home, Users, UserCircle, Map, LogOut, Bell, MessageSquare, Headphones, Briefcase, History, Contact } from 'lucide-react';
 import clsx from 'clsx';
 import EmployeeLocationTracker from './EmployeeLocationTracker';
-import GlobalNotificationListener from './GlobalNotificationListener';
 
 export default function Layout() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -28,7 +27,6 @@ export default function Layout() {
         { name: 'Agenda', path: '/agenda', icon: Contact },
         { name: 'Cobranças', path: '/billing', icon: Bell },
         { name: 'Mensagens', path: '/messages', icon: MessageSquare },
-        { name: 'Contatos', path: '/chat', icon: Headphones },
         { name: 'Colaboradores', path: '/employees', icon: UserCircle },
         { name: 'Rotas', path: '/routes', icon: Map },
         { name: 'Visitas', path: '/visits', icon: History },
@@ -37,7 +35,6 @@ export default function Layout() {
     : [
         { name: 'Rotas', path: '/routes', icon: Map },
         { name: 'Clientes', path: '/clients', icon: Users },
-        { name: 'Contatos', path: '/chat', icon: Headphones },
       ];
 
   if (userProfile?.email === 'servincg@gmail.com') {
@@ -47,7 +44,6 @@ export default function Layout() {
   return (
     <div className="min-h-screen bg-gray-100 flex">
       <EmployeeLocationTracker />
-      <GlobalNotificationListener />
       {/* Mobile drawer overlay */}
       {isDrawerOpen && (
         <div 
@@ -164,8 +160,7 @@ export default function Layout() {
              { name: 'Mensagens', path: '/messages', icon: MessageSquare }
            ] : [
              { name: 'Rotas', path: '/routes', icon: Map },
-             { name: 'Clientes', path: '/clients', icon: Users },
-             { name: 'Contatos', path: '/chat', icon: Headphones }
+             { name: 'Clientes', path: '/clients', icon: Users }
            ]).map((item) => {
             const Icon = item.icon;
             const isActive = location.pathname === item.path || (item.path !== '/' && location.pathname.startsWith(item.path));

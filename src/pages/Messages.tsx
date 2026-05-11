@@ -102,11 +102,12 @@ export default function Messages() {
       throw new Error("Evolution API não configurada corretamente.");
     }
 
-    const { evolutionApiUrl, evolutionApiKey, evolutionInstanceName } = waSettings;
+    const { evolutionApiKey, evolutionInstanceName } = waSettings;
+    const baseUrl = waSettings.evolutionApiUrl.replace(/\/$/, '');
     const phoneInfo = client.phone.replace(/\D/g, '');
     const number = `55${phoneInfo}`;
 
-    let endpoint = `${evolutionApiUrl}/message/sendText/${evolutionInstanceName}`;
+    let endpoint = `${baseUrl}/message/sendText/${evolutionInstanceName}`;
     let body: any = {
       number: number,
       text: text,
@@ -120,7 +121,7 @@ export default function Messages() {
     };
 
     if (mediaBase64 && mimeType) {
-      endpoint = `${evolutionApiUrl}/message/sendMedia/${evolutionInstanceName}`;
+      endpoint = `${baseUrl}/message/sendMedia/${evolutionInstanceName}`;
       const mediatype = mimeType.startsWith('image/') ? 'image' : 'video';
       body = {
         number: number,
