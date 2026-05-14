@@ -3,7 +3,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, Timestamp, onSnapshot } from 'firebase/firestore';
 import { jsPDF } from 'jspdf';
-import { Share2, FileText, Map, Camera, CheckCircle, MapPin } from 'lucide-react';
+import { Share2, FileText, Map, Camera, CheckCircle, MapPin, Image as ImageIcon } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { openMap, openRouteMap } from '../lib/maps';
 import EmployeeMap from '../components/EmployeeMap';
@@ -906,7 +906,7 @@ export default function RoutesPage() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Fotos (Tiradas: {reportPhotos.length} {selectedClientForReport?.poolCount ? `/ Esperadas: ${selectedClientForReport.poolCount}` : ''})
                 </label>
-                <div className="mt-1 flex items-center space-x-4">
+                <div className="mt-1 flex flex-wrap items-center gap-2">
                   <label className="cursor-pointer bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg flex items-center transition-colors">
                     <Camera size={18} className="mr-2" />
                     Tirar Foto
@@ -914,6 +914,16 @@ export default function RoutesPage() {
                       type="file" 
                       accept="image/*" 
                       capture="environment"
+                      onChange={handlePhotoUpload}
+                      className="hidden" 
+                    />
+                  </label>
+                  <label className="cursor-pointer bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg flex items-center transition-colors">
+                    <ImageIcon size={18} className="mr-2" />
+                    Enviar da Galeria
+                    <input 
+                      type="file" 
+                      accept="image/*" 
                       onChange={handlePhotoUpload}
                       className="hidden" 
                     />
