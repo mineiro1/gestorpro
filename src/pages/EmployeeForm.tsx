@@ -137,7 +137,7 @@ export default function EmployeeForm() {
             try {
               userCredential = await signInWithEmailAndPassword(secondaryAuth, oldEmailGestao, originalPassword);
             } catch (err: any) {
-              if (err.code === 'auth/invalid-credential') {
+              if (err.code === 'auth/invalid-credential' || err.code === 'auth/invalid-login-credentials' || err.message?.includes('invalid-credential')) {
                 userCredential = await signInWithEmailAndPassword(secondaryAuth, oldEmailServi, originalPassword);
               } else {
                 throw err;
@@ -146,7 +146,7 @@ export default function EmployeeForm() {
             await updatePassword(userCredential.user, formData.password);
           } catch (authErr: any) {
             console.error(authErr);
-            if (authErr.code === 'auth/invalid-credential') {
+            if (authErr.code === 'auth/invalid-credential' || authErr.code === 'auth/invalid-login-credentials' || authErr.message?.includes('invalid-credential')) {
               throw new Error('A senha original salva no sistema não confere com a autenticação. Exclua o colaborador e crie novamente.');
             }
             throw new Error('Erro ao atualizar senha no provedor de autenticação.');
@@ -179,7 +179,15 @@ export default function EmployeeForm() {
       navigate('/employees');
     } catch (err: any) {
       console.error(err);
-      setError(err.message || 'Erro ao salvar colaborador');
+      let errorMsg = err.message || 'Erro ao salvar colaborador';
+      if (err.code === 'auth/email-already-in-use') {
+        errorMsg = 'Este usuário já foi criado no sistema (telefone ou e-mail já existe).';
+      } else if (err.code === 'auth/invalid-credential' || err.code === 'auth/invalid-login-credentials' || err.message?.includes('invalid-credential')) {
+        errorMsg = 'A senha ou telefone não confere com o registrado no sistema.';
+      } else if (err.code === 'auth/weak-password') {
+        errorMsg = 'A senha deve ter pelo menos 6 caracteres.';
+      }
+      setError(errorMsg);
     } finally {
       setLoading(false);
     }

@@ -30,6 +30,7 @@ export default function ClientForm() {
     visitDays: [] as string[],
     extraVisits: [] as string[],
     employeeId: '',
+    poolCount: 1,
   });
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(!!id);
@@ -61,6 +62,7 @@ export default function ClientForm() {
               visitDays: data.visitDays || [],
               extraVisits: data.extraVisits || [],
               employeeId: data.employeeId || '',
+              poolCount: data.poolCount || 1,
             });
           }
         } catch (error) {
@@ -141,6 +143,7 @@ export default function ClientForm() {
       visitDays: formData.visitDays,
       extraVisits: formData.extraVisits,
       employeeId: formData.employeeId,
+      poolCount: formData.poolCount,
     };
 
     try {
@@ -192,12 +195,19 @@ export default function ClientForm() {
           visitDays: [],
           extraVisits: [],
           employeeId: '',
+          poolCount: 1,
         });
       }
       navigate('/clients');
     } catch (err: any) {
       console.error(err);
-      setError(err.message || 'Erro ao salvar cliente');
+      let errorMsg = err.message || 'Erro ao salvar cliente';
+      if (err.code === 'auth/email-already-in-use') {
+        errorMsg = 'Este cliente já está cadastrado com este telefone.';
+      } else if (err.code === 'auth/invalid-credential' || err.code === 'auth/invalid-login-credentials' || err.message?.includes('invalid-credential')) {
+        errorMsg = 'A senha ou telefone não confere (credenciais inválidas).';
+      }
+      setError(errorMsg);
       handleFirestoreError(err, id ? OperationType.UPDATE : OperationType.CREATE, id ? `clients/${id}` : 'clients');
     } finally {
       setLoading(false);
@@ -364,6 +374,18 @@ export default function ClientForm() {
                 required
                 value={formData.dueDate}
                 onChange={e => setFormData({...formData, dueDate: e.target.value})}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Quantidade de Piscinas</label>
+              <input
+                type="number"
+                min="1"
+                required
+                value={formData.poolCount}
+                onChange={e => setFormData({...formData, poolCount: parseInt(e.target.value) || 1})}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none"
               />
             </div>

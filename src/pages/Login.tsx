@@ -32,7 +32,7 @@ export default function Login() {
       try {
         await signInWithEmailAndPassword(auth, emailGestao, password);
       } catch (err: any) {
-        if (err.code === 'auth/invalid-credential' && !phone.includes('@')) {
+        if ((err.code === 'auth/invalid-credential' || err.code === 'auth/invalid-login-credentials' || err.message?.includes('invalid-credential')) && !phone.includes('@')) {
           // Fallback para usuários criados antes da mudança de nome do app
           await signInWithEmailAndPassword(auth, emailServi, password);
         } else {
@@ -82,10 +82,12 @@ export default function Login() {
       
       navigate('/');
     } catch (err: any) {
-      console.error(err);
+      if (err.code !== 'auth/invalid-credential' && err.code !== 'auth/invalid-login-credentials' && !err.message?.includes('invalid-credential')) {
+        console.error(err);
+      }
       if (err.code === 'auth/operation-not-allowed') {
         setError('Autenticação por E-mail/Senha não está ativada no Firebase.');
-      } else if (err.code === 'auth/invalid-credential') {
+      } else if (err.code === 'auth/invalid-credential' || err.code === 'auth/invalid-login-credentials' || err.message?.includes('invalid-credential') || err.message?.includes('wrong-password') || err.message?.includes('user-not-found')) {
         setError('Telefone ou senha incorretos.');
       } else if (err.code === 'auth/network-request-failed') {
         setError('Erro de conexão. Verifique sua internet, desative bloqueadores de anúncios (AdBlock) ou tente em uma aba anônima.');

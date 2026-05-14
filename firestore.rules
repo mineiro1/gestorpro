@@ -126,7 +126,7 @@ service cloud.firestore {
     }
 
     function isValidClient(data) {
-      return hasOnlyAllowedFields(['adminId', 'name', 'phone', 'address', 'monthlyFee', 'dueDate', 'baseDueDay', 'visitDays', 'employeeId', 'createdAt', 'cpfCnpj', 'extraVisits', 'lastVisitDate', 'extraAmount', 'extraReason']) &&
+      return hasOnlyAllowedFields(['adminId', 'name', 'phone', 'address', 'monthlyFee', 'dueDate', 'baseDueDay', 'visitDays', 'employeeId', 'createdAt', 'cpfCnpj', 'extraVisits', 'lastVisitDate', 'extraAmount', 'extraReason', 'poolCount']) &&
              isValidString(data.adminId, 1, 128) &&
              isValidString(data.name, 0, 100) &&
              (!('phone' in data) || isValidString(data.phone, 0, 50)) &&
@@ -140,6 +140,7 @@ service cloud.firestore {
              (!('extraVisits' in data) || data.extraVisits is list) &&
              (!('lastVisitDate' in data) || data.lastVisitDate is timestamp) &&
              (!('employeeId' in data) || data.employeeId == null || isValidString(data.employeeId, 0, 128)) &&
+             (!('poolCount' in data) || data.poolCount == null || data.poolCount is number) &&
              (!('createdAt' in data) || data.createdAt is timestamp) &&
              (!('cpfCnpj' in data) || isValidString(data.cpfCnpj, 0, 20));
     }
@@ -161,13 +162,14 @@ service cloud.firestore {
     }
 
     function isValidVisit(data) {
-      return hasOnlyAllowedFields(['adminId', 'clientId', 'date', 'notes', 'employeeId', 'photoUrl', 'location']) &&
+      return hasOnlyAllowedFields(['adminId', 'clientId', 'date', 'notes', 'employeeId', 'photoUrl', 'photoUrls', 'location']) &&
              isValidString(data.adminId, 1, 128) &&
              isValidString(data.clientId, 1, 128) &&
              data.date is timestamp &&
              isValidString(data.notes, 0, 5000) &&
              (!('employeeId' in data) || data.employeeId == null || isValidString(data.employeeId, 0, 128)) &&
              (!('photoUrl' in data) || data.photoUrl == null || data.photoUrl is string) &&
+             (!('photoUrls' in data) || (data.photoUrls is list && data.photoUrls.size() <= 20)) &&
              (!('location' in data) || data.location == null || data.location is map);
     }
 

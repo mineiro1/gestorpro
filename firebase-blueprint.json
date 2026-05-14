@@ -38,6 +38,7 @@
         "monthlyFee": { "type": "number" },
         "dueDate": { "type": "number", "description": "Day of the month (1-31)" },
         "visitDays": { "type": "array", "items": { "type": "string" }, "description": "Days of the week to visit" },
+        "poolCount": { "type": "number", "description": "Number of swimming pools at the requested address" },
         "employeeId": { "type": "string", "description": "UID of the assigned employee, or empty string if unassigned" },
         "createdAt": { "type": "string", "format": "date-time" }
       },

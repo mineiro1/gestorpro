@@ -45,6 +45,7 @@ export default function Register() {
           name,
           phone: cleanPhone,
           email: email,
+          password: password,
           adminId: user.uid, // Admin is their own admin
           createdAt: serverTimestamp(),
           subscriptionStatus: 'trial',
@@ -56,7 +57,9 @@ export default function Register() {
 
       navigate('/');
     } catch (err: any) {
-      console.error(err);
+      if (err.code !== 'auth/invalid-credential' && err.code !== 'auth/email-already-in-use') {
+        console.error(err);
+      }
       if (err.message === 'Telefone inválido.') {
         setError(err.message);
       } else if (err.code === 'auth/email-already-in-use') {
@@ -68,8 +71,10 @@ export default function Register() {
         setError('Autenticação por E-mail/Senha não está ativada no Firebase.');
       } else if (err.code === 'auth/network-request-failed') {
         setError('Erro de conexão. Verifique sua internet, desative bloqueadores de anúncios (AdBlock) ou tente em uma aba anônima.');
+      } else if (err.code === 'auth/invalid-credential' || err.code === 'auth/invalid-login-credentials' || err.message?.includes('invalid-credential')) {
+        setError('Telefone ou senha inválidos.');
       } else {
-        setError(`Erro ao criar conta: ${err.message || 'Tente novamente.'}`);
+        setError(`Erro ao criar conta: Tente novamente. Se o problema persistir, contate o suporte.`);
       }
     } finally {
       setLoading(false);

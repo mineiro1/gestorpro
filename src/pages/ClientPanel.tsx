@@ -8,6 +8,8 @@ export default function ClientPanel() {
   const { userProfile } = useAuth();
   const [clientData, setClientData] = useState<any>(null);
   const [visits, setVisits] = useState<any[]>([]);
+  const [payments, setPayments] = useState<any[]>([]);
+  const [employeesMap, setEmployeesMap] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [fullscreenImage, setFullscreenImage] = useState<string | null>(null);
 
@@ -38,6 +40,30 @@ export default function ClientPanel() {
             const visitsData = vSnap.docs.map(d => ({id: d.id, ...d.data()})) as any[];
             visitsData.sort((a, b) => (b.date?.toMillis() || 0) - (a.date?.toMillis() || 0));
             setVisits(visitsData);
+
+            // Get payment history
+            const pQ = query(
+               collection(db, 'payments'),
+               where('clientId', '==', found.id),
+               where('adminId', '==', userProfile.adminId)
+            );
+            const pSnap = await getDocs(pQ);
+            const paymentsData = pSnap.docs.map(d => ({id: d.id, ...d.data()})) as any[];
+            paymentsData.sort((a, b) => (b.date?.toMillis() || 0) - (a.date?.toMillis() || 0));
+            setPayments(paymentsData);
+
+            // Get employees mapping
+            const eQ = query(
+              collection(db, 'users'),
+              where('adminId', '==', userProfile.adminId)
+            );
+            const eSnap = await getDocs(eQ);
+            const eMap: Record<string, string> = {};
+            eSnap.docs.forEach(doc => {
+              const data = doc.data();
+              eMap[doc.id] = data.name || 'Desconhecido';
+            });
+            setEmployeesMap(eMap);
           }
         }
       } catch(err) {
@@ -98,9 +124,16 @@ export default function ClientPanel() {
                      <CheckCircle size={16} className="mr-2" />
                      {v.date ? new Date(v.date.toMillis()).toLocaleString('pt-BR') : 'Data Indisponível'}
                    </div>
+                   {v.employeeId && (
+                     <div className="text-sm font-medium text-gray-500">
+                       Colaborador: {employeesMap[v.employeeId] || 'Desconhecido'}
+                     </div>
+                   )}
                 </div>
                 {v.notes && <p className="text-sm text-gray-600 bg-gray-100 p-3 rounded-lg">{v.notes}</p>}
-                {v.photoUrl && (
+                
+                {/* Legacy single photo support */}
+                {v.photoUrl && !v.photoUrls && (
                   <div className="mt-3">
                     <img 
                       src={v.photoUrl} 
@@ -110,10 +143,54 @@ export default function ClientPanel() {
                     />
                   </div>
                 )}
+                
+                {/* Modern multiple photos support */}
+                {v.photoUrls && v.photoUrls.length > 0 && (
+                  <div className="mt-3 flex gap-2 overflow-x-auto pb-2">
+                    {v.photoUrls.map((photo: string, index: number) => (
+                       <img 
+                         key={index}
+                         src={photo} 
+                         alt={`Foto da visita ${index}`} 
+                         onClick={() => setFullscreenImage(photo)}
+                         className="w-32 h-32 object-cover rounded-lg shadow-sm border border-gray-200 cursor-pointer hover:opacity-90 transition-opacity shrink-0" 
+                       />
+                    ))}
+                  </div>
+                )}
              </div>
           ))}
           {visits.length === 0 && (
              <p className="p-8 text-center text-gray-500">Nenhuma visita registrada ainda.</p>
+          )}
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+        <div className="p-6 border-b border-gray-100 bg-gray-50">
+           <h2 className="text-xl font-bold text-gray-800">Histórico de Pagamentos</h2>
+        </div>
+        <div className="divide-y divide-gray-100">
+          {payments.map(p => (
+             <div key={p.id} className="p-4 hover:bg-gray-50 transition-colors flex justify-between items-center">
+                 <div>
+                    <div className="font-semibold text-gray-800">
+                       Mês de Referência: {String(p.refMonth).padStart(2, '0')}/{p.refYear}
+                    </div>
+                    <div className="text-sm text-gray-500 flex items-center mt-1">
+                      <Calendar size={14} className="mr-1" />
+                      Pago em: {p.date ? new Date(p.date.toMillis()).toLocaleDateString('pt-BR') : 'Data Indisponível'}
+                    </div>
+                 </div>
+                 <div className="text-right">
+                    <div className="text-lg font-bold text-green-600">
+                      R$ {Number(p.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                    </div>
+                 </div>
+             </div>
+          ))}
+          {payments.length === 0 && (
+             <p className="p-8 text-center text-gray-500">Nenhum pagamento registrado ainda.</p>
           )}
         </div>
       </div>

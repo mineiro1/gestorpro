@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { db } from '../lib/firebase';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
-import { History, MapPin, X, Download, Filter } from 'lucide-react';
+import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { collection, query, where, onSnapshot, doc, updateDoc, Timestamp, deleteDoc } from 'firebase/firestore';
+import { History, MapPin, X, Download, Filter, Edit, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { openMap } from '../lib/maps';
 import jsPDF from 'jspdf';
@@ -91,6 +91,56 @@ export default function VisitsHistory() {
     }
     return keep;
   });
+
+  // Edit Modal State
+  const [editingVisit, setEditingVisit] = useState<any | null>(null);
+  const [editDate, setEditDate] = useState<string>('');
+  const [editNotes, setEditNotes] = useState<string>('');
+  const [isUpdating, setIsUpdating] = useState(false);
+
+  const formatDateTimeLocal = (timestamp: any) => {
+    if (!timestamp) return '';
+    const date = new Date(timestamp.toMillis ? timestamp.toMillis() : timestamp);
+    const tzoffset = date.getTimezoneOffset() * 60000; // offset in milliseconds
+    const localISOTime = (new Date(date.getTime() - tzoffset)).toISOString().slice(0, 16);
+    return localISOTime;
+  };
+
+  const handleEditClick = (visit: any) => {
+    setEditingVisit(visit);
+    setEditNotes(visit.notes || '');
+    setEditDate(formatDateTimeLocal(visit.date));
+  };
+
+  const handeSaveEdit = async () => {
+    if (!editingVisit) return;
+    setIsUpdating(true);
+    try {
+      const visitRef = doc(db, 'visits', editingVisit.id);
+      await updateDoc(visitRef, {
+         notes: editNotes,
+         date: Timestamp.fromDate(new Date(editDate))
+      });
+      setEditingVisit(null);
+    } catch (e: any) {
+      console.error(e);
+      alert('Erro ao atualizar visita: ' + e.message);
+      handleFirestoreError(e, OperationType.UPDATE, `visits/${editingVisit.id}`);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const handleDeleteVisit = async (visitId: string) => {
+    if (!window.confirm('Tem certeza que deseja excluir esta visita permanentemente?')) return;
+    try {
+      await deleteDoc(doc(db, 'visits', visitId));
+    } catch (e: any) {
+      console.error(e);
+      alert('Erro ao excluir visita: ' + e.message);
+      handleFirestoreError(e, OperationType.DELETE, `visits/${visitId}`);
+    }
+  };
 
   const handleGenerateReport = () => {
     const doc = new jsPDF();
@@ -208,6 +258,7 @@ export default function VisitsHistory() {
                   <th className="p-4 font-semibold">Colaborador</th>
                   <th className="p-4 font-semibold">Observações</th>
                   <th className="p-4 font-semibold">Anexos</th>
+                  {(isAdmin || isManager) && <th className="p-4 font-semibold text-right">Ações</th>}
                 </tr>
               </thead>
               <tbody>
@@ -218,7 +269,7 @@ export default function VisitsHistory() {
                   return (
                     <tr key={visit.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
                       <td className="p-4 text-sm text-gray-600 whitespace-nowrap">
-                        {visit.date ? new Date(visit.date.toMillis()).toLocaleString('pt-BR') : '-'}
+                        {visit.date ? new Date(visit.date.toMillis ? visit.date.toMillis() : visit.date).toLocaleString('pt-BR') : '-'}
                       </td>
                       <td className="p-4 font-medium text-gray-800">
                         {clients[visit.clientId] && (isAdmin || isManager) ? (
@@ -243,6 +294,14 @@ export default function VisitsHistory() {
                               Ver Foto
                             </button>
                           )}
+                          {visit.photoUrls && visit.photoUrls.length > 0 && (
+                             <button 
+                              onClick={() => setFullscreenImage(visit.photoUrls[0])}
+                              className="text-xs bg-gray-200 hover:bg-gray-300 px-2 py-1 rounded text-gray-800 transition-colors"
+                            >
+                              {visit.photoUrls.length} Fotos
+                            </button>
+                          )}
                           {isAdmin && visit.location && (
                             <button 
                               type="button"
@@ -254,6 +313,26 @@ export default function VisitsHistory() {
                           )}
                         </div>
                       </td>
+                      {(isAdmin || isManager) && (
+                        <td className="p-4 text-right">
+                          <div className="flex justify-end gap-2">
+                             <button
+                               onClick={() => handleEditClick(visit)}
+                               className="text-blue-600 hover:text-blue-800 p-2 rounded-full hover:bg-blue-50 transition-colors"
+                               title="Editar Visita"
+                             >
+                               <Edit size={18} />
+                             </button>
+                             <button
+                               onClick={() => handleDeleteVisit(visit.id)}
+                               className="text-red-500 hover:text-red-700 p-2 rounded-full hover:bg-red-50 transition-colors"
+                               title="Excluir Visita"
+                             >
+                               <Trash2 size={18} />
+                             </button>
+                          </div>
+                        </td>
+                      )}
                     </tr>
                   );
                 })}
@@ -276,6 +355,50 @@ export default function VisitsHistory() {
             alt="Foto" 
             className="max-w-full max-h-[85vh] object-contain"
           />
+        </div>
+      )}
+
+      {editingVisit && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-lg w-full max-w-md p-6">
+            <h3 className="text-xl font-bold text-gray-900 mb-4">Editar Visita</h3>
+            
+            <div className="mb-4">
+               <label className="block text-sm font-medium text-gray-700 mb-1">Data e Hora</label>
+               <input
+                 type="datetime-local"
+                 value={editDate}
+                 onChange={e => setEditDate(e.target.value)}
+                 className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-primary focus:border-primary outline-none"
+               />
+            </div>
+
+            <div className="mb-6">
+               <label className="block text-sm font-medium text-gray-700 mb-1">Observações</label>
+               <textarea
+                 value={editNotes}
+                 onChange={e => setEditNotes(e.target.value)}
+                 rows={4}
+                 className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-primary focus:border-primary outline-none resize-none"
+               ></textarea>
+            </div>
+
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setEditingVisit(null)}
+                className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors font-medium border border-gray-300"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handeSaveEdit}
+                disabled={isUpdating}
+                className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-dark transition-colors font-medium disabled:opacity-50"
+              >
+                {isUpdating ? 'Salvando...' : 'Salvar Alterações'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

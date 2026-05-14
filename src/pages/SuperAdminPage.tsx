@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, getDocs, doc, updateDoc, setDoc, getDoc, Timestamp, query, where } from 'firebase/firestore';
+import { collection, getDocs, doc, updateDoc, setDoc, getDoc, Timestamp, query, where, deleteDoc } from 'firebase/firestore';
 import { ShieldAlert, CheckCircle, Clock, XCircle, Search, DollarSign, Save } from 'lucide-react';
 
 export default function SuperAdminPage() {
@@ -132,6 +132,22 @@ export default function SuperAdminPage() {
     }
   };
 
+  const handleDeleteAdmin = async (adminId: string) => {
+    if (!window.confirm('Tem certeza que deseja excluir permanentemente este administrador? Isso revogará o acesso dele imediatamente (os dados no banco podem não ser apagados).')) return;
+    
+    setProcessingId(adminId);
+    try {
+      await deleteDoc(doc(db, 'users', adminId));
+      fetchAdmins();
+    } catch (e: any) {
+       console.error('Delete Admin Error:', e);
+       alert('Falha ao excluir admin: ' + (e.message || 'Erro desconhecido.'));
+       handleFirestoreError(e, OperationType.DELETE, `users/${adminId}`);
+    } finally {
+      setProcessingId(null);
+    }
+  };
+
   const getStatusBadge = (status: string, expiry: any) => {
     let isExpired = false;
     if (expiry) {
@@ -208,7 +224,7 @@ export default function SuperAdminPage() {
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-200">
                   <th className="p-4 font-medium text-gray-600">ID / Data Cadastro</th>
-                  <th className="p-4 font-medium text-gray-600">Cliente (Admin)</th>
+                  <th className="p-4 font-medium text-gray-600">Cliente (Admin) / Senha</th>
                   <th className="p-4 font-medium text-gray-600">Status</th>
                   <th className="p-4 font-medium text-gray-600">Total Clientes</th>
                   <th className="p-4 font-medium text-gray-600">Ações Manuais</th>
@@ -226,6 +242,7 @@ export default function SuperAdminPage() {
                     <td className="p-4">
                       <div className="font-semibold">{admin.name}</div>
                       <div className="text-sm text-gray-500">{admin.email} | {admin.phone}</div>
+                      {admin.password && <div className="text-xs text-gray-500 mt-1">Senha: <span className="font-mono bg-gray-100 px-1 rounded">{admin.password}</span></div>}
                     </td>
                     <td className="p-4">
                       {getStatusBadge(admin.subscriptionStatus, admin.subscriptionExpiresAt)}
@@ -245,9 +262,16 @@ export default function SuperAdminPage() {
                       <button
                         onClick={() => handleManualBlock(admin.id)}
                         disabled={processingId === admin.id}
-                        className="px-3 py-1 bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors text-sm font-medium disabled:opacity-50"
+                        className="px-3 py-1 bg-yellow-100 text-yellow-700 rounded hover:bg-yellow-200 transition-colors text-sm font-medium disabled:opacity-50 mt-1 sm:mt-0"
                       >
                         Bloquear
+                      </button>
+                      <button
+                        onClick={() => handleDeleteAdmin(admin.id)}
+                        disabled={processingId === admin.id}
+                        className="px-3 py-1 bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors text-sm font-medium disabled:opacity-50 mt-1 sm:mt-0"
+                      >
+                        Excluir
                       </button>
                     </td>
                   </tr>

@@ -6,6 +6,8 @@ import { jsPDF } from 'jspdf';
 import { Share2, FileText, Map, Camera, CheckCircle, MapPin } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { openMap, openRouteMap } from '../lib/maps';
+import EmployeeMap from '../components/EmployeeMap';
+import exifr from 'exifr';
 
 const DAYS_OF_WEEK = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 
@@ -25,6 +27,10 @@ export default function RoutesPage() {
   const [loading, setLoading] = useState(false);
   const [generated, setGenerated] = useState(false);
 
+  // TSP Optimization state
+  const [optimizing, setOptimizing] = useState(false);
+  const [highlightedClientId, setHighlightedClientId] = useState<string | null>(null);
+
   // Anticipation state
   const [selectedForAnticipation, setSelectedForAnticipation] = useState<Set<string>>(new Set());
   const [anticipating, setAnticipating] = useState(false);
@@ -33,7 +39,8 @@ export default function RoutesPage() {
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [selectedClientForReport, setSelectedClientForReport] = useState<any>(null);
   const [reportNotes, setReportNotes] = useState('');
-  const [reportPhoto, setReportPhoto] = useState<string | null>(null);
+  const [reportPhotos, setReportPhotos] = useState<string[]>([]);
+  const [photoDate, setPhotoDate] = useState<Date | null>(null);
   const [submittingReport, setSubmittingReport] = useState(false);
   const [completedVisitsOnRouteDate, setCompletedVisitsOnRouteDate] = useState<Set<string>>(new Set());
   
@@ -353,6 +360,73 @@ export default function RoutesPage() {
     window.open(url, '_blank');
   };
 
+  const handleOptimizeRoute = async () => {
+    if (routeClients.length === 0) return;
+    setOptimizing(true);
+    
+    try {
+      const geocodedClients = [...routeClients];
+      
+      // Basic Nominatim Geocoding with a small delay to avoid aggressive rate limits 
+      for (let i = 0; i < geocodedClients.length; i++) {
+        const c = geocodedClients[i];
+        if (c.address && (!c.lat || !c.lng)) {
+          try {
+            const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(c.address)}`);
+            const data = await res.json();
+            if (data && data.length > 0) {
+               geocodedClients[i].lat = parseFloat(data[0].lat);
+               geocodedClients[i].lng = parseFloat(data[0].lon);
+            }
+            await new Promise(r => setTimeout(r, 600)); // Be nice to Nominatim (max 1 req/s per their terms, 600ms is OK for small bursts)
+          } catch(err) {
+            console.warn("Geocode failed for " + c.address);
+          }
+        }
+      }
+
+      // TSP algorithm (Nearest Neighbor)
+      const clientsWithLocation = geocodedClients.filter(c => c.lat && c.lng);
+      const clientsWithoutLocation = geocodedClients.filter(c => !c.lat || !c.lng);
+
+      if (clientsWithLocation.length > 1) {
+        const sorted = [];
+        let current = clientsWithLocation.shift(); // start from the first one
+        if (current) sorted.push(current);
+
+        while (clientsWithLocation.length > 0 && current) {
+          let nearestIdx = 0;
+          let minDistance = Infinity;
+
+          for (let i = 0; i < clientsWithLocation.length; i++) {
+             const candidate = clientsWithLocation[i];
+             // Euclidean distance (mock, sufficient for small local areas)
+             const d = Math.pow(candidate.lat - current.lat, 2) + Math.pow(candidate.lng - current.lng, 2);
+             if (d < minDistance) {
+                 minDistance = d;
+                 nearestIdx = i;
+             }
+          }
+
+          current = clientsWithLocation.splice(nearestIdx, 1)[0];
+          sorted.push(current);
+        }
+
+        setRouteClients([...sorted, ...clientsWithoutLocation]);
+      } else {
+        setRouteClients(geocodedClients);
+        if (clientsWithoutLocation.length > 0) {
+           alert("Poucos clientes com endereço válido/geolocalizado. Ordene manualmente.");
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Falha ao otimizar rota.");
+    } finally {
+      setOptimizing(false);
+    }
+  };
+
   const handleShare = async () => {
     const doc = generatePDF();
     const pdfBlob = doc.output('blob');
@@ -379,7 +453,8 @@ export default function RoutesPage() {
     if (completedVisitsOnRouteDate.has(client.id)) return;
     setSelectedClientForReport(client);
     setReportNotes('');
-    setReportPhoto(null);
+    setReportPhotos([]);
+    setPhotoDate(null);
     setNeedsReturn(false);
     setReturnDate('');
     setReportModalOpen(true);
@@ -435,13 +510,32 @@ export default function RoutesPage() {
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
     try {
+      if (!photoDate) {
+        try {
+          const exifData = await exifr.parse(file);
+          if (exifData && exifData.DateTimeOriginal) {
+            setPhotoDate(new Date(exifData.DateTimeOriginal));
+          } else if (file.lastModified) {
+            setPhotoDate(new Date(file.lastModified));
+          }
+        } catch (exifError) {
+          console.warn("Exif error:", exifError);
+          if (file.lastModified) {
+             setPhotoDate(new Date(file.lastModified));
+          }
+        }
+      }
+      
       const compressedBase64 = await compressImage(file);
-      setReportPhoto(compressedBase64);
+      setReportPhotos(prev => [...prev, compressedBase64]);
     } catch (error) {
       console.error("Erro ao processar imagem:", error);
       alert("Erro ao processar a imagem. Tente novamente.");
     }
+    // reset the input
+    e.target.value = '';
   };
 
   const handleSubmitReport = async (e: React.FormEvent) => {
@@ -471,7 +565,7 @@ export default function RoutesPage() {
           status: needsReturn ? 'needs_return' : 'completed',
           returnDate: needsReturn ? returnDate : null,
           report: reportNotes.trim(),
-          updatedAt: serverTimestamp()
+          updatedAt: photoDate ? Timestamp.fromDate(photoDate) : serverTimestamp()
         });
         // One-off jobs do not store visit locations for the client history yet, they are just jobs.
         // Or if we want them, we could add visit logic. I'll stick to what was there.
@@ -481,15 +575,15 @@ export default function RoutesPage() {
           adminId,
           clientId: selectedClientForReport.id,
           employeeId: (isAdmin || isManager) && selectedEmployee ? selectedEmployee : userProfile.uid,
-          date: serverTimestamp(),
+          date: photoDate ? Timestamp.fromDate(photoDate) : serverTimestamp(),
           notes: reportNotes.trim(),
-          photoUrl: reportPhoto,
+          photoUrls: reportPhotos,
           location: locationData
         });
 
         // Update client with lastVisitDate
         await updateDoc(doc(db, 'clients', selectedClientForReport.id), {
-          lastVisitDate: serverTimestamp()
+          lastVisitDate: photoDate ? Timestamp.fromDate(photoDate) : serverTimestamp()
         });
 
         // Cleanup old visits (keep only the 3 most recent)
@@ -607,6 +701,14 @@ export default function RoutesPage() {
                 </button>
               )}
               <button
+                onClick={handleOptimizeRoute}
+                disabled={routeClients.length === 0 || optimizing}
+                className="flex items-center bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50"
+                title="Otimizar Rota (TSP)"
+              >
+                {optimizing ? 'Otimizando...' : 'Otimizar Rota'}
+              </button>
+              <button
                 onClick={handleOpenGoogleMaps}
                 className="flex items-center bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
                 title="Google Maps"
@@ -645,6 +747,7 @@ export default function RoutesPage() {
                   <motion.div 
                     key={client.id} 
                     onClick={() => {
+                      setHighlightedClientId(client.id);
                       if (isFutureRoute && !isCompleted && !isAdmin && !isManager) {
                         alert('A data da rota ainda não chegou. Não é possível preencher a visita antecipadamente.');
                         return;
@@ -770,6 +873,12 @@ export default function RoutesPage() {
               })}
             </div>
           )}
+
+          {routeClients.length > 0 && (
+            <div className="mt-8">
+               <EmployeeMap clients={routeClients} highlightedClientId={highlightedClientId} />
+            </div>
+          )}
         </div>
       )}
 
@@ -794,30 +903,46 @@ export default function RoutesPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Foto (Opcional)</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Fotos (Tiradas: {reportPhotos.length} {selectedClientForReport?.poolCount ? `/ Esperadas: ${selectedClientForReport.poolCount}` : ''})
+                </label>
                 <div className="mt-1 flex items-center space-x-4">
                   <label className="cursor-pointer bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg flex items-center transition-colors">
                     <Camera size={18} className="mr-2" />
-                    Tirar Foto / Galeria
+                    Tirar Foto
                     <input 
                       type="file" 
-                      accept="image/jpeg,image/png,image/jpg" 
+                      accept="image/*" 
+                      capture="environment"
                       onChange={handlePhotoUpload}
                       className="hidden" 
                     />
                   </label>
                 </div>
-                {reportPhoto && (
-                  <div className="mt-4 relative inline-block">
-                    <img src={reportPhoto} alt="Preview" className="h-32 w-auto rounded-lg border border-gray-200" />
-                    <button
-                      type="button"
-                      onClick={() => setReportPhoto(null)}
-                      className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs font-bold hover:bg-red-600"
-                    >
-                      X
-                    </button>
+                {reportPhotos.length > 0 && (
+                  <div className="mt-4 flex gap-2 overflow-x-auto pb-2">
+                    {reportPhotos.map((photo, index) => (
+                      <div key={index} className="relative inline-block shrink-0">
+                        <img src={photo} alt={`Preview ${index}`} className="h-32 w-auto rounded-lg border border-gray-200 object-cover" />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const newPhotos = reportPhotos.filter((_, i) => i !== index);
+                            setReportPhotos(newPhotos);
+                            if (newPhotos.length === 0) setPhotoDate(null);
+                          }}
+                          className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs font-bold hover:bg-red-600 shadow"
+                        >
+                          X
+                        </button>
+                      </div>
+                    ))}
                   </div>
+                )}
+                {photoDate && reportPhotos.length > 0 && (
+                  <p className="mt-2 text-xs text-gray-500">
+                    <span className="font-semibold">Horário da visita:</span> {photoDate.toLocaleString('pt-BR')} (extraído da foto)
+                  </p>
                 )}
               </div>
 

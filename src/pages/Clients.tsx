@@ -28,7 +28,7 @@ export default function Clients() {
   const [extraAmount, setExtraAmount] = useState('');
   const [extraReason, setExtraReason] = useState('');
   const [isSubmittingExtra, setIsSubmittingExtra] = useState(false);
-  const [loadLimit, setLoadLimit] = useState(50);
+  const [loadLimit, setLoadLimit] = useState(500);
   const [hasMore, setHasMore] = useState(true);
 
   const [currentPage, setCurrentPage] = useState(1);
@@ -97,7 +97,7 @@ export default function Clients() {
       unsubscribeClients();
       unsubscribePayments();
     };
-  }, [userProfile]);
+  }, [userProfile, isAdmin, isManager, loadLimit, searchTerm]);
 
   const handleDeleteClick = (client: any) => {
     setClientToDelete(client);
