@@ -1,11 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, Timestamp, onSnapshot } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
 import { jsPDF } from 'jspdf';
 import { Share2, FileText, Map, Camera, CheckCircle, MapPin, Image as ImageIcon } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { openMap, openRouteMap } from '../lib/maps';
+import { openMap, openRouteMap, openWaze } from '../lib/maps';
 import EmployeeMap from '../components/EmployeeMap';
 import exifr from 'exifr';
 
@@ -65,15 +64,14 @@ export default function RoutesPage() {
       const fetchEmployees = async () => {
         try {
           const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
-          const q = query(
-            collection(db, 'users'),
-            where('adminId', '==', adminId),
-            where('role', 'in', ['employee', 'manager'])
-          );
-          const snap = await getDocs(q);
-          setEmployees(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+          const { data, error } = await supabase.from('users')
+            .select('*')
+            .eq('admin_id', adminId)
+            .in('role', ['employee', 'manager']);
+          if (error) throw error;
+          if (data) setEmployees(data);
         } catch (error) {
-          handleFirestoreError(error, OperationType.LIST, 'users');
+          console.error(error);
         }
       };
       fetchEmployees();
@@ -86,67 +84,87 @@ export default function RoutesPage() {
     if (!generated || !userProfile || !routeDate) return;
 
     const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
-    const routeDateStart = new Date(routeDate + 'T00:00:00');
-    const routeDateEnd = new Date(routeDate + 'T23:59:59.999');
+    if (!routeDate) return;
+    const [year, month, day] = routeDate.split('-').map(Number);
+    const start = new Date(year, month - 1, day, 0, 0, 0);
+    const end = new Date(year, month - 1, day, 23, 59, 59, 999);
+    const routeDateStart = start.toISOString();
+    const routeDateEnd = end.toISOString();
 
-    const visitsQuery = query(
-      collection(db, 'visits'),
-      where('adminId', '==', adminId),
-      where('date', '>=', Timestamp.fromDate(routeDateStart))
-    );
-
-    const unsubscribeVisits = onSnapshot(visitsQuery, (visitsSnap) => {
-      setCompletedVisitsOnRouteDate(prev => {
-        const next = new Set(prev);
-        visitsSnap.docs.forEach(doc => {
-          const data = doc.data();
-          const visitDate = data.date?.toDate();
-          if (visitDate && visitDate <= routeDateEnd) {
-            next.add(data.clientId);
-          }
-        });
-        return next;
-      });
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'visits');
-    });
-
-    let jobsQueryRaw = query(
-      collection(db, 'oneoffjobs'),
-      where('adminId', '==', adminId)
-    );
-    if (!isAdmin && !isManager) {
-      jobsQueryRaw = query(
-        collection(db, 'oneoffjobs'),
-        where('adminId', '==', adminId),
-        where('employeeId', '==', userProfile.uid)
-      );
-    }
-    const jobsQuery = jobsQueryRaw;
-
-    const unsubscribeJobs = onSnapshot(jobsQuery, (jobsSnap) => {
-      setCompletedVisitsOnRouteDate(prev => {
-        const next = new Set(prev);
-        jobsSnap.docs.forEach(doc => {
-          const job = { id: doc.id, ...doc.data() } as any;
-          const updatedAtDate = job.updatedAt?.toDate();
-          const updatedToday = updatedAtDate && updatedAtDate >= routeDateStart && updatedAtDate <= routeDateEnd;
+    const fetchStatus = async () => {
+      try {
+        const activeRouteDate = routeDate || getLocalISODate();
+        const { data: visitsByTime } = await supabase.from('visits')
+          .select('client_id, date')
+          .eq('admin_id', adminId)
+          .eq('time', activeRouteDate);
           
-          if (job.status === 'completed' || (job.status === 'needs_return' && updatedToday)) {
-            if ((job.date === routeDate && job.status !== 'pending') || (job.returnDate === routeDate && job.status === 'completed') || updatedToday) {
-               next.add(job.id);
-            }
+        const { data: visitsByDate } = await supabase.from('visits')
+          .select('client_id, date')
+          .eq('admin_id', adminId)
+          .gte('date', routeDateStart)
+          .lte('date', routeDateEnd);
+          
+        const { data: visitsByCreated } = await supabase.from('visits')
+          .select('client_id, date')
+          .eq('admin_id', adminId)
+          .gte('created_at', routeDateStart)
+          .lte('created_at', routeDateEnd);
+          
+        const visitsData = [...(visitsByTime || []), ...(visitsByDate || []), ...(visitsByCreated || [])];
+        
+        let jobsQuery = supabase.from('oneoffjobs').select('*').eq('admin_id', adminId);
+        if (!isAdmin && !isManager) {
+          jobsQuery = jobsQuery.eq('employee_id', userProfile.uid);
+        }
+        const { data: jobsData } = await jobsQuery;
+
+        setCompletedVisitsOnRouteDate(prev => {
+          const next = new Set(prev);
+          if (visitsData) {
+            visitsData.forEach(data => {
+              if (data.date) {
+                next.add(data.client_id);
+              }
+            });
           }
+          if (jobsData) {
+            jobsData.forEach(job => {
+              const updatedAtDate = job.updated_at ? new Date(job.updated_at) : null;
+              const ds = new Date(routeDateStart);
+              const de = new Date(routeDateEnd);
+              const updatedToday = updatedAtDate && updatedAtDate >= ds && updatedAtDate <= de;
+              
+              if (job.status === 'concluido' || (job.status === 'em_andamento' && updatedToday)) {
+                if ((job.date && job.date.startsWith(routeDate) && job.status !== 'pendente') || (job.return_date && job.return_date.startsWith(routeDate) && job.status === 'concluido') || updatedToday) {
+                   next.add(job.id);
+                }
+              }
+            });
+          }
+          return next;
         });
-        return next;
-      });
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'oneoffjobs');
-    });
+      } catch (err) {
+        console.error(err);
+      }
+    };
+
+    fetchStatus();
+
+    const channel1 = supabase.channel('routes-visits')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'visits', filter: `admin_id=eq.${adminId}` }, fetchStatus)
+      .subscribe();
+
+    let jobFilter = `admin_id=eq.${adminId}`;
+    if (!isAdmin && !isManager) jobFilter += `&employee_id=eq.${userProfile.uid}`;
+
+    const channel2 = supabase.channel('routes-jobs')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'oneoffjobs', filter: jobFilter }, fetchStatus)
+      .subscribe();
 
     return () => {
-      unsubscribeVisits();
-      unsubscribeJobs();
+      supabase.removeChannel(channel1);
+      supabase.removeChannel(channel2);
     };
   }, [generated, routeDate, userProfile, isAdmin]);
 
@@ -158,72 +176,90 @@ export default function RoutesPage() {
     try {
       const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
       
-      const q = query(
-        collection(db, 'clients'),
-        where('adminId', '==', adminId),
-        where('employeeId', '==', selectedEmployee)
-      );
-      
-      const snap = await getDocs(q);
-      const allEmployeeClients = snap.docs.map(doc => ({ id: doc.id, ...doc.data(), isOneOffJob: false }));
+      const { data: clientsDataAPI, error: cErr } = await supabase.from('clients')
+        .select('*')
+        .eq('admin_id', adminId)
+        .eq('employee_id', selectedEmployee);
+        
+      if (cErr) throw cErr;
+      const allEmployeeClients = (clientsDataAPI || []).map(doc => ({ ...doc, isOneOffJob: false }));
       
       const clientsData = allEmployeeClients.filter((client: any) => {
-        const matchesDayOfWeek = selectedDay ? (client.visitDays && client.visitDays.includes(selectedDay)) : false;
-        const matchesExtraVisit = routeDate ? (client.extraVisits && client.extraVisits.includes(routeDate)) : false;
+        if (client.active === false) return false;
+        let visitDays = [];
+        try { visitDays = Array.isArray(client.visit_days) ? client.visit_days : (client.visit_days ? JSON.parse(client.visit_days) : []); } catch(e) {}
+        let extraVisits = [];
+        try { extraVisits = Array.isArray(client.extra_visits) ? client.extra_visits : (client.extra_visits ? JSON.parse(client.extra_visits) : []); } catch(e) {}
+        
+        const matchesDayOfWeek = selectedDay ? (visitDays.includes(selectedDay)) : false;
+        const matchesExtraVisit = routeDate ? (extraVisits.includes(routeDate)) : false;
         return matchesDayOfWeek || matchesExtraVisit;
       });
       
       // Fetch OneOffJobs
-      const jobsQ = query(
-        collection(db, 'oneoffjobs'),
-        where('adminId', '==', adminId),
-        where('employeeId', '==', selectedEmployee)
-      );
-      const jobsSnap = await getDocs(jobsQ);
-      const allJobs = jobsSnap.docs.map(doc => ({ 
-        id: doc.id, 
-        ...doc.data(), 
+      const { data: jobsSnap, error: jErr } = await supabase.from('oneoffjobs')
+        .select('*')
+        .eq('admin_id', adminId)
+        .eq('employee_id', selectedEmployee);
+      if (jErr) throw jErr;
+      
+      const allJobs = (jobsSnap || []).map(doc => ({ 
+        ...doc, 
         isOneOffJob: true,
-        name: doc.data().clientName,
-        phone: doc.data().clientPhone
+        name: doc.client_name,
+        phone: doc.client_phone
       })) as any[];
       
       const filteredJobs = allJobs.filter((job: any) => {
-        return job.date === routeDate || job.returnDate === routeDate;
+        const matchesDate = job.date === routeDate || (job.date && job.date.startsWith(routeDate));
+        const matchesReturnDate = job.return_date === routeDate || (job.return_date && job.return_date.startsWith(routeDate));
+        return (matchesDate || matchesReturnDate) && job.status !== 'cancelado';
       });
 
       setRouteClients([...clientsData, ...filteredJobs]);
 
       // Check which clients were already visited ON THE ROUTE DATE
-      const routeDateStart = new Date(routeDate + 'T00:00:00');
-      const routeDateEnd = new Date(routeDate + 'T23:59:59.999');
+      const activeRouteDate = routeDate || getLocalISODate();
+      const [year, month, day] = activeRouteDate.split('-').map(Number);
+      const start = new Date(year, month - 1, day, 0, 0, 0);
+      const end = new Date(year, month - 1, day, 23, 59, 59, 999);
+      const routeDateStartStr = start.toISOString();
+      const routeDateEndStr = end.toISOString();
       
-      const visitsQuery = query(
-        collection(db, 'visits'),
-        where('adminId', '==', adminId),
-        where('date', '>=', Timestamp.fromDate(routeDateStart))
-      );
-      
-      const visitsSnap = await getDocs(visitsQuery);
+      const { data: visitsByTime } = await supabase.from('visits')
+        .select('client_id')
+        .eq('admin_id', adminId)
+        .eq('time', activeRouteDate);
+        
+      const { data: visitsByDate } = await supabase.from('visits')
+        .select('client_id')
+        .eq('admin_id', adminId)
+        .gte('date', routeDateStartStr)
+        .lte('date', routeDateEndStr);
+        
+      const { data: visitsByCreated } = await supabase.from('visits')
+        .select('client_id')
+        .eq('admin_id', adminId)
+        .gte('created_at', routeDateStartStr)
+        .lte('created_at', routeDateEndStr);
+        
+      const visitsSnap = [...(visitsByTime || []), ...(visitsByDate || []), ...(visitsByCreated || [])];
+        
       const completedIds = new Set<string>();
-      visitsSnap.docs.forEach(doc => {
-        const data = doc.data();
-        const visitDate = data.date?.toDate();
-        // Since we query >= routeDateStart, filter out visits after routeDateEnd
-        if (visitDate && visitDate <= routeDateEnd) {
-          // If any visit exists for this client today (even by admin), mark as completed
-          completedIds.add(data.clientId);
-        }
-      });
+      if (visitsSnap) {
+        visitsSnap.forEach(data => {
+            completedIds.add(data.client_id);
+        });
+      }
       
       // Add one-off jobs that are completed or already handled for this route date
       filteredJobs.forEach(job => {
-        const updatedAtDate = job.updatedAt?.toDate();
+        const updatedAtDate = job.updated_at ? new Date(job.updated_at) : null;
+        const routeDateStart = new Date(routeDateStartStr);
+        const routeDateEnd = new Date(routeDateEndStr);
         const updatedToday = updatedAtDate && updatedAtDate >= routeDateStart && updatedAtDate <= routeDateEnd;
-        if (job.status === 'completed' || (job.status === 'needs_return' && updatedToday)) {
-            // Alternatively, if it's 'needs_return' but today is the original date, it was already handled today.
-            // If today is the returnDate, and it's 'needs_return', it is still pending for today unless updated today.
-            if ((job.date === routeDate && job.status !== 'pending') || (job.returnDate === routeDate && job.status === 'completed') || updatedToday) {
+        if (job.status === 'concluido' || (job.status === 'em_andamento' && updatedToday)) {
+            if ((job.date && job.date.startsWith(activeRouteDate) && job.status !== 'pendente') || (job.return_date && job.return_date.startsWith(activeRouteDate) && job.status === 'concluido') || updatedToday) {
                 completedIds.add(job.id);
             }
         }
@@ -234,7 +270,7 @@ export default function RoutesPage() {
       setGenerated(true);
       setSelectedForAnticipation(new Set());
     } catch (error) {
-      handleFirestoreError(error, OperationType.LIST, 'clients');
+      console.error(error);
     } finally {
       setLoading(false);
     }
@@ -252,22 +288,19 @@ export default function RoutesPage() {
         if (!client) continue;
 
         if (client.isOneOffJob) {
-          // It's a one-off job. We change its primary date or returnDate to today.
-          // If returnDate was what placed it here, change returnDate. Else change date.
-          const updates: any = { updatedAt: serverTimestamp() };
-          if (client.returnDate === routeDate) {
-            updates.returnDate = today;
+          const updates: any = { updated_at: new Date().toISOString() };
+          if (client.return_date === routeDate) {
+            updates.return_date = today;
           } else {
             updates.date = today;
           }
-          await updateDoc(doc(db, 'oneoffjobs', client.id), updates);
+          await supabase.from('oneoffjobs').update(updates).eq('id', client.id);
         } else {
-          // Regular client, add today to extraVisits if not present
-          const extraVisits = client.extraVisits || [];
+          const extraVisits = client.extra_visits || [];
           if (!extraVisits.includes(today)) {
-            await updateDoc(doc(db, 'clients', client.id), {
-              extraVisits: [...extraVisits, today]
-            });
+            await supabase.from('clients').update({
+              extra_visits: [...extraVisits, today]
+            }).eq('id', client.id);
           }
         }
       }
@@ -356,8 +389,7 @@ export default function RoutesPage() {
     
     // Waze via URL only really supports one destination reliably. 
     // We'll send them to the first uncompleted one or just the first one.
-    const url = `https://waze.com/ul?q=${encodeURIComponent(addresses[0])}&navigate=yes`;
-    window.open(url, '_blank');
+    openWaze(addresses[0]);
   };
 
   const handleOptimizeRoute = async () => {
@@ -558,45 +590,49 @@ export default function RoutesPage() {
 
     try {
       const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
+      const finalVisitDate = photoDate ? photoDate.toISOString() : new Date().toISOString();
+      const activeRouteDate = routeDate || getLocalISODate();
       
       if (selectedClientForReport.isOneOffJob) {
         // Avulso Update
-        await updateDoc(doc(db, 'oneoffjobs', selectedClientForReport.id), {
-          status: needsReturn ? 'needs_return' : 'completed',
-          returnDate: needsReturn ? returnDate : null,
+        await supabase.from('oneoffjobs').update({
+          status: needsReturn ? 'em_andamento' : 'concluido',
+          return_date: needsReturn ? returnDate : null,
           report: reportNotes.trim(),
-          updatedAt: photoDate ? Timestamp.fromDate(photoDate) : serverTimestamp()
-        });
-        // One-off jobs do not store visit locations for the client history yet, they are just jobs.
-        // Or if we want them, we could add visit logic. I'll stick to what was there.
+          updated_at: finalVisitDate
+        }).eq('id', selectedClientForReport.id);
       } else {
         // Normal Client Visit
-        await addDoc(collection(db, 'visits'), {
-          adminId,
-          clientId: selectedClientForReport.id,
-          employeeId: (isAdmin || isManager) && selectedEmployee ? selectedEmployee : userProfile.uid,
-          date: photoDate ? Timestamp.fromDate(photoDate) : serverTimestamp(),
+        const { error: insertError } = await supabase.from('visits').insert({
+          admin_id: adminId,
+          client_id: selectedClientForReport.id,
+          employee_id: (isAdmin || isManager) && selectedEmployee ? selectedEmployee : userProfile.uid,
+          date: finalVisitDate,
+          time: activeRouteDate,
           notes: reportNotes.trim(),
-          photoUrls: reportPhotos,
+          photo_urls: reportPhotos,
           location: locationData
         });
+        
+        if (insertError) throw insertError;
 
         // Update client with lastVisitDate
-        await updateDoc(doc(db, 'clients', selectedClientForReport.id), {
-          lastVisitDate: photoDate ? Timestamp.fromDate(photoDate) : serverTimestamp()
-        });
+        await supabase.from('clients').update({
+          last_visit_date: finalVisitDate
+        }).eq('id', selectedClientForReport.id);
 
         // Cleanup old visits (keep only the 3 most recent)
         try {
-          const q = query(collection(db, 'visits'), where('clientId', '==', selectedClientForReport.id), where('adminId', '==', adminId));
-          const snap = await getDocs(q);
-          const visitsData = snap.docs.map(d => ({ id: d.id, date: d.data().date?.toMillis() || 0 }));
-          visitsData.sort((a, b) => b.date - a.date);
+          const { data: visitsData } = await supabase.from('visits')
+            .select('id, date')
+            .eq('client_id', selectedClientForReport.id)
+            .eq('admin_id', adminId)
+            .order('date', { ascending: false });
           
-          if (visitsData.length > 3) {
-            const toDelete = visitsData.slice(3);
-            for (const v of toDelete) {
-              await deleteDoc(doc(db, 'visits', v.id));
+          if (visitsData && visitsData.length > 3) {
+            const toDelete = visitsData.slice(3).map(v => v.id);
+            for (const id of toDelete) {
+               await supabase.from('visits').delete().eq('id', id);
             }
           }
         } catch (cleanupErr) {
@@ -610,11 +646,7 @@ export default function RoutesPage() {
       setReportModalOpen(false);
       setSelectedClientForReport(null);
     } catch (error) {
-      if (selectedClientForReport.isOneOffJob) {
-        handleFirestoreError(error, OperationType.UPDATE, 'oneoffjobs');
-      } else {
-        handleFirestoreError(error, OperationType.CREATE, 'visits');
-      }
+       console.error("Error submitting report", error);
     } finally {
       setSubmittingReport(false);
     }

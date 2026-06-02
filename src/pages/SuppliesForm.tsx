@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
 import { Package, Send, ArrowLeft, Settings, Plus, Trash2, X, Save } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -41,7 +40,7 @@ export default function SuppliesForm() {
   
   useEffect(() => {
     if (userProfile?.customProducts && userProfile.customProducts.length > 0) {
-      setSupplies(userProfile.customProducts.map(p => ({
+      setSupplies(userProfile.customProducts.map((p: any) => ({
         name: p.name,
         quantity: '',
         unit: p.defaultUnit || 'Un'
@@ -74,15 +73,17 @@ export default function SuppliesForm() {
 
     const fetchClient = async () => {
       try {
-        const clientDoc = await getDoc(doc(db, 'clients', id));
-        if (clientDoc.exists()) {
-          setClient({ id: clientDoc.id, ...clientDoc.data() });
+        const { data, error } = await supabase.from('clients').select('*').eq('id', id).single();
+        if (error) throw error;
+        
+        if (data) {
+          setClient(data);
         } else {
           alert('Cliente não encontrado.');
           navigate('/clients');
         }
       } catch (error) {
-        handleFirestoreError(error, OperationType.GET, `clients/${id}`);
+        console.error(error);
       } finally {
         setLoading(false);
       }
@@ -104,9 +105,11 @@ export default function SuppliesForm() {
 
       const validProducts = customProducts.filter(p => p.name.trim() !== '');
       
-      await updateDoc(doc(db, 'users', adminId), {
-        customProducts: validProducts
-      });
+      const { error } = await supabase.from('users').update({
+        custom_products: validProducts // Custom columns generally stored nicely in json or specific columns. Using snake_case
+      }).eq('id', adminId);
+      
+      if(error) throw error;
 
       setSupplies(validProducts.map(p => ({
         name: p.name,

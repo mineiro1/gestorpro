@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, serverTimestamp } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
 import { Edit2, Trash2, Plus, X } from 'lucide-react';
 
 export default function Agenda() {
@@ -11,6 +10,9 @@ export default function Agenda() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [currentContact, setCurrentContact] = useState<any>(null);
   
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [contactToDelete, setContactToDelete] = useState<string | null>(null);
+
   // Form state
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -25,13 +27,13 @@ export default function Agenda() {
     try {
       setLoading(true);
       const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
-      const q = query(collection(db, 'agenda_contacts'), where('adminId', '==', adminId));
-      const snap = await getDocs(q);
-      const data = snap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) }));
-      data.sort((a, b) => a.name.localeCompare(b.name));
-      setContacts(data);
+      const { data, error } = await supabase.from('agenda_contacts').select('*').eq('admin_id', adminId).order('name', { ascending: true });
+      if (error) throw error;
+      if (data) {
+        setContacts(data);
+      }
     } catch (error) {
-      handleFirestoreError(error, OperationType.LIST, 'agenda_contacts');
+      console.error(error);
     } finally {
       setLoading(false);
     }
@@ -71,38 +73,44 @@ export default function Agenda() {
       const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
       
       const contactData = {
-        adminId,
+        admin_id: adminId,
         name: name.trim(),
         phone: phone.trim()
       };
 
       if (currentContact) {
-        await updateDoc(doc(db, 'agenda_contacts', currentContact.id), contactData);
+        const { error } = await supabase.from('agenda_contacts').update(contactData).eq('id', currentContact.id);
+        if (error) throw error;
       } else {
-        await addDoc(collection(db, 'agenda_contacts'), {
-          ...contactData,
-          createdAt: serverTimestamp()
-        });
+        const { error } = await supabase.from('agenda_contacts').insert(contactData);
+        if (error) throw error;
       }
       
       handleCloseModal();
       fetchAgenda();
     } catch (error) {
-      handleFirestoreError(error, currentContact ? OperationType.UPDATE : OperationType.CREATE, 'agenda_contacts');
+      console.error(error);
       alert("Erro ao salvar contato.");
     } finally {
       setSaving(false);
     }
   };
 
-  const handleDelete = async (contactId: string) => {
-    if (!window.confirm("Certeza que deseja excluir este contato?")) return;
-    
+  const handleDeleteClick = (contactId: string) => {
+    setContactToDelete(contactId);
+    setDeleteModalOpen(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!contactToDelete) return;
     try {
-      await deleteDoc(doc(db, 'agenda_contacts', contactId));
+      const { error } = await supabase.from('agenda_contacts').delete().eq('id', contactToDelete);
+      if (error) throw error;
       fetchAgenda();
+      setDeleteModalOpen(false);
+      setContactToDelete(null);
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, 'agenda_contacts');
+      console.error(error);
       alert("Erro ao excluir contato.");
     }
   };
@@ -165,7 +173,7 @@ export default function Agenda() {
                           <Edit2 size={18} />
                         </button>
                         <button
-                          onClick={() => handleDelete(c.id)}
+                          onClick={() => handleDeleteClick(c.id)}
                           className="text-red-600 hover:text-red-900"
                           title="Excluir contato"
                         >
@@ -235,6 +243,29 @@ export default function Agenda() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {deleteModalOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl p-6 max-w-sm w-full">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Excluir Contato</h3>
+            <p className="text-gray-600 mb-6">Tem certeza que deseja excluir este contato da agenda?</p>
+            <div className="flex justify-end space-x-3">
+              <button
+                onClick={() => setDeleteModalOpen(false)}
+                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={confirmDelete}
+                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+              >
+                Excluir
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -1,52 +1,67 @@
 import React, { useEffect } from 'react';
-import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 
 export default function EmployeeLocationTracker() {
   const { userProfile, isAdmin } = useAuth();
 
   useEffect(() => {
-    // Only track employees and if user profile is ready
-    if (isAdmin || !userProfile?.uid) return;
+    // Only track if user profile is ready
+    if (!userProfile?.uid) return;
 
     let watchId: number;
-    let lastUpdateTime = 0;
 
     if ('geolocation' in navigator) {
+      // First, let's get the current position manually once to ensure fast first load
+      navigator.geolocation.getCurrentPosition(
+        async (position) => {
+             try {
+               await supabase.from('users').update({
+                 last_location: {
+                   lat: position.coords.latitude,
+                   lng: position.coords.longitude,
+                   accuracy: position.coords.accuracy,
+                 },
+                 location_updated_at: new Date().toISOString(),
+               }).eq('id', userProfile.uid);
+             } catch (error) {}
+        },
+        () => {},
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
+      );
+
       watchId = navigator.geolocation.watchPosition(
         async (position) => {
-          const now = Date.now();
-          // Update at most once every 2 minutes (120000 ms) to save quota
-          if (now - lastUpdateTime > 120000) {
-            try {
-              await updateDoc(doc(db, 'users', userProfile.uid), {
-                lastLocation: {
-                  lat: position.coords.latitude,
-                  lng: position.coords.longitude,
-                  accuracy: position.coords.accuracy,
-                },
-                lastLocationAt: serverTimestamp(),
-              });
-              lastUpdateTime = now;
-            } catch (error) {
-              console.error('Error updating location:', error);
+          try {
+            const { error } = await supabase.from('users').update({
+              last_location: {
+                lat: position.coords.latitude,
+                lng: position.coords.longitude,
+                accuracy: position.coords.accuracy,
+              },
+              location_updated_at: new Date().toISOString(),
+            }).eq('id', userProfile.uid);
+            
+            if (error) {
+              console.error('Error updating location in Supabase:', error);
             }
+          } catch (error) {
+            console.error('Error in location update process:', error);
           }
         },
         (error) => {
-          console.error('Error getting location:', error);
+          console.error('Error watching location:', error);
         },
         {
           enableHighAccuracy: true,
-          maximumAge: 0,
-          timeout: 27000,
+          maximumAge: 10000,
+          timeout: 10000,
         }
       );
     }
 
     return () => {
-      if (watchId !== undefined) {
+      if (watchId !== undefined && 'geolocation' in navigator) {
         navigator.geolocation.clearWatch(watchId);
       }
     };

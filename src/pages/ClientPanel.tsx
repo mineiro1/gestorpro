@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, where, getDocs, orderBy, doc, getDoc } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
 import { Calendar, CheckCircle, X, Download } from 'lucide-react';
 
 export default function ClientPanel() {
@@ -18,56 +17,69 @@ export default function ClientPanel() {
 
     const fetchData = async () => {
       try {
-        // userProfile for a client should contain clientId, or we find the client by phone
-        // The user was created with role: 'client'. Wait, what is the connection?
-        // Let's assume user.uid is NOT the client.id.
-        // Usually we set user.phone. So we can query client by phone!
-        if (userProfile.clientId) {
-          const docRef = doc(db, 'clients', userProfile.clientId);
-          const docSnap = await getDoc(docRef);
+        if (userProfile.clientId || userProfile.role === 'client') {
+          // If the profile doesn't have clientId explicitly mapped but is a client we can search by email
+          let clientDataResult = null;
+          if (userProfile.clientId) {
+            const { data: clientRes, error: clientErr } = await supabase.from('clients').select('*').eq('id', userProfile.clientId).single();
+            clientDataResult = clientRes;
+          } else {
+            const cleanedProfilePhone = (userProfile.phone || '').replace(/\D/g, '');
+            const { data: clientsData } = await supabase.from('clients').select('*');
+            if (clientsData) {
+               clientDataResult = clientsData.find(c => {
+                 const cleanedClientPhone = (c.phone || '').replace(/\D/g, '');
+                 const cleanedClientCpf = (c.cpf_cnpj || '').replace(/\D/g, '');
+                 return cleanedClientPhone === cleanedProfilePhone || cleanedClientCpf === cleanedProfilePhone;
+               });
+            }
+          }
           
-          if (docSnap.exists()) {
-            const found = { id: docSnap.id, ...docSnap.data() };
+          if (clientDataResult) {
+            const found = { ...clientDataResult, id: clientDataResult.id, dueDate: clientDataResult.due_date, name: clientDataResult.name };
             setClientData(found);
             
             // Get visits history
-            const vQ = query(
-               collection(db, 'visits'),
-               where('clientId', '==', found.id),
-               where('adminId', '==', userProfile.adminId)
-            );
-            const vSnap = await getDocs(vQ);
-            const visitsData = vSnap.docs.map(d => ({id: d.id, ...d.data()})) as any[];
-            visitsData.sort((a, b) => (b.date?.toMillis() || 0) - (a.date?.toMillis() || 0));
-            setVisits(visitsData);
+            const { data: vSnap, error: vErr } = await supabase
+               .from('visits')
+               .select('*')
+               .eq('client_id', found.id)
+               .eq('admin_id', found.admin_id || userProfile.adminId)
+               .order('date', { ascending: false });
+            
+            if (vSnap) {
+              setVisits(vSnap.map(d => ({...d, date: new Date(d.date), employeeId: d.employee_id})));
+            }
 
             // Get payment history
-            const pQ = query(
-               collection(db, 'payments'),
-               where('clientId', '==', found.id),
-               where('adminId', '==', userProfile.adminId)
-            );
-            const pSnap = await getDocs(pQ);
-            const paymentsData = pSnap.docs.map(d => ({id: d.id, ...d.data()})) as any[];
-            paymentsData.sort((a, b) => (b.date?.toMillis() || 0) - (a.date?.toMillis() || 0));
-            setPayments(paymentsData);
+            const { data: pSnap } = await supabase
+               .from('payments')
+               .select('*')
+               .eq('client_id', found.id)
+               .eq('admin_id', found.admin_id || userProfile.adminId)
+               .order('created_at', { ascending: false });
+               
+            if (pSnap) {
+              setPayments(pSnap.map(d => ({...d, date: d.paid_date || d.created_at})));
+            }
 
             // Get employees mapping
-            const eQ = query(
-              collection(db, 'users'),
-              where('adminId', '==', userProfile.adminId)
-            );
-            const eSnap = await getDocs(eQ);
+            const { data: eSnap } = await supabase
+              .from('users')
+              .select('id, name')
+              .eq('admin_id', found.admin_id || userProfile.adminId);
+              
             const eMap: Record<string, string> = {};
-            eSnap.docs.forEach(doc => {
-              const data = doc.data();
-              eMap[doc.id] = data.name || 'Desconhecido';
-            });
+            if (eSnap) {
+              eSnap.forEach(data => {
+                eMap[data.id] = data.name || 'Desconhecido';
+              });
+            }
             setEmployeesMap(eMap);
           }
         }
       } catch(err) {
-        handleFirestoreError(err, OperationType.GET, 'client_panel');
+        console.error(err);
       } finally {
         setLoading(false);
       }
@@ -122,7 +134,7 @@ export default function ClientPanel() {
                 <div className="flex justify-between items-start mb-2">
                    <div className="flex items-center text-primary font-semibold">
                      <CheckCircle size={16} className="mr-2" />
-                     {v.date ? new Date(v.date.toMillis()).toLocaleString('pt-BR') : 'Data Indisponível'}
+                     {v.date ? new Date(v.date).toLocaleString('pt-BR') : 'Data Indisponível'}
                    </div>
                    {v.employeeId && (
                      <div className="text-sm font-medium text-gray-500">
@@ -133,21 +145,21 @@ export default function ClientPanel() {
                 {v.notes && <p className="text-sm text-gray-600 bg-gray-100 p-3 rounded-lg">{v.notes}</p>}
                 
                 {/* Legacy single photo support */}
-                {v.photoUrl && !v.photoUrls && (
+                {v.photo_url && (!v.photo_urls || v.photo_urls.length === 0) && (
                   <div className="mt-3">
                     <img 
-                      src={v.photoUrl} 
+                      src={v.photo_url} 
                       alt="Foto da visita" 
-                      onClick={() => setFullscreenImage(v.photoUrl)}
+                      onClick={() => setFullscreenImage(v.photo_url)}
                       className="w-32 h-32 object-cover rounded-lg shadow-sm border border-gray-200 cursor-pointer hover:opacity-90 transition-opacity" 
                     />
                   </div>
                 )}
                 
                 {/* Modern multiple photos support */}
-                {v.photoUrls && v.photoUrls.length > 0 && (
+                {v.photo_urls && v.photo_urls.length > 0 && (
                   <div className="mt-3 flex gap-2 overflow-x-auto pb-2">
-                    {v.photoUrls.map((photo: string, index: number) => (
+                    {v.photo_urls.map((photo: string, index: number) => (
                        <img 
                          key={index}
                          src={photo} 
@@ -171,15 +183,22 @@ export default function ClientPanel() {
            <h2 className="text-xl font-bold text-gray-800">Histórico de Pagamentos</h2>
         </div>
         <div className="divide-y divide-gray-100">
-          {payments.map(p => (
+          {payments.map(p => {
+             const paymentDateStr = p.date;
+             let paymentDate = null;
+             if (paymentDateStr) {
+               const isJustDate = typeof paymentDateStr === 'string' && paymentDateStr.length === 10;
+               paymentDate = isJustDate ? new Date(`${paymentDateStr}T12:00:00`) : new Date(paymentDateStr);
+             }
+             return (
              <div key={p.id} className="p-4 hover:bg-gray-50 transition-colors flex justify-between items-center">
                  <div>
                     <div className="font-semibold text-gray-800">
-                       Mês de Referência: {String(p.refMonth).padStart(2, '0')}/{p.refYear}
+                       Mês de Referência: {String(p.ref_month || p.month || (paymentDate ? paymentDate.getMonth() + 1 : '')).padStart(2, '0')}/{p.ref_year || p.year || (paymentDate ? paymentDate.getFullYear() : '')}
                     </div>
                     <div className="text-sm text-gray-500 flex items-center mt-1">
                       <Calendar size={14} className="mr-1" />
-                      Pago em: {p.date ? new Date(p.date.toMillis()).toLocaleDateString('pt-BR') : 'Data Indisponível'}
+                      Pago em: {paymentDate ? paymentDate.toLocaleDateString('pt-BR') : 'Data Indisponível'}
                     </div>
                  </div>
                  <div className="text-right">
@@ -188,7 +207,8 @@ export default function ClientPanel() {
                     </div>
                  </div>
              </div>
-          ))}
+             )
+          })}
           {payments.length === 0 && (
              <p className="p-8 text-center text-gray-500">Nenhum pagamento registrado ainda.</p>
           )}

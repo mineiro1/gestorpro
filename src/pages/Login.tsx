@@ -1,8 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { signInWithEmailAndPassword } from 'firebase/auth';
-import { doc, getDoc, setDoc, serverTimestamp, Timestamp } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
 
 export default function Login() {
   const location = useLocation();
@@ -29,69 +27,121 @@ export default function Login() {
         cleanPhone = '';
       }
       
-      try {
-        await signInWithEmailAndPassword(auth, emailGestao, password);
-      } catch (err: any) {
-        if ((err.code === 'auth/invalid-credential' || err.code === 'auth/invalid-login-credentials' || err.message?.includes('invalid-credential')) && !phone.includes('@')) {
-          // Fallback para usuários criados antes da mudança de nome do app
-          await signInWithEmailAndPassword(auth, emailServi, password);
+      let { data, error: signInError } = await supabase.auth.signInWithPassword({
+        email: emailGestao,
+        password: password.trim(),
+      });
+
+      if (signInError && signInError.message.includes('Invalid login credentials') && !phone.includes('@')) {
+        // Fallback for users created before app name change
+        let fetchFallback = await supabase.auth.signInWithPassword({
+          email: emailServi,
+          password: password.trim(),
+        });
+        
+        if (fetchFallback.error) {
+           // Fallback without trimming the password (if trailing spaces were saved)
+           const untrimmedFallbackGestao = await supabase.auth.signInWithPassword({
+             email: emailGestao,
+             password: password,
+           });
+           
+           if (untrimmedFallbackGestao.error) {
+              const untrimmedFallbackServi = await supabase.auth.signInWithPassword({
+                email: emailServi,
+                password: password,
+              });
+              
+              if (untrimmedFallbackServi.error) {
+                 // Third fallback: maybe it's a client using phone with mask as password
+                 const cleanedPassword = password.replace(/\D/g, '');
+                 if (cleanedPassword.length >= 6) {
+                   const clientFallbackGestao = await supabase.auth.signInWithPassword({
+                     email: emailGestao,
+                     password: cleanedPassword,
+                   });
+                   
+                   if (clientFallbackGestao.error) {
+                      const clientFallbackServi = await supabase.auth.signInWithPassword({
+                        email: emailServi,
+                        password: cleanedPassword,
+                      });
+                      if (clientFallbackServi.error) {
+                        throw fetchFallback.error; // throw original
+                      }
+                      data = clientFallbackServi.data;
+                   } else {
+                     data = clientFallbackGestao.data;
+                   }
+                 } else {
+                   throw fetchFallback.error;
+                 }
+              } else {
+                 data = untrimmedFallbackServi.data;
+              }
+           } else {
+             data = untrimmedFallbackGestao.data;
+           }
         } else {
-          throw err;
+           data = fetchFallback.data;
         }
+      } else if (signInError) {
+        throw signInError;
       }
       
-      if (auth.currentUser) {
-        const userDocRef = doc(db, 'users', auth.currentUser.uid);
-        const userDoc = await getDoc(userDocRef);
-        const isSuperAdmin = auth.currentUser.email === 'servincg@gmail.com';
+      if (data.user) {
+        const { data: userDoc } = await supabase
+          .from('users')
+          .select('id, active, client_id')
+          .eq('id', data.user.id)
+          .single();
+          
+        if (userDoc && userDoc.active === false) {
+          await supabase.auth.signOut();
+          throw new Error("Esta conta de colaborador/gestor está desativada.");
+        }
         
-        if (!userDoc.exists()) {
-          console.warn('User document missing. Recreating for:', auth.currentUser.email);
+        // Also check if they are a client and client is inactive
+        if (userDoc && userDoc.client_id) {
+            const { data: clientDoc } = await supabase.from('clients').select('active').eq('id', userDoc.client_id).single();
+            if (clientDoc && clientDoc.active === false) {
+               await supabase.auth.signOut();
+               throw new Error("Sua conta de cliente está inativa. Entre em contato com a empresa.");
+            }
+        }
+          
+        const isSuperAdmin = data.user.email === 'servincg@gmail.com';
+        
+        if (!userDoc) {
+          console.warn('User document missing. Recreating for:', data.user.email);
           const trialExpiry = new Date();
           trialExpiry.setDate(trialExpiry.getDate() + 7);
           
-          try {
-            await setDoc(userDocRef, {
-              uid: auth.currentUser.uid,
-              role: 'admin',
-              name: isSuperAdmin ? 'Renivaldo Servin dos Santos' : 'Usuário Recuperado',
-              phone: cleanPhone,
-              email: auth.currentUser.email || emailGestao,
-              adminId: auth.currentUser.uid,
-              createdAt: serverTimestamp(),
-              subscriptionStatus: isSuperAdmin ? 'active' : 'trial',
-              subscriptionExpiresAt: isSuperAdmin ? Timestamp.fromDate(new Date('2099-12-31')) : Timestamp.fromDate(trialExpiry),
-            });
-          } catch (firestoreError) {
-            handleFirestoreError(firestoreError, OperationType.CREATE, `users/${auth.currentUser.uid}`);
-          }
-        } else if (isSuperAdmin) {
-           // Ensure super admin retains correct info
-           try {
-             await setDoc(userDocRef, {
-               ...userDoc.data(),
-               name: 'Renivaldo Servin dos Santos',
-               subscriptionStatus: 'active',
-               subscriptionExpiresAt: Timestamp.fromDate(new Date('2099-12-31')),
-             });
-           } catch (e) {
-             console.error('Error updating super admin info', e);
-           }
+          await supabase.from('users').insert({
+            id: data.user.id,
+            role: 'admin',
+            name: isSuperAdmin ? 'Renivaldo Servin dos Santos' : 'Usuário Recuperado',
+            phone: cleanPhone,
+            email: data.user.email || emailGestao,
+            admin_id: data.user.id,
+            subscription_status: isSuperAdmin ? 'active' : 'trial',
+            subscription_expires_at: isSuperAdmin ? new Date('2099-12-31').toISOString() : trialExpiry.toISOString(),
+          });
         }
       }
       
       navigate('/');
     } catch (err: any) {
-      if (err.code !== 'auth/invalid-credential' && err.code !== 'auth/invalid-login-credentials' && !err.message?.includes('invalid-credential')) {
-        console.error(err);
-      }
-      if (err.code === 'auth/operation-not-allowed') {
-        setError('Autenticação por E-mail/Senha não está ativada no Firebase.');
-      } else if (err.code === 'auth/invalid-credential' || err.code === 'auth/invalid-login-credentials' || err.message?.includes('invalid-credential') || err.message?.includes('wrong-password') || err.message?.includes('user-not-found')) {
+      if (err.message?.includes('Invalid login credentials')) {
         setError('Telefone ou senha incorretos.');
-      } else if (err.code === 'auth/network-request-failed') {
+      } else if (err.message?.includes('Email not confirmed')) {
+        setError('Por favor, desative a confirmação de e-mail no painel do Supabase: Authentication -> Providers -> Email -> Desmarque "Confirm email".');
+      } else if (err.message?.includes('Email logins are disabled')) {
+        setError('Por favor, ative o provedor de E-mail no painel do Supabase: Authentication -> Providers -> Email -> Enable Email provider.');
+      } else if (err.message?.includes('FetchError') || err.message?.includes('Network request failed')) {
         setError('Erro de conexão. Verifique sua internet, desative bloqueadores de anúncios (AdBlock) ou tente em uma aba anônima.');
       } else {
+        console.error(err);
         setError('Erro ao fazer login. Verifique seus dados.');
       }
     } finally {

@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
 import { MessageCircle, CheckSquare, Square, Image as ImageIcon, Video, X, Play } from 'lucide-react';
 
 export default function Messages() {
@@ -12,6 +11,7 @@ export default function Messages() {
   const [mediaFile, setMediaFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [sendStatuses, setSendStatuses] = useState<Record<string, 'pending' | 'sending' | 'success' | 'error'>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -22,33 +22,39 @@ export default function Messages() {
         const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
         
         // Fetch clients
-        let qClients = query(collection(db, 'clients'), where('adminId', '==', adminId));
+        let snapClients;
         if (userProfile.role === 'employee') {
-          qClients = query(qClients, where('employeeId', '==', userProfile.uid));
+          snapClients = await supabase.from('clients').select('*').eq('admin_id', adminId).eq('employee_id', userProfile.uid);
+        } else {
+          snapClients = await supabase.from('clients').select('*').eq('admin_id', adminId);
         }
-        const snapClients = await getDocs(qClients);
-        const clientsData = snapClients.docs.map(doc => ({ id: doc.id, type: 'client', ...(doc.data() as any) }));
+        
+        let clientsData: any[] = [];
+        if (snapClients.data) {
+          clientsData = snapClients.data.map((doc: any) => ({ id: doc.id, type: 'client', ...doc }));
+        }
         
         // Fetch agenda contacts (only for admin/manager)
         let agendaData: any[] = [];
         if (isAdmin || isManager) {
-          const qAgenda = query(collection(db, 'agenda_contacts'), where('adminId', '==', adminId));
-          const snapAgenda = await getDocs(qAgenda);
-          agendaData = snapAgenda.docs.map(doc => ({ id: doc.id, type: 'agenda', ...(doc.data() as any) }));
+          const snapAgenda = await supabase.from('agenda_contacts').select('*').eq('admin_id', adminId);
+          if (snapAgenda.data) {
+            agendaData = snapAgenda.data.map((doc: any) => ({ id: doc.id, type: 'agenda', ...doc }));
+          }
         }
 
         const combinedData = [...clientsData, ...agendaData];
         combinedData.sort((a, b) => a.name.localeCompare(b.name));
         setClients(combinedData);
       } catch (error) {
-        handleFirestoreError(error, OperationType.LIST, 'clients');
+        console.error(error);
       } finally {
         setLoading(false);
       }
     };
 
     fetchRecipients();
-  }, [userProfile, isAdmin]);
+  }, [userProfile, isAdmin, isManager]);
 
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
@@ -140,19 +146,75 @@ export default function Messages() {
       };
     }
 
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': evolutionApiKey
-      },
-      body: JSON.stringify(body)
-    });
+    let response;
+    try {
+      response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': evolutionApiKey
+        },
+        body: JSON.stringify(body)
+      });
+    } catch (e: any) {
+      if (e.message === 'Failed to fetch') {
+        throw new Error(`Falha de conexão. Verifique se o seu servidor Evolution API (${baseUrl}) possui o CORS habilitado. O navegador bloqueou a requisição (Failed to fetch).`);
+      }
+      throw e;
+    }
 
     if (!response.ok) {
       const errData = await response.json().catch(() => ({}));
       throw new Error(`Erro na Evolution API: ${JSON.stringify(errData)}`);
     }
+  };
+
+  const sendMetaMessage = async (client: any, text: string) => {
+    const waSettings = userProfile?.whatsappSettings;
+    if (!waSettings || !waSettings.metaToken || !waSettings.metaPhoneNumberId) {
+      throw new Error("Credenciais da API Oficial (Meta) incompletas nas configurações.");
+    }
+    
+    const cleanPhone = client.phone.replace(/\D/g, '');
+    const number = cleanPhone.startsWith('55') ? cleanPhone : `55${cleanPhone}`;
+    
+    const url = `https://graph.facebook.com/v19.0/${waSettings.metaPhoneNumberId}/messages`;
+    
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${waSettings.metaToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          recipient_type: "individual",
+          to: number,
+          type: "text",
+          text: { 
+            preview_url: false,
+            body: text
+          }
+        })
+      });
+    } catch (e: any) {
+      if (e.message === 'Failed to fetch') {
+        throw new Error('Falha de conexão com a API da Meta. (Failed to fetch)');
+      }
+      throw e;
+    }
+    
+    if (!response.ok) {
+      let errDesc = 'Desconhecido';
+      try {
+        const errData = await response.json();
+        errDesc = errData.error?.message || JSON.stringify(errData);
+      } catch(e) {}
+      throw new Error(`Erro API Meta (${response.status}): ${errDesc}`);
+    }
+    return await response.json();
   };
 
   const handleSend = async () => {
@@ -173,6 +235,8 @@ export default function Messages() {
     }
 
     setSending(true);
+    setSendStatuses({});
+    
     let successCount = 0;
     let errorCount = 0;
 
@@ -190,6 +254,9 @@ export default function Messages() {
     }
 
     const targets = clients.filter(c => selectedClients.has(c.id));
+    
+    // Set all pending
+    targets.forEach(c => setSendStatuses(prev => ({ ...prev, [c.id]: 'pending' })));
 
     if (!isEvolution && !waSettings?.useMetaApi) {
       // Manual Web Fallback
@@ -197,14 +264,17 @@ export default function Messages() {
       
       for (const client of targets) {
         if (!client.phone) {
+          setSendStatuses(prev => ({ ...prev, [client.id]: 'error' }));
           errorCount++;
           continue;
         }
+        setSendStatuses(prev => ({ ...prev, [client.id]: 'sending' }));
         const phoneInfo = client.phone.replace(/\D/g, '');
         const message = messageText.replace(/\{nome\}/g, client.name || '');
         import('../lib/whatsapp').then(({ openWhatsApp }) => {
           openWhatsApp(`55${phoneInfo}`, message);
         });
+        setSendStatuses(prev => ({ ...prev, [client.id]: 'success' }));
         successCount++;
         // Short pause between opening tabs to avoid browser blocking
         await new Promise(r => setTimeout(r, 1000));
@@ -220,16 +290,20 @@ export default function Messages() {
       let lastError = '';
       for (const client of targets) {
         if (!client.phone) {
+          setSendStatuses(prev => ({ ...prev, [client.id]: 'error' }));
           errorCount++;
           lastError = 'Telefone ausente';
           continue;
         }
+        setSendStatuses(prev => ({ ...prev, [client.id]: 'sending' }));
         try {
           const personalizedText = messageText.replace(/\{nome\}/g, client.name || '');
           await sendEvolutionMessage(client, personalizedText, base64Media, mimeType);
+          setSendStatuses(prev => ({ ...prev, [client.id]: 'success' }));
           successCount++;
         } catch (e: any) {
           console.error("Erro Evolution:", e);
+          setSendStatuses(prev => ({ ...prev, [client.id]: 'error' }));
           errorCount++;
           lastError = e?.message || 'Erro desconhecido';
         }
@@ -240,8 +314,46 @@ export default function Messages() {
         alertMsg += `\n\nÚltimo erro: ${lastError}`;
       }
       alert(alertMsg);
-    } else {
-       alert("Meta API não implementada para mídia em massa. Configure Evolution ou tente pelo Web.");
+    } else if (waSettings?.useMetaApi) {
+       if (mediaFile) {
+          alert("Não é possível enviar imagens e vídeos utilizando a API Oficial da Meta nas mensagens em lote. O envio será cancelado.");
+          setSending(false);
+          return;
+       }
+       if (!waSettings.metaToken || !waSettings.metaPhoneNumberId) {
+          alert("Credenciais da API Oficial (Meta) incompletas nas configurações.");
+          setSending(false);
+          return;
+       }
+
+       let lastError = '';
+       for (const client of targets) {
+        if (!client.phone) {
+          setSendStatuses(prev => ({ ...prev, [client.id]: 'error' }));
+          errorCount++;
+          lastError = 'Telefone ausente';
+          continue;
+        }
+        setSendStatuses(prev => ({ ...prev, [client.id]: 'sending' }));
+        try {
+          const personalizedText = messageText.replace(/\{nome\}/g, client.name || '');
+          await sendMetaMessage(client, personalizedText);
+          setSendStatuses(prev => ({ ...prev, [client.id]: 'success' }));
+          successCount++;
+        } catch (e: any) {
+          console.error("Erro Meta:", e);
+          setSendStatuses(prev => ({ ...prev, [client.id]: 'error' }));
+          errorCount++;
+          lastError = e?.message || 'Erro desconhecido';
+        }
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      
+      let alertMsg = `Envios API Meta concluídos!\nSucesso: ${successCount}\nErros: ${errorCount}`;
+      if (errorCount > 0) {
+        alertMsg += `\n\nÚltimo erro: ${lastError}`;
+      }
+      alert(alertMsg);
     }
 
     setSending(false);
@@ -373,9 +485,15 @@ export default function Messages() {
                           <p className="text-sm font-semibold text-gray-800 truncate">{client.name}</p>
                           <p className="text-xs text-gray-500 font-mono">{client.phone}</p>
                         </div>
-                        {client.type === 'agenda' && (
-                          <span className="text-[10px] uppercase font-bold px-2 py-0.5 bg-gray-200 text-gray-600 rounded-full">Agenda</span>
-                        )}
+                        <div className="flex flex-col items-end gap-1">
+                          {client.type === 'agenda' && (
+                            <span className="text-[10px] uppercase font-bold px-2 py-0.5 bg-gray-200 text-gray-600 rounded-full">Agenda</span>
+                          )}
+                          {sendStatuses[client.id] === 'pending' && <span className="text-[10px] uppercase font-bold px-2 py-0.5 bg-gray-100 text-gray-500 rounded-full border border-gray-200">Aguardando</span>}
+                          {sendStatuses[client.id] === 'sending' && <span className="text-[10px] uppercase font-bold px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full border border-blue-200">Enviando...</span>}
+                          {sendStatuses[client.id] === 'success' && <span className="text-[10px] uppercase font-bold px-2 py-0.5 bg-green-100 text-green-700 rounded-full border border-green-200">Enviada</span>}
+                          {sendStatuses[client.id] === 'error' && <span className="text-[10px] uppercase font-bold px-2 py-0.5 bg-red-100 text-red-700 rounded-full border border-red-200">Erro</span>}
+                        </div>
                       </div>
                     </label>
                   </li>

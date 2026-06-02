@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, getDocs, doc, updateDoc, setDoc, getDoc, Timestamp, query, where, deleteDoc } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
 import { ShieldAlert, CheckCircle, Clock, XCircle, Search, DollarSign, Save } from 'lucide-react';
 
 export default function SuperAdminPage() {
@@ -12,6 +11,9 @@ export default function SuperAdminPage() {
   const [monthlyPrice, setMonthlyPrice] = useState<string>('99.90');
   const [savingPrice, setSavingPrice] = useState(false);
   const [priceMessage, setPriceMessage] = useState({ text: '', type: '' });
+
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [adminToDelete, setAdminToDelete] = useState<string | null>(null);
 
   // Protect route
   if (userProfile?.email !== 'servincg@gmail.com') {
@@ -29,13 +31,13 @@ export default function SuperAdminPage() {
 
   const fetchPlatformSettings = async () => {
     try {
-      const docRef = doc(db, 'settings', 'platform');
-      const docSnap = await getDoc(docRef);
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        if (data.monthlyPrice) {
-          setMonthlyPrice(data.monthlyPrice.toString().replace('.', ','));
-        }
+      // Create settings table if not exists or just select
+      // We assume a simple structure or use LocalStorage / some public table.
+      // Let's assume you have a 'settings' table or fetch from supabase
+      // For now we simulate:
+      const { data } = await supabase.from('settings').select('*').eq('id', 'platform').single();
+      if (data && data.monthlyprice) {
+         setMonthlyPrice(data.monthlyprice.toString().replace('.', ','));
       }
     } catch (e) {
       console.error('Error fetching settings:', e);
@@ -53,9 +55,10 @@ export default function SuperAdminPage() {
         return;
       }
       
-      await setDoc(doc(db, 'settings', 'platform'), {
-        monthlyPrice: numericPrice
-      }, { merge: true });
+      const { error } = await supabase.from('settings').upsert({ id: 'platform', monthlyprice: numericPrice });
+      if (error) {
+         throw error;
+      }
       
       setPriceMessage({ text: 'Valor da mensalidade atualizado!', type: 'success' });
     } catch (e) {
@@ -69,23 +72,24 @@ export default function SuperAdminPage() {
   const fetchAdmins = async () => {
     setLoading(true);
     try {
-      const q = query(collection(db, 'users'), where('role', '==', 'admin'));
-      const snap = await getDocs(q);
-      
-      const adminData = await Promise.all(snap.docs.map(async (docSnap) => {
-        const data = docSnap.data();
-        // count clients
-        const clientsSnap = await getDocs(query(collection(db, 'clients'), where('adminId', '==', docSnap.id)));
-        return {
-          id: docSnap.id,
-          ...data,
-          clientsCount: clientsSnap.size
-        };
-      }));
-      
-      setAdmins(adminData);
+      const { data: snap } = await supabase.from('users').select('*').eq('role', 'admin');
+      if (snap) {
+        const adminData = await Promise.all(snap.map(async (docSnap: any) => {
+          // count clients
+          const { count } = await supabase.from('clients').select('*', { count: 'exact', head: true }).eq('admin_id', docSnap.id);
+          return {
+            ...docSnap,
+            createdAt: docSnap.created_at,
+            subscriptionStatus: docSnap.subscription_status,
+            subscriptionExpiresAt: docSnap.subscription_expires_at,
+            clientsCount: count || 0
+          };
+        }));
+        
+        setAdmins(adminData);
+      }
     } catch (e) {
-      handleFirestoreError(e, OperationType.LIST, 'users');
+      console.error(e);
     }
     setLoading(false);
   };
@@ -98,15 +102,14 @@ export default function SuperAdminPage() {
       const newExpiry = new Date();
       newExpiry.setDate(newExpiry.getDate() + 30);
       
-      await updateDoc(doc(db, 'users', adminId), {
-        subscriptionStatus: 'active',
-        subscriptionExpiresAt: Timestamp.fromDate(newExpiry)
-      });
+      await supabase.from('users').update({
+        subscription_status: 'active',
+        subscription_expires_at: newExpiry.toISOString()
+      }).eq('id', adminId);
       fetchAdmins();
     } catch (e: any) {
       console.error('Update Manual Error Unlock:', e);
       alert('Falha ao desbloquear: ' + (e.message || 'Erro desconhecido.'));
-      handleFirestoreError(e, OperationType.UPDATE, `users/${adminId}`);
     } finally {
       setProcessingId(null);
     }
@@ -118,31 +121,36 @@ export default function SuperAdminPage() {
       const past = new Date();
       past.setDate(past.getDate() - 1);
       
-      await updateDoc(doc(db, 'users', adminId), {
-        subscriptionStatus: 'expired',
-        subscriptionExpiresAt: Timestamp.fromDate(past)
-      });
+      await supabase.from('users').update({
+        subscription_status: 'expired',
+        subscription_expires_at: past.toISOString()
+      }).eq('id', adminId);
+      
       fetchAdmins();
     } catch (e: any) {
       console.error('Update Manual Error Block:', e);
       alert('Falha ao bloquear: ' + (e.message || 'Erro desconhecido.'));
-      handleFirestoreError(e, OperationType.UPDATE, `users/${adminId}`);
     } finally {
       setProcessingId(null);
     }
   };
 
-  const handleDeleteAdmin = async (adminId: string) => {
-    if (!window.confirm('Tem certeza que deseja excluir permanentemente este administrador? Isso revogará o acesso dele imediatamente (os dados no banco podem não ser apagados).')) return;
-    
-    setProcessingId(adminId);
+  const handleDeleteAdminClick = (adminId: string) => {
+    setAdminToDelete(adminId);
+    setDeleteModalOpen(true);
+  };
+
+  const confirmDeleteAdmin = async () => {
+    if (!adminToDelete) return;
+    setProcessingId(adminToDelete);
     try {
-      await deleteDoc(doc(db, 'users', adminId));
+      await supabase.from('users').delete().eq('id', adminToDelete);
       fetchAdmins();
+      setDeleteModalOpen(false);
+      setAdminToDelete(null);
     } catch (e: any) {
        console.error('Delete Admin Error:', e);
        alert('Falha ao excluir admin: ' + (e.message || 'Erro desconhecido.'));
-       handleFirestoreError(e, OperationType.DELETE, `users/${adminId}`);
     } finally {
       setProcessingId(null);
     }
@@ -151,7 +159,7 @@ export default function SuperAdminPage() {
   const getStatusBadge = (status: string, expiry: any) => {
     let isExpired = false;
     if (expiry) {
-      const expDate = expiry.toDate ? expiry.toDate() : new Date(expiry);
+      const expDate = new Date(expiry);
       isExpired = new Date() > expDate;
     }
     
@@ -236,18 +244,22 @@ export default function SuperAdminPage() {
                     <td className="p-4">
                       <div className="text-xs text-gray-500 mb-1">{admin.id}</div>
                       <div className="text-sm">
-                        {admin.createdAt ? new Date(admin.createdAt.toDate?.() || admin.createdAt).toLocaleDateString('pt-BR') : 'N/A'}
+                        {admin.createdAt ? new Date(admin.createdAt).toLocaleDateString('pt-BR') : 'N/A'}
                       </div>
                     </td>
                     <td className="p-4">
                       <div className="font-semibold">{admin.name}</div>
                       <div className="text-sm text-gray-500">{admin.email} | {admin.phone}</div>
-                      {admin.password && <div className="text-xs text-gray-500 mt-1">Senha: <span className="font-mono bg-gray-100 px-1 rounded">{admin.password}</span></div>}
+                      {admin.password ? (
+                        <div className="text-xs text-gray-500 mt-1">Senha: <span className="font-mono bg-gray-100 px-1 rounded">{admin.password}</span></div>
+                      ) : (
+                        <div className="text-xs text-gray-400 mt-1 italic">Senha não registrada (antiga)</div>
+                      )}
                     </td>
                     <td className="p-4">
                       {getStatusBadge(admin.subscriptionStatus, admin.subscriptionExpiresAt)}
                       <div className="text-xs text-gray-500 mt-1">
-                        Expira: {admin.subscriptionExpiresAt ? new Date(admin.subscriptionExpiresAt.toDate?.() || admin.subscriptionExpiresAt).toLocaleDateString('pt-BR') : 'Sem data'}
+                        Expira: {admin.subscriptionExpiresAt ? new Date(admin.subscriptionExpiresAt).toLocaleDateString('pt-BR') : 'Sem data'}
                       </div>
                     </td>
                     <td className="p-4 font-mono">{admin.clientsCount}</td>
@@ -267,7 +279,7 @@ export default function SuperAdminPage() {
                         Bloquear
                       </button>
                       <button
-                        onClick={() => handleDeleteAdmin(admin.id)}
+                        onClick={() => handleDeleteAdminClick(admin.id)}
                         disabled={processingId === admin.id}
                         className="px-3 py-1 bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors text-sm font-medium disabled:opacity-50 mt-1 sm:mt-0"
                       >
@@ -281,6 +293,31 @@ export default function SuperAdminPage() {
           </div>
         )}
       </div>
+
+      {deleteModalOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl p-6 max-w-sm w-full">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Excluir Administrador</h3>
+            <p className="text-gray-600 mb-6">Tem certeza que deseja excluir permanentemente este administrador? Isso revogará o acesso dele imediatamente.</p>
+            <div className="flex justify-end space-x-3">
+              <button
+                onClick={() => setDeleteModalOpen(false)}
+                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                disabled={processingId !== null}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={confirmDeleteAdmin}
+                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+                disabled={processingId !== null}
+              >
+                Excluir
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

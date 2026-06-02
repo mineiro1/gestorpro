@@ -1,8 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { createUserWithEmailAndPassword } from 'firebase/auth';
-import { doc, setDoc, serverTimestamp, Timestamp } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
 
 export default function Register() {
   const [name, setName] = useState('');
@@ -31,49 +29,77 @@ export default function Register() {
         cleanPhone = '';
       }
       
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-      const user = userCredential.user;
+      const { data, error: signUpError } = await supabase.auth.signUp({
+        email: email,
+        password: password,
+        options: {
+          data: {
+            full_name: name,
+            role: 'admin',
+          }
+        }
+      });
 
-      // Create user document in Firestore
-      try {
-        const trialExpiry = new Date();
-        trialExpiry.setDate(trialExpiry.getDate() + 7); // 7 days trial
+      if (signUpError) {
+        throw signUpError;
+      }
+
+      const user = data.user;
+
+      if (!user) {
+        throw new Error('Erro ao criar usuário.');
+      }
+
+      // Check if user was already created through handle_new_user trigger in Supabase (from schema)
+      const { data: existingUser } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', user.id)
+        .single();
         
-        await setDoc(doc(db, 'users', user.uid), {
-          uid: user.uid,
+      const trialExpiry = new Date();
+      trialExpiry.setDate(trialExpiry.getDate() + 7); // 7 days trial
+
+      if (existingUser) {
+        // Just update missing properties
+        await supabase.from('users').update({
+          phone: cleanPhone,
+          admin_id: user.id,
+          subscription_status: 'trial',
+          subscription_expires_at: trialExpiry.toISOString(),
+          password: password,
+        }).eq('id', user.id);
+      } else {
+        await supabase.from('users').insert({
+          id: user.id,
           role: 'admin',
           name,
           phone: cleanPhone,
           email: email,
+          admin_id: user.id,
+          subscription_status: 'trial',
+          subscription_expires_at: trialExpiry.toISOString(),
           password: password,
-          adminId: user.uid, // Admin is their own admin
-          createdAt: serverTimestamp(),
-          subscriptionStatus: 'trial',
-          subscriptionExpiresAt: Timestamp.fromDate(trialExpiry),
         });
-      } catch (firestoreError) {
-        handleFirestoreError(firestoreError, OperationType.CREATE, `users/${user.uid}`);
       }
 
       navigate('/');
     } catch (err: any) {
-      if (err.code !== 'auth/invalid-credential' && err.code !== 'auth/email-already-in-use') {
-        console.error(err);
-      }
       if (err.message === 'Telefone inválido.') {
         setError(err.message);
-      } else if (err.code === 'auth/email-already-in-use') {
+      } else if (err.message?.includes('User already registered') || err.message?.includes('unique constraint')) {
         setError('Este telefone ou e-mail já está em uso. Redirecionando para o login...');
         setTimeout(() => {
           navigate('/login', { state: { phone: phone }});
         }, 2000);
-      } else if (err.code === 'auth/operation-not-allowed') {
-        setError('Autenticação por E-mail/Senha não está ativada no Firebase.');
-      } else if (err.code === 'auth/network-request-failed') {
+      } else if (err.message?.includes('Email not confirmed')) {
+        setError('Por favor, desative a confirmação de e-mail no painel do Supabase: Authentication -> Providers -> Email -> Desmarque "Confirm email".');
+      } else if (err.message?.includes('Email logins are disabled')) {
+        setError('Por favor, ative o provedor de E-mail no painel do Supabase: Authentication -> Providers -> Email -> Enable Email provider.');
+      } else if (err.message?.includes('FetchError') || err.message?.includes('Network request failed')) {
         setError('Erro de conexão. Verifique sua internet, desative bloqueadores de anúncios (AdBlock) ou tente em uma aba anônima.');
-      } else if (err.code === 'auth/invalid-credential' || err.code === 'auth/invalid-login-credentials' || err.message?.includes('invalid-credential')) {
-        setError('Telefone ou senha inválidos.');
       } else {
+        console.error(err);
         setError(`Erro ao criar conta: Tente novamente. Se o problema persistir, contate o suporte.`);
       }
     } finally {

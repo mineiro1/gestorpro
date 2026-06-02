@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, where, onSnapshot, doc, updateDoc, Timestamp, deleteDoc } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
 import { History, MapPin, X, Download, Filter, Edit, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { openMap } from '../lib/maps';
@@ -16,6 +15,9 @@ export default function VisitsHistory() {
   const [loading, setLoading] = useState(true);
   const [fullscreenImage, setFullscreenImage] = useState<string | null>(null);
 
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [visitToDelete, setVisitToDelete] = useState<string | null>(null);
+
   // Filters
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -24,49 +26,46 @@ export default function VisitsHistory() {
   useEffect(() => {
     if (!userProfile?.uid) return;
     
-    // We only want Admin or Manager to see ALL visits. Note: Employee could see their own too if needed.
     const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
 
-    // Fetch Clients for mapping
-    const clientsQ = query(collection(db, 'clients'), where('adminId', '==', adminId));
-    const unsubClients = onSnapshot(clientsQ, (snap) => {
-      const cMap: Record<string, any> = {};
-      snap.docs.forEach(doc => { cMap[doc.id] = { id: doc.id, ...doc.data() }; });
-      setClients(cMap);
-    }, (error) => {
-      console.error("Clients snapshot error:", error);
-    });
+    const fetchData = async () => {
+      // Fetch Clients
+      const { data: clientsData, error: clientsErr } = await supabase.from('clients').select('*').eq('admin_id', adminId);
+      if (clientsData) {
+        const cMap: Record<string, any> = {};
+        clientsData.forEach(doc => { cMap[doc.id] = { id: doc.id, ...doc }; });
+        setClients(cMap);
+      }
 
-    // Fetch Employees for mapping
-    const empQ = query(collection(db, 'users'), where('adminId', '==', adminId));
-    const unsubEmp = onSnapshot(empQ, (snap) => {
-      const eMap: Record<string, any> = {};
-      snap.docs.forEach(doc => { eMap[doc.id] = { id: doc.id, ...doc.data() }; });
-      setEmployees(eMap);
-    }, (error) => {
-      console.error("Employees snapshot error:", error);
-    });
+      // Fetch Employees
+      const { data: usersData, error: usersErr } = await supabase.from('users').select('*').eq('admin_id', adminId);
+      if (usersData) {
+        const eMap: Record<string, any> = {};
+        usersData.forEach(doc => { eMap[doc.id] = { id: doc.id, ...doc }; });
+        setEmployees(eMap);
+      }
 
-    // Fetch Visits
-    let viQ = query(collection(db, 'visits'), where('adminId', '==', adminId));
-    if (!isAdmin && !isManager) {
-       viQ = query(collection(db, 'visits'), where('adminId', '==', adminId), where('employeeId', '==', userProfile.uid));
-    }
-    
-    const unsubVisits = onSnapshot(viQ, (snap) => {
-      const vData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      vData.sort((a: any, b: any) => (b.date?.toMillis() || 0) - (a.date?.toMillis() || 0));
-      setVisits(vData);
+      // Fetch Visits
+      let queryBuilder = supabase.from('visits').select('*').eq('admin_id', adminId).order('date', { ascending: false });
+      if (!isAdmin && !isManager) {
+         queryBuilder = queryBuilder.eq('employee_id', userProfile.uid);
+      }
+      
+      const { data: visitsData, error: visitsErr } = await queryBuilder;
+      if (visitsData) {
+        setVisits(visitsData);
+      }
       setLoading(false);
-    }, (err) => {
-      console.error(err);
-      setLoading(false);
-    });
+    };
+
+    fetchData();
+
+    const channel = supabase.channel('visits-history')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'visits', filter: `admin_id=eq.${adminId}` }, fetchData)
+      .subscribe();
 
     return () => {
-      unsubClients();
-      unsubEmp();
-      unsubVisits();
+      supabase.removeChannel(channel);
     };
   }, [userProfile, isAdmin, isManager]);
 
@@ -74,19 +73,21 @@ export default function VisitsHistory() {
     let keep = true;
     if (startDate) {
       if (visit.date) {
-        const vDate = new Date(visit.date.toMillis());
-        const start = new Date(startDate + 'T00:00:00');
+        const vDate = new Date(visit.date);
+        const [year, month, day] = startDate.split('-').map(Number);
+        const start = new Date(year, month - 1, day, 0, 0, 0);
         if (vDate < start) keep = false;
       }
     }
     if (endDate) {
       if (visit.date) {
-        const vDate = new Date(visit.date.toMillis());
-        const end = new Date(endDate + 'T23:59:59');
+        const vDate = new Date(visit.date);
+        const [year, month, day] = endDate.split('-').map(Number);
+        const end = new Date(year, month - 1, day, 23, 59, 59, 999);
         if (vDate > end) keep = false;
       }
     }
-    if (selectedEmployeeFilter && visit.employeeId !== selectedEmployeeFilter) {
+    if (selectedEmployeeFilter && visit.employee_id !== selectedEmployeeFilter) {
       keep = false;
     }
     return keep;
@@ -100,7 +101,7 @@ export default function VisitsHistory() {
 
   const formatDateTimeLocal = (timestamp: any) => {
     if (!timestamp) return '';
-    const date = new Date(timestamp.toMillis ? timestamp.toMillis() : timestamp);
+    const date = new Date(timestamp);
     const tzoffset = date.getTimezoneOffset() * 60000; // offset in milliseconds
     const localISOTime = (new Date(date.getTime() - tzoffset)).toISOString().slice(0, 16);
     return localISOTime;
@@ -116,29 +117,36 @@ export default function VisitsHistory() {
     if (!editingVisit) return;
     setIsUpdating(true);
     try {
-      const visitRef = doc(db, 'visits', editingVisit.id);
-      await updateDoc(visitRef, {
+      const { error } = await supabase.from('visits').update({
          notes: editNotes,
-         date: Timestamp.fromDate(new Date(editDate))
-      });
+         date: new Date(editDate).toISOString()
+      }).eq('id', editingVisit.id);
+      
+      if (error) throw error;
       setEditingVisit(null);
     } catch (e: any) {
       console.error(e);
       alert('Erro ao atualizar visita: ' + e.message);
-      handleFirestoreError(e, OperationType.UPDATE, `visits/${editingVisit.id}`);
     } finally {
       setIsUpdating(false);
     }
   };
 
-  const handleDeleteVisit = async (visitId: string) => {
-    if (!window.confirm('Tem certeza que deseja excluir esta visita permanentemente?')) return;
+  const handleDeleteVisitClick = (visitId: string) => {
+    setVisitToDelete(visitId);
+    setDeleteModalOpen(true);
+  };
+
+  const confirmDeleteVisit = async () => {
+    if (!visitToDelete) return;
     try {
-      await deleteDoc(doc(db, 'visits', visitId));
+      const { error } = await supabase.from('visits').delete().eq('id', visitToDelete);
+      if (error) throw error;
+      setDeleteModalOpen(false);
+      setVisitToDelete(null);
     } catch (e: any) {
       console.error(e);
       alert('Erro ao excluir visita: ' + e.message);
-      handleFirestoreError(e, OperationType.DELETE, `visits/${visitId}`);
     }
   };
 
@@ -161,9 +169,9 @@ export default function VisitsHistory() {
     }
     
     const tableData = filteredVisits.map(visit => {
-      const clientName = clients[visit.clientId]?.name || 'Cliente Removido';
-      const empName = visit.employeeId ? (employees[visit.employeeId]?.name || 'Colaborador') : 'Administrador';
-      const dateStr = visit.date ? new Date(visit.date.toMillis()).toLocaleString('pt-BR') : '-';
+      const clientName = clients[visit.client_id]?.name || 'Cliente Removido';
+      const empName = visit.employee_id ? (employees[visit.employee_id]?.name || 'Colaborador') : 'Administrador';
+      const dateStr = visit.date ? new Date(visit.date).toLocaleString('pt-BR') : '-';
       
       return [
         dateStr,
@@ -263,17 +271,17 @@ export default function VisitsHistory() {
               </thead>
               <tbody>
                 {filteredVisits.map((visit) => {
-                  const clientName = clients[visit.clientId]?.name || 'Cliente Removido';
-                  const empName = visit.employeeId ? (employees[visit.employeeId]?.name || 'Colaborador') : 'Administrador';
+                  const clientName = clients[visit.client_id]?.name || 'Cliente Removido';
+                  const empName = visit.employee_id ? (employees[visit.employee_id]?.name || 'Colaborador') : 'Administrador';
                   
                   return (
                     <tr key={visit.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
                       <td className="p-4 text-sm text-gray-600 whitespace-nowrap">
-                        {visit.date ? new Date(visit.date.toMillis ? visit.date.toMillis() : visit.date).toLocaleString('pt-BR') : '-'}
+                        {visit.date ? new Date(visit.date).toLocaleString('pt-BR') : '-'}
                       </td>
                       <td className="p-4 font-medium text-gray-800">
-                        {clients[visit.clientId] && (isAdmin || isManager) ? (
-                          <Link to={`/clients/${visit.clientId}`} className="text-blue-600 hover:underline">
+                        {clients[visit.client_id] && (isAdmin || isManager) ? (
+                          <Link to={`/clients/${visit.client_id}`} className="text-blue-600 hover:underline">
                             {clientName}
                           </Link>
                         ) : clientName}
@@ -286,26 +294,42 @@ export default function VisitsHistory() {
                       </td>
                       <td className="p-4">
                         <div className="flex gap-2">
-                          {visit.photoUrl && (
+                          {visit.photo_url && (!visit.photo_urls || visit.photo_urls.length === 0) && (
                             <button 
-                              onClick={() => setFullscreenImage(visit.photoUrl)}
+                              onClick={() => setFullscreenImage(visit.photo_url)}
                               className="text-xs bg-gray-200 hover:bg-gray-300 px-2 py-1 rounded text-gray-800 transition-colors"
                             >
                               Ver Foto
                             </button>
                           )}
-                          {visit.photoUrls && visit.photoUrls.length > 0 && (
-                             <button 
-                              onClick={() => setFullscreenImage(visit.photoUrls[0])}
-                              className="text-xs bg-gray-200 hover:bg-gray-300 px-2 py-1 rounded text-gray-800 transition-colors"
-                            >
-                              {visit.photoUrls.length} Fotos
-                            </button>
+                          {visit.photo_urls && visit.photo_urls.length > 0 && (
+                            <div className="flex gap-1 flex-wrap">
+                               {visit.photo_urls.map((photo: string, index: number) => (
+                                 <button
+                                   key={index}
+                                   onClick={() => setFullscreenImage(photo)}
+                                   className="text-xs bg-gray-200 hover:bg-gray-300 px-2 py-1 rounded text-gray-800 transition-colors"
+                                 >
+                                   Foto {index + 1}
+                                 </button>
+                               ))}
+                            </div>
                           )}
                           {isAdmin && visit.location && (
                             <button 
                               type="button"
-                              onClick={() => openMap({ lat: visit.location.lat, lng: visit.location.lng })}
+                              onClick={() => {
+                                let lat, lng;
+                                if (typeof visit.location === 'object') {
+                                    lat = visit.location.lat;
+                                    lng = visit.location.lng;
+                                } else if (typeof visit.location === 'string') {
+                                    const parts = visit.location.split(',');
+                                    lat = parseFloat(parts[0]);
+                                    lng = parseFloat(parts[1]);
+                                }
+                                if(lat && lng) openMap({ lat, lng });
+                              }}
                               className="text-xs font-semibold text-blue-600 bg-blue-50 px-2 py-1 rounded hover:bg-blue-100 flex items-center transition-colors border-none"
                             >
                               <MapPin size={12} className="mr-1" /> Mapa
@@ -324,7 +348,7 @@ export default function VisitsHistory() {
                                <Edit size={18} />
                              </button>
                              <button
-                               onClick={() => handleDeleteVisit(visit.id)}
+                               onClick={() => handleDeleteVisitClick(visit.id)}
                                className="text-red-500 hover:text-red-700 p-2 rounded-full hover:bg-red-50 transition-colors"
                                title="Excluir Visita"
                              >
@@ -396,6 +420,29 @@ export default function VisitsHistory() {
                 className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-dark transition-colors font-medium disabled:opacity-50"
               >
                 {isUpdating ? 'Salvando...' : 'Salvar Alterações'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteModalOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl p-6 max-w-sm w-full">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Excluir Visita</h3>
+            <p className="text-gray-600 mb-6">Tem certeza que deseja excluir esta visita permanentemente?</p>
+            <div className="flex justify-end space-x-3">
+              <button
+                onClick={() => setDeleteModalOpen(false)}
+                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={confirmDeleteVisit}
+                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+              >
+                Excluir
               </button>
             </div>
           </div>

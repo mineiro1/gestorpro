@@ -3,31 +3,21 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import cors from "cors";
 import { MercadoPagoConfig, Preference, Payment } from "mercadopago";
-import admin from "firebase-admin";
 import * as dotenv from 'dotenv';
 import fs from 'fs';
+import { createClient } from '@supabase/supabase-js';
 
 dotenv.config();
 
-// Initialize Firebase Admin if Service Account is provided
-if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-  try {
-    let serviceAccountStr = process.env.FIREBASE_SERVICE_ACCOUNT;
-    // If it doesn't look like JSON, try decoding as base64
-    if (!serviceAccountStr.trim().startsWith('{')) {
-      serviceAccountStr = Buffer.from(serviceAccountStr, 'base64').toString('utf8');
-    }
-    const serviceAccount = JSON.parse(serviceAccountStr);
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
-    });
-    console.log("Firebase Admin initialized successfully.");
-  } catch (error) {
-    console.error("Failed to initialize Firebase Admin. Please ensure FIREBASE_SERVICE_ACCOUNT is either a valid JSON string or a base64 encoded JSON string.", error);
+const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+
+const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+  auth: {
+    autoRefreshToken: false,
+    persistSession: false
   }
-} else {
-  console.warn("FIREBASE_SERVICE_ACCOUNT environment variable is missing. Webhooks targeting Firestore will fail.");
-}
+});
 
 async function startServer() {
   const app = express();
@@ -105,8 +95,8 @@ async function startServer() {
         mpToken = "APP_USR-5520671839390863-031622-4f2fede32936291cc0567aebae0a319e-1434591190";
       }
 
-      if (!mpToken || !admin.apps.length) {
-        console.error("Missing MP token or Firebase Admin is not initialized.");
+      if (!mpToken || !supabaseUrl) {
+        console.error("Missing MP token or Supabase is not initialized.");
         return res.status(200).send("OK. But not processed due to missing config.");
       }
 
@@ -124,11 +114,10 @@ async function startServer() {
           const newExpiry = new Date();
           newExpiry.setDate(newExpiry.getDate() + 30);
 
-          await admin.firestore().collection("users").doc(adminId).update({
-            subscriptionStatus: 'active',
-            subscriptionExpiresAt: admin.firestore.Timestamp.fromDate(newExpiry),
-            updatedAt: admin.firestore.FieldValue.serverTimestamp()
-          });
+          await supabaseAdmin.from("users").update({
+            subscription_status: 'active',
+            subscription_expires_at: newExpiry.toISOString(),
+          }).eq('id', adminId);
 
           console.log(`Subscription activated for adminId: ${adminId}`);
         }

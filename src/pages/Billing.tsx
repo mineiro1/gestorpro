@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, where, getDocs, doc, updateDoc } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
 import { MessageCircle, AlertCircle, Clock, History, Settings, X, Play, Calendar, CheckCircle, XCircle } from 'lucide-react';
 
 interface ClientBilling {
@@ -71,12 +70,14 @@ export default function Billing() {
     if (!userProfile?.uid) return;
     setSavingSettings(true);
     try {
-      await updateDoc(doc(db, 'users', userProfile.uid), {
-        whatsappSettings: waSettings
-      });
+      const { error } = await supabase.from('users').update({
+        whatsapp_settings: waSettings
+      }).eq('id', userProfile.uid);
+      if (error) throw error;
+      // Give feedback that it saved
       setSettingsModalOpen(false);
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${userProfile.uid}`);
+      console.error(err);
     } finally {
       setSavingSettings(false);
     }
@@ -84,7 +85,7 @@ export default function Billing() {
 
   const processMessageTemplate = (template: string, client: ClientBilling) => {
     const formattedDate = new Date(client.dueDate + 'T12:00:00').toLocaleDateString('pt-BR');
-    const totalAmount = client.monthlyFee + (client.extraAmount || 0);
+    const totalAmount = Number(client.monthlyFee || 0) + Number(client.extraAmount || 0);
 
     let message = template
       .replace(/{nome}/g, client.name)
@@ -110,24 +111,32 @@ export default function Billing() {
     const baseUrl = waSettings.evolutionApiUrl.replace(/\/$/, '');
     const url = `${baseUrl}/message/sendText/${waSettings.evolutionInstanceName}`;
     
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': waSettings.evolutionApiKey
-      },
-      body: JSON.stringify({
-        number: number,
-        text: text,
-        textMessage: {
-          text: text
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': waSettings.evolutionApiKey
         },
-        options: {
-          delay: 1000,
-          presence: "composing"
-        }
-      })
-    });
+        body: JSON.stringify({
+          number: number,
+          text: text,
+          textMessage: {
+            text: text
+          },
+          options: {
+            delay: 1000,
+            presence: "composing"
+          }
+        })
+      });
+    } catch (e: any) {
+      if (e.message === 'Failed to fetch') {
+        throw new Error(`Falha de conexão. Verifique se o seu servidor Evolution API (${baseUrl}) possui o CORS habilitado. O navegador bloqueou a requisição (Failed to fetch).`);
+      }
+      throw e;
+    }
     
     if (!response.ok) {
       let errDesc = 'Desconhecido';
@@ -150,23 +159,31 @@ export default function Billing() {
     
     const url = `https://graph.facebook.com/v19.0/${waSettings.metaPhoneNumberId}/messages`;
     
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${waSettings.metaToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        recipient_type: "individual",
-        to: number,
-        type: "text",
-        text: { 
-          preview_url: false,
-          body: text
-        }
-      })
-    });
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${waSettings.metaToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          recipient_type: "individual",
+          to: number,
+          type: "text",
+          text: { 
+            preview_url: false,
+            body: text
+          }
+        })
+      });
+    } catch (e: any) {
+      if (e.message === 'Failed to fetch') {
+        throw new Error('Falha de conexão com a API da Meta. (Failed to fetch)');
+      }
+      throw e;
+    }
     
     if (!response.ok) {
       let errDesc = 'Desconhecido';
@@ -205,12 +222,14 @@ export default function Billing() {
     const fetchBillingData = async () => {
       try {
         const adminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
-        // Fetch Clients
-        let clientsQuery = query(collection(db, 'clients'), where('adminId', '==', adminId));
+        
+        let queryBuilder = supabase.from('clients').select('*').eq('admin_id', adminId);
         if (userProfile.role === 'employee') {
-          clientsQuery = query(collection(db, 'clients'), where('adminId', '==', adminId), where('employeeId', '==', userProfile.uid));
+          queryBuilder = queryBuilder.eq('employee_id', userProfile.uid);
         }
-        const clientsSnap = await getDocs(clientsQuery);
+        
+        const { data: clientsData, error } = await queryBuilder;
+        if(error) throw error;
         
         const delayed: ClientBilling[] = [];
         const todayDues: ClientBilling[] = [];
@@ -221,26 +240,25 @@ export default function Billing() {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
-        clientsSnap.docs.forEach(doc => {
-          const data = doc.data();
-          const clientId = doc.id;
+        clientsData?.forEach(data => {
+          const clientId = data.id;
 
-          if (!data.dueDate) return;
+          if (!data.due_date) return;
 
           all.push({
             id: clientId,
             name: data.name,
             phone: data.phone,
-            monthlyFee: data.monthlyFee,
-            dueDate: data.dueDate,
+            monthlyFee: data.monthly_price || data.monthlyFee || 0,
+            dueDate: data.due_date,
             status: 'upcoming',
-            extraAmount: data.extraAmount,
-            extraReason: data.extraReason
+            extraAmount: data.extra_amount,
+            extraReason: data.extra_reason
           });
 
           // Generate multiple missing installments logic
-          const baseDay = data.baseDueDay || parseInt(data.dueDate.split('-')[2], 10) || 1;
-          let currentDueDateStr = data.dueDate;
+          const baseDay = data.base_due_day || parseInt(data.due_date.split('-')[2], 10) || 1;
+          let currentDueDateStr = data.due_date;
           let iterations = 0;
           const maxIterations = 24; // limit to prevent infinite loops (2 years max)
 
@@ -261,11 +279,11 @@ export default function Billing() {
               id: clientBillingId,
               name: data.name,
               phone: data.phone,
-              monthlyFee: data.monthlyFee,
+              monthlyFee: data.monthly_price || data.monthlyFee || 0,
               dueDate: currentDueDateStr,
               status: 'upcoming',
-              extraAmount: isFirstIteration ? data.extraAmount : undefined,
-              extraReason: isFirstIteration ? data.extraReason : undefined
+              extraAmount: isFirstIteration ? data.extra_amount : undefined,
+              extraReason: isFirstIteration ? data.extra_reason : undefined
             };
             isFirstIteration = false;
 
@@ -278,7 +296,7 @@ export default function Billing() {
               clientBilling.status = 'today';
               todayDues.push(clientBilling);
               break;
-            } else if (diffDays > 0 && diffDays <= (userProfile.whatsappSettings?.reminderDays ?? 3)) {
+            } else if (diffDays > 0 && diffDays <= (waSettings.reminderDays ?? 3)) {
               clientBilling.status = 'upcoming';
               upcoming.push(clientBilling);
               break; // No need to check the month after the upcoming one, as it will be > reminderDays
@@ -302,14 +320,14 @@ export default function Billing() {
         setUpcomingClients(upcoming);
         setAllClients(all);
       } catch (error) {
-        handleFirestoreError(error, OperationType.GET, 'billing_data');
+        console.error(error);
       } finally {
         setLoading(false);
       }
     };
 
     fetchBillingData();
-  }, [userProfile]);
+  }, [userProfile, waSettings.reminderDays]);
 
   useEffect(() => {
     if (!selectedClientId || !userProfile?.uid) {
@@ -321,28 +339,24 @@ export default function Billing() {
       setLoadingPayments(true);
       try {
         const adminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
-        const paymentsQuery = query(
-          collection(db, 'payments'),
-          where('adminId', '==', adminId),
-          where('clientId', '==', selectedClientId)
-        );
-        const paymentsSnap = await getDocs(paymentsQuery);
+        const { data: paymentsData, error } = await supabase
+          .from('payments')
+          .select('*')
+          .eq('admin_id', adminId)
+          .eq('client_id', selectedClientId);
         
-        const paymentsData = paymentsSnap.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
+        if (error) throw error;
 
         // Sort by date descending (newest first)
-        paymentsData.sort((a: any, b: any) => {
-          const dateA = a.date?.toMillis() || 0;
-          const dateB = b.date?.toMillis() || 0;
+        paymentsData?.sort((a: any, b: any) => {
+          const dateA = a.paid_date || a.created_at ? new Date(a.paid_date || a.created_at).getTime() : 0;
+          const dateB = b.paid_date || b.created_at ? new Date(b.paid_date || b.created_at).getTime() : 0;
           return dateB - dateA;
         });
 
-        setClientPayments(paymentsData);
+        setClientPayments(paymentsData || []);
       } catch (error) {
-        handleFirestoreError(error, OperationType.LIST, 'payments');
+        console.error(error);
       } finally {
         setLoadingPayments(false);
       }
@@ -727,21 +741,33 @@ export default function Billing() {
                       </tr>
                     </thead>
                     <tbody>
-                      {clientPayments.map(payment => (
+                      {clientPayments.map(payment => {
+                        const dateStr = payment.paid_date || payment.created_at;
+                        let displayDateStr = 'N/A';
+                        if (dateStr) {
+                          const isJustDate = dateStr.length === 10; // e.g. YYYY-MM-DD
+                          const d = isJustDate ? new Date(`${dateStr}T12:00:00`) : new Date(dateStr);
+                          displayDateStr = d.toLocaleDateString('pt-BR', {
+                            day: '2-digit', month: '2-digit', year: 'numeric', 
+                            hour: isJustDate ? undefined : '2-digit', 
+                            minute: isJustDate ? undefined : '2-digit'
+                          });
+                        }
+                        
+                        return (
                         <tr key={payment.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
                           <td className="p-4 text-gray-800">
-                            {payment.date ? new Date(payment.date.toMillis()).toLocaleDateString('pt-BR', {
-                              day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'
-                            }) : 'N/A'}
+                            {displayDateStr}
                           </td>
                           <td className="p-4 text-gray-600">
-                            {(payment.refMonth || payment.month).toString().padStart(2, '0')}/{(payment.refYear || payment.year)}
+                            {(payment.ref_month || payment.month).toString().padStart(2, '0')}/{(payment.ref_year || payment.year)}
                           </td>
                           <td className="p-4 text-green-600 font-semibold">
                             R$ {payment.amount?.toFixed(2)}
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

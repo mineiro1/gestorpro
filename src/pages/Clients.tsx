@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, where, onSnapshot, deleteDoc, doc, addDoc, updateDoc, serverTimestamp, limit } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
 import { Edit, Trash2, Plus, DollarSign, RotateCcw, Package, Search, MessageCircle, PlusCircle } from 'lucide-react';
 
 export default function Clients() {
@@ -33,69 +32,106 @@ export default function Clients() {
 
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 20;
+  
+  const [filterActive, setFilterActive] = useState(true);
+  const [hardDeleteModalOpen, setHardDeleteModalOpen] = useState(false);
+  const [clientToHardDelete, setClientToHardDelete] = useState<any>(null);
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm]);
+  }, [searchTerm, filterActive]);
 
   useEffect(() => {
     if (!userProfile?.uid) return;
 
     const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
     
-    let q = query(collection(db, 'clients'), where('adminId', '==', adminId));
-    
-    if (!isAdmin && !isManager) {
-      q = query(q, where('employeeId', '==', userProfile.uid));
-    }
-    
-    // Only apply limit if there's no search term, to allow local search to work on everything if they search
-    if (!searchTerm) {
-       q = query(q, limit(loadLimit));
-    } else {
-       q = query(q, limit(10000));
-    }
-
-    const unsubscribeClients = onSnapshot(q, (snapshot) => {
-      const clientsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setClients(clientsData);
-      setHasMore(snapshot.docs.length >= loadLimit);
-      setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'clients');
-      setLoading(false);
-    });
-
-    const currentDate = new Date();
-    const currentMonth = currentDate.getMonth() + 1;
-    const currentYear = currentDate.getFullYear();
-
-    const paymentsQuery = query(
-      collection(db, 'payments'),
-      where('adminId', '==', adminId),
-      where('month', '==', currentMonth),
-      where('year', '==', currentYear)
-    );
-
-    const unsubscribePayments = onSnapshot(paymentsQuery, (snapshot) => {
-      const paid: Record<string, any> = {};
-      const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as any[];
-      // Sort by date descending so we store the most recent payment
-      docs.sort((a, b) => (b.date?.toMillis() || 0) - (a.date?.toMillis() || 0));
+    const fetchClients = async () => {
+      let queryBuilder = supabase.from('clients').select('*').eq('admin_id', adminId);
       
-      docs.forEach(docData => {
-        if (!paid[docData.clientId]) {
-          paid[docData.clientId] = docData;
-        }
-      });
-      setPaidClients(paid);
-    }, (error) => {
-      console.error("Error fetching payments:", error);
-    });
+      if (!isAdmin && !isManager) {
+        queryBuilder = queryBuilder.eq('employee_id', userProfile.uid);
+      }
+      
+      if (!searchTerm) {
+        queryBuilder = queryBuilder.limit(loadLimit);
+      } else {
+        queryBuilder = queryBuilder.limit(10000);
+      }
+
+      const { data, error } = await queryBuilder;
+      if (error) {
+        console.error(error);
+        setLoading(false);
+        return;
+      }
+
+      if (data) {
+        const mappedClients = data.map((d: any) => ({
+          ...d,
+          monthlyFee: d.monthly_price || d.monthlyFee || 0,
+          dueDate: d.due_date,
+          extraAmount: d.extra_amount || 0,
+          extraReason: d.extra_reason || '',
+          employeeId: d.employee_id,
+          baseDueDay: d.base_due_day,
+          active: d.active !== false,
+        }));
+        setClients(mappedClients);
+        setHasMore(data.length >= loadLimit);
+      }
+      setLoading(false);
+    };
+
+    fetchClients();
+
+    const fetchPayments = async () => {
+      const currentDate = new Date();
+      const currentMonth = currentDate.getMonth() + 1;
+      const currentYear = currentDate.getFullYear();
+
+      const { data, error } = await supabase
+        .from('payments')
+        .select('*')
+        .eq('admin_id', adminId)
+        .eq('month', currentMonth)
+        .eq('year', currentYear)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error(error);
+        return;
+      }
+
+      if (data) {
+        const paid: Record<string, any> = {};
+        data.forEach((docData: any) => {
+           const mappedDoc = {
+             id: docData.id,
+             clientId: docData.client_id,
+             previousDueDate: docData.previous_due_date,
+           };
+           if (!paid[mappedDoc.clientId]) {
+             paid[mappedDoc.clientId] = mappedDoc;
+           }
+        });
+        setPaidClients(paid);
+      }
+    };
+
+    fetchPayments();
+
+    const clientChannel = supabase.channel('clients-realtime-clients')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'clients', filter: `admin_id=eq.${adminId}` }, fetchClients)
+      .subscribe();
+      
+    const paymentChannel = supabase.channel('clients-realtime-payments')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'payments', filter: `admin_id=eq.${adminId}` }, fetchPayments)
+      .subscribe();
 
     return () => {
-      unsubscribeClients();
-      unsubscribePayments();
+      supabase.removeChannel(clientChannel);
+      supabase.removeChannel(paymentChannel);
     };
   }, [userProfile, isAdmin, isManager, loadLimit, searchTerm]);
 
@@ -107,11 +143,53 @@ export default function Clients() {
   const confirmDelete = async () => {
     if (!clientToDelete) return;
     try {
-      await deleteDoc(doc(db, 'clients', clientToDelete.id));
+      const { error } = await supabase.from('clients').update({ 
+         active: false,
+         inactivated_at: new Date().toISOString()
+      }).eq('id', clientToDelete.id);
+      if (error) throw error;
+      setClients(prev => prev.map(c => c.id === clientToDelete.id ? { ...c, active: false } : c));
       setDeleteModalOpen(false);
       setClientToDelete(null);
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `clients/${clientToDelete.id}`);
+      console.error(error);
+      alert("Erro ao inativar cliente.");
+    }
+  };
+
+  const reactivateClient = async (clientId: string) => {
+    try {
+      const { error } = await supabase.from('clients').update({ 
+         active: true,
+         inactivated_at: null
+      }).eq('id', clientId);
+      if (error) throw error;
+      setClients(prev => prev.map(c => c.id === clientId ? { ...c, active: true } : c));
+    } catch (error) {
+      console.error(error);
+      alert("Erro ao reativar cliente.");
+    }
+  };
+
+  const handleHardDeleteClick = (client: any) => {
+    setClientToHardDelete(client);
+    setHardDeleteModalOpen(true);
+  };
+
+  const executeHardDelete = async () => {
+    if (!clientToHardDelete) return;
+    try {
+      await supabase.from('payments').delete().eq('client_id', clientToHardDelete.id);
+      await supabase.from('visits').delete().eq('client_id', clientToHardDelete.id);
+      await supabase.from('oneoffjobs').delete().eq('client_id', clientToHardDelete.id);
+      const { error } = await supabase.from('clients').delete().eq('id', clientToHardDelete.id);
+      if (error) throw error;
+
+      setClients(prev => prev.filter(c => c.id !== clientToHardDelete.id));
+      setHardDeleteModalOpen(false);
+      setClientToHardDelete(null);
+    } catch (err) {
+      console.error(err);
     }
   };
 
@@ -162,24 +240,29 @@ export default function Clients() {
         refYear = due.getFullYear();
       }
 
-      const extraAmt = clientToPay.extraAmount || 0;
+      const extraAmt = Number(clientToPay.extraAmount || 0);
       const extraRsn = clientToPay.extraReason || null;
-      const totalAmountPaid = clientToPay.monthlyFee + extraAmt;
+      const totalAmountPaid = Number(clientToPay.monthlyFee || 0) + extraAmt;
 
-      await addDoc(collection(db, 'payments'), {
-        adminId: userProfile.uid,
-        clientId: clientToPay.id,
+      const currentAdminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
+      const { error: insertError } = await supabase.from('payments').insert({
+        admin_id: currentAdminId,
+        client_id: clientToPay.id,
         amount: totalAmountPaid,
-        baseAmount: clientToPay.monthlyFee,
-        extraAmount: extraAmt,
-        extraReason: extraRsn,
-        date: serverTimestamp(),
+        base_amount: clientToPay.monthlyFee,
+        extra_amount: extraAmt,
+        extra_reason: extraRsn,
         month: currentDate.getMonth() + 1,
         year: currentDate.getFullYear(),
-        refMonth,
-        refYear,
-        previousDueDate
+        ref_month: refMonth,
+        ref_year: refYear,
+        previous_due_date: previousDueDate,
+        status: 'pago',
+        paid_date: new Date().toISOString().split('T')[0],
+        due_date: clientToPay.dueDate || new Date().toISOString().split('T')[0]
       });
+      
+      if(insertError) throw new Error(insertError.message);
 
       // Update client due date
       if (clientToPay.dueDate) {
@@ -200,27 +283,28 @@ export default function Clients() {
           const baseDay = clientToPay.baseDueDay || parseInt(currentDueDateStr.split('-')[2], 10) || 1;
           const nextDueDate = calculateNextDueDate(currentDueDateStr, baseDay);
           
-          await updateDoc(doc(db, 'clients', clientToPay.id), {
-            dueDate: nextDueDate,
-            baseDueDay: baseDay,
-            extraAmount: 0,
-            extraReason: ''
-          });
+          await supabase.from('clients').update({
+            due_date: nextDueDate,
+            base_due_day: baseDay,
+            extra_amount: 0,
+            extra_reason: ''
+          }).eq('id', clientToPay.id);
         } catch (err) {
           console.error("Erro ao atualizar data de vencimento:", err);
         }
       } else {
         // Just clear extra if no due date
-        await updateDoc(doc(db, 'clients', clientToPay.id), {
-          extraAmount: 0,
-          extraReason: ''
-        });
+        await supabase.from('clients').update({
+          extra_amount: 0,
+          extra_reason: ''
+        }).eq('id', clientToPay.id);
       }
 
       setPaymentModalOpen(false);
       setClientToPay(null);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'payments');
+    } catch (error: any) {
+      console.error(error);
+      alert("Erro ao registrar pagamento: " + (error.message || "Verifique o console."));
     } finally {
       setIsSubmittingPayment(false);
     }
@@ -236,17 +320,17 @@ export default function Clients() {
     try {
       const payment = paidClients[clientToUndo.id];
       if (payment) {
-        await deleteDoc(doc(db, 'payments', payment.id));
+        await supabase.from('payments').delete().eq('id', payment.id);
         if (payment.previousDueDate) {
-          await updateDoc(doc(db, 'clients', clientToUndo.id), {
-            dueDate: payment.previousDueDate
-          });
+          await supabase.from('clients').update({
+            due_date: payment.previousDueDate
+          }).eq('id', clientToUndo.id);
         }
       }
       setUndoModalOpen(false);
       setClientToUndo(null);
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `payments/${paidClients[clientToUndo.id]?.id}`);
+      console.error(error);
     }
   };
 
@@ -261,15 +345,14 @@ export default function Clients() {
     if (!clientToExtra || isSubmittingExtra) return;
     setIsSubmittingExtra(true);
     try {
-      await updateDoc(doc(db, 'clients', clientToExtra.id), {
-        extraAmount: parseFloat(extraAmount) || 0,
-        extraReason: extraReason.trim(),
-      });
+      await supabase.from('clients').update({
+        extra_amount: parseFloat(extraAmount) || 0,
+        extra_reason: extraReason.trim(),
+      }).eq('id', clientToExtra.id);
       setExtraModalOpen(false);
       setClientToExtra(null);
     } catch (err) {
       console.error(err);
-      handleFirestoreError(err, OperationType.UPDATE, 'clients');
     } finally {
       setIsSubmittingExtra(false);
     }
@@ -277,10 +360,11 @@ export default function Clients() {
 
   if (loading) return <div>Carregando clientes...</div>;
 
-  const filteredClients = clients.filter(client => 
-    client.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    (client.phone && client.phone.includes(searchTerm))
-  );
+  const filteredClients = clients.filter(client => {
+    const matchesSearch = client.name.toLowerCase().includes(searchTerm.toLowerCase()) || (client.phone && client.phone.includes(searchTerm));
+    const matchesActive = filterActive ? client.active : !client.active;
+    return matchesSearch && matchesActive;
+  });
 
   const totalPages = Math.ceil(filteredClients.length / itemsPerPage);
   const paginatedClients = filteredClients.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
@@ -313,6 +397,21 @@ export default function Clients() {
             </Link>
           )}
         </div>
+      </div>
+
+      <div className="flex border-b border-gray-200 mb-6">
+         <button
+            onClick={() => setFilterActive(true)}
+            className={`py-2 px-4 border-b-2 font-medium text-sm transition-colors ${filterActive ? 'border-primary text-primary' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
+         >
+            Ativos
+         </button>
+         <button
+            onClick={() => setFilterActive(false)}
+            className={`py-2 px-4 border-b-2 font-medium text-sm transition-colors ${!filterActive ? 'border-primary text-primary' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
+         >
+            Inativos
+         </button>
       </div>
 
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
@@ -391,7 +490,7 @@ export default function Clients() {
                       >
                         <Package size={18} />
                       </Link>
-                      {(isAdmin || isManager) && (
+                      {(isAdmin || isManager) && client.active && (
                         <>
                           <button
                             onClick={() => handlePaymentClick(client)}
@@ -417,13 +516,32 @@ export default function Clients() {
                         </>
                       )}
                       {isAdmin && (
-                          <button
-                            onClick={() => handleDeleteClick(client)}
-                            className="p-2 text-red-600 hover:bg-red-50 rounded-md transition-colors"
-                            title="Excluir"
-                          >
-                            <Trash2 size={18} />
-                          </button>
+                          client.active ? (
+                            <button
+                              onClick={() => handleDeleteClick(client)}
+                              className="p-2 text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                              title="Inativar"
+                            >
+                              <Trash2 size={18} />
+                            </button>
+                          ) : (
+                            <div className="flex flex-col space-y-2">
+                              <button
+                                onClick={() => reactivateClient(client.id)}
+                                className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-md transition-colors font-semibold text-sm"
+                                title="Reativar"
+                              >
+                                Reativar
+                              </button>
+                              <button
+                                onClick={() => handleHardDeleteClick(client)}
+                                className="p-2 text-red-600 hover:bg-red-50 rounded-md transition-colors font-semibold text-sm whitespace-nowrap"
+                                title="Excluir Definitivamente"
+                              >
+                                Apagar Teste
+                              </button>
+                            </div>
+                          )
                       )}
                     </td>
                   </tr>
@@ -509,8 +627,8 @@ export default function Clients() {
       {deleteModalOpen && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-xl p-6 max-w-sm w-full">
-            <h3 className="text-lg font-bold text-gray-900 mb-2">Excluir Cliente</h3>
-            <p className="text-gray-600 mb-6">Deseja excluir {clientToDelete?.name}?</p>
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Inativar Cliente</h3>
+            <p className="text-gray-600 mb-6">Deseja inativar {clientToDelete?.name}? Ele não aparecerá mais nas cobranças do dashboard.</p>
             <div className="flex justify-end space-x-3">
               <button
                 onClick={() => setDeleteModalOpen(false)}
@@ -522,7 +640,33 @@ export default function Clients() {
                 onClick={confirmDelete}
                 className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
               >
-                Sim, excluir
+                Sim, inativar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Hard Delete Modal */}
+      {hardDeleteModalOpen && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl p-6 max-w-sm w-full">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Excluir Definitivamente</h3>
+            <p className="text-gray-600 mb-6 font-semibold text-red-600">
+              Atenção: Isso excluirá PERMANENTEMENTE o cliente {clientToHardDelete?.name}, bem como todas as suas visitas, pagamentos e históricos (ideal para testes). Esta ação não tem volta. Tem certeza?
+            </p>
+            <div className="flex justify-end space-x-3">
+              <button
+                onClick={() => { setHardDeleteModalOpen(false); setClientToHardDelete(null); }}
+                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={executeHardDelete}
+                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+              >
+                Sim, Excluir Tudo
               </button>
             </div>
           </div>

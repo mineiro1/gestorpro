@@ -1,12 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore';
-import { Users, DollarSign, AlertCircle, CheckCircle, Clock, CreditCard } from 'lucide-react';
-import EmployeeMap from '../components/EmployeeMap';
+import { supabase } from '../lib/supabase';
+import { Users, DollarSign, AlertCircle, CheckCircle, Clock, CreditCard, MessageCircle } from 'lucide-react';
 
 interface DashboardStats {
   totalClients: number;
+  inactiveClients: number;
   totalToReceive: number;
   delayedClients: number;
   receivedThisMonth: number;
@@ -17,6 +16,7 @@ export default function Dashboard() {
   const { userProfile } = useAuth();
   const [stats, setStats] = useState<DashboardStats>({
     totalClients: 0,
+    inactiveClients: 0,
     totalToReceive: 0,
     delayedClients: 0,
     receivedThisMonth: 0,
@@ -37,17 +37,20 @@ export default function Dashboard() {
 
         const adminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
         // Fetch Clients
-        let clientsQuery = query(collection(db, 'clients'), where('adminId', '==', adminId));
+        let clientsSnap;
         if (userProfile.role === 'employee') {
-          clientsQuery = query(collection(db, 'clients'), where('adminId', '==', adminId), where('employeeId', '==', userProfile.uid));
+          clientsSnap = await supabase.from('clients').select('*').eq('admin_id', adminId).eq('employee_id', userProfile.uid);
+        } else {
+          clientsSnap = await supabase.from('clients').select('*').eq('admin_id', adminId);
         }
-        const clientsSnap = await getDocs(clientsQuery);
         
         let totalClients = 0;
+        let inactiveClients = 0;
         let totalToReceive = 0;
         let actualDelayedClients = 0;
         let pendingThisMonth = 0;
         const clientsNoVisit: any[] = [];
+        const totalActiveClientsList: any[] = [];
 
         const today = new Date();
         today.setHours(0, 0, 0, 0);
@@ -55,83 +58,175 @@ export default function Dashboard() {
         const sevenDaysAgo = new Date();
         sevenDaysAgo.setDate(today.getDate() - 7);
 
-        clientsSnap.docs.forEach(doc => {
-          const data = doc.data();
-          totalClients++;
-          totalToReceive += data.monthlyFee || 0;
+        if (clientsSnap.data) {
+          clientsSnap.data.forEach((data: any) => {
+            if (data.active === false) {
+               inactiveClients++;
+               
+               let skipCalculations = true;
+               if (data.inactivated_at) {
+                 const inactiveDate = new Date(data.inactivated_at);
+                 if (inactiveDate.getMonth() + 1 === currentMonth && inactiveDate.getFullYear() === currentYear) {
+                    // Include in current month's revenue calculations if inactivated this month
+                    skipCalculations = false;
+                 }
+               }
+               
+               if (skipCalculations) {
+                  return; // Skip calculating revenue and visits for clients inactive prior to this month
+               }
+            } else {
+               totalClients++;
+            }
+            
+            totalToReceive += Number(data.monthly_price || data.monthly_fee || 0) + Number(data.extra_amount || 0);
 
-          if (data.dueDate) {
-            const [year, month, day] = data.dueDate.split('-').map(Number);
-            const due = new Date(year, month - 1, day);
-            due.setHours(0, 0, 0, 0);
+            if (data.due_date) {
+              const [year, month, day] = data.due_date.split('-').map(Number);
+              const due = new Date(year, month - 1, day);
+              due.setHours(0, 0, 0, 0);
 
-            if (due.getTime() < today.getTime()) {
-              actualDelayedClients++;
+              if (due.getTime() < today.getTime()) {
+                actualDelayedClients++;
+              }
+
+              // If due date is in the current month or earlier, it's pending
+              if (due.getFullYear() < currentYear || (due.getFullYear() === currentYear && due.getMonth() + 1 <= currentMonth)) {
+                pendingThisMonth += Number(data.monthly_price || data.monthly_fee || 0) + Number(data.extra_amount || 0);
+              }
             }
 
-            // If due date is in the current month or earlier, it's pending
-            if (due.getFullYear() < currentYear || (due.getFullYear() === currentYear && due.getMonth() + 1 <= currentMonth)) {
-              pendingThisMonth += data.monthlyFee || 0;
+            // Check if no visit in the last 7 days (will verify with visits table later)
+            if (data.active !== false) {
+               totalActiveClientsList.push(data);
             }
-          }
-
-          // Check if no visit in the last 7 days
-          if (data.lastVisitDate) {
-            const lastVisit = data.lastVisitDate.toDate();
-            if (lastVisit < sevenDaysAgo) {
-              clientsNoVisit.push({ id: doc.id, ...data });
-            }
-          } else {
-            // Client has never been visited (or created before feature added)
-            clientsNoVisit.push({ id: doc.id, ...data });
-          }
+          });
+        }
+        
+        // Fetch recent visits
+        let recentVisitsSnap;
+        if (userProfile.role === 'employee') {
+          recentVisitsSnap = await supabase.from('visits')
+            .select('client_id, date')
+            .eq('admin_id', adminId)
+            .eq('employee_id', userProfile.uid)
+            .gte('date', sevenDaysAgo.toISOString());
+        } else {
+          recentVisitsSnap = await supabase.from('visits')
+            .select('client_id, date')
+            .eq('admin_id', adminId)
+            .gte('date', sevenDaysAgo.toISOString());
+        }
+        
+        const clientsWithRecentVisits = new Set(recentVisitsSnap.data?.map((v: any) => v.client_id) || []);
+        
+        totalActiveClientsList.forEach(data => {
+           if (!clientsWithRecentVisits.has(data.id)) {
+              clientsNoVisit.push({ ...data, lastVisitDate: data.last_visit_date });
+           }
         });
 
         // Fetch One-Off Jobs (Avulsos)
         let receivedThisMonth = 0;
         const currentMonthString = `${currentYear}-${currentMonth.toString().padStart(2, '0')}`;
-        let jobsQuery = query(collection(db, 'oneoffjobs'), where('adminId', '==', adminId));
+        let jobsSnap;
         if (userProfile.role === 'employee') {
-          jobsQuery = query(collection(db, 'oneoffjobs'), where('adminId', '==', adminId), where('employeeId', '==', userProfile.uid));
+          jobsSnap = await supabase.from('oneoffjobs').select('*').eq('admin_id', adminId).eq('employee_id', userProfile.uid);
+        } else {
+          jobsSnap = await supabase.from('oneoffjobs').select('*').eq('admin_id', adminId);
         }
-        const jobsSnap = await getDocs(jobsQuery);
 
-        jobsSnap.docs.forEach(doc => {
-          const data = doc.data();
-          if (data.status === 'pending' || data.status === 'needs_return') {
-            totalToReceive += data.price || 0;
-          } else if (data.status === 'completed') {
-            if (data.date && data.date.startsWith(currentMonthString)) {
-              receivedThisMonth += data.price || 0;
-            } else if (data.updatedAt) {
-              // Fallback to updatedAt if date format doesn't match
-              const dateObj = data.updatedAt.toDate ? data.updatedAt.toDate() : new Date(data.updatedAt);
-              if (dateObj.getMonth() + 1 === currentMonth && dateObj.getFullYear() === currentYear) {
-                receivedThisMonth += data.price || 0;
+        if (jobsSnap.data) {
+          jobsSnap.data.forEach((data: any) => {
+            let isCurrentMonthJob = false;
+            let isPendingThisMonth = false;
+            let isCompletedThisMonth = false;
+
+            if (data.date) {
+              const [year, month] = data.date.split('-').map(Number);
+              if (year === currentYear && month === currentMonth) {
+                isCurrentMonthJob = true;
+              }
+              if (year < currentYear || (year === currentYear && month <= currentMonth)) {
+                if (data.status === 'pendente' || data.status === 'em_andamento') {
+                  isPendingThisMonth = true;
+                }
+              }
+            } else if (data.created_at) {
+              const dateObj = new Date(data.created_at);
+              if (dateObj.getFullYear() === currentYear && dateObj.getMonth() + 1 === currentMonth) {
+                isCurrentMonthJob = true;
+              }
+              if (dateObj.getFullYear() < currentYear || (dateObj.getFullYear() === currentYear && dateObj.getMonth() + 1 <= currentMonth)) {
+                if (data.status === 'pendente' || data.status === 'em_andamento') {
+                  isPendingThisMonth = true;
+                }
               }
             }
-          }
-        });
+
+            if (data.status === 'concluido') {
+              let checkDate: Date;
+              if (data.updated_at) {
+                checkDate = new Date(data.updated_at);
+              } else if (data.date) {
+                const [y, m, d] = data.date.split('-').map(Number);
+                checkDate = new Date(y, m - 1, d || 1);
+              } else {
+                checkDate = new Date(data.created_at);
+              }
+              if (checkDate.getFullYear() === currentYear && checkDate.getMonth() + 1 === currentMonth) {
+                isCompletedThisMonth = true;
+              }
+            }
+
+            // O valor total a receber diz respeito a todo o valor do mes
+            if (isCurrentMonthJob) {
+              totalToReceive += Number(data.price || 0);
+            }
+
+            // Pendente no mes (inclui atrasados de meses anteriores ou pendentes do atual)
+            if (isPendingThisMonth) {
+              pendingThisMonth += Number(data.price || 0);
+            }
+
+            // Recebido no mes (concluido no mes atual)
+            if (data.status === 'concluido' && isCompletedThisMonth) {
+              receivedThisMonth += Number(data.price || 0);
+            }
+          });
+        }
 
         // Fetch Payments for current month (Admins only for now or we must adjust rules)
-        
         if (userProfile.role === 'admin' || userProfile.role === 'manager') {
-          const paymentsQuery = query(
-            collection(db, 'payments'),
-            where('adminId', '==', adminId),
-            where('month', '==', currentMonth),
-            where('year', '==', currentYear)
-          );
-          const paymentsSnap = await getDocs(paymentsQuery);
-          
-          paymentsSnap.docs.forEach(doc => {
-            const data = doc.data();
-            receivedThisMonth += data.amount || 0;
-          });
+          const paymentsSnap = await supabase.from('payments').select('*').eq('admin_id', adminId);
+          if (paymentsSnap.data) {
+            paymentsSnap.data.forEach((data: any) => {
+              const paymentDate = data.paid_date || data.created_at;
+              if (paymentDate) {
+                let py, pm;
+                if (typeof paymentDate === 'string' && paymentDate.includes('-')) {
+                  const parts = paymentDate.split('T')[0].split('-');
+                  py = parseInt(parts[0], 10);
+                  pm = parseInt(parts[1], 10);
+                } else {
+                  const dateObj = new Date(paymentDate);
+                  py = dateObj.getFullYear();
+                  pm = dateObj.getMonth() + 1;
+                }
+                
+                if (pm === currentMonth && py === currentYear) {
+                  receivedThisMonth += Number(data.amount || 0);
+                  // Add extra_amount back to totalToReceive since it was cleared from the client profile upon payment
+                  totalToReceive += Number(data.extra_amount || 0);
+                }
+              }
+            });
+          }
         }
 
         setStats({
           totalClients,
+          inactiveClients,
           totalToReceive,
           delayedClients: actualDelayedClients,
           receivedThisMonth,
@@ -140,7 +235,7 @@ export default function Dashboard() {
 
         setClientsWithoutVisits(clientsNoVisit);
       } catch (error) {
-        handleFirestoreError(error, OperationType.GET, 'dashboard_stats');
+        console.error(error);
       } finally {
         setLoading(false);
       }
@@ -162,15 +257,7 @@ export default function Dashboard() {
   const handlePay = async () => {
     try {
       let price = 99.90;
-      try {
-        const settingsSnap = await getDoc(doc(db, 'settings', 'platform'));
-        if (settingsSnap.exists() && settingsSnap.data().monthlyPrice) {
-          price = settingsSnap.data().monthlyPrice;
-        }
-      } catch (e) {
-        console.error('Failed to get price', e);
-      }
-
+      // You may use settings table here
       const response = await fetch('/api/create-preference', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -207,7 +294,8 @@ export default function Dashboard() {
   };
 
   const statCards = [
-    { title: 'Total de Clientes', value: stats.totalClients, icon: Users, color: 'bg-blue-500' },
+    { title: 'Total de Clientes (Ativos)', value: stats.totalClients, icon: Users, color: 'bg-blue-500' },
+    { title: 'Clientes Inativos', value: stats.inactiveClients, icon: Users, color: 'bg-gray-400' },
     { title: 'Valor Total a Receber', value: formatCurrency(stats.totalToReceive), icon: DollarSign, color: 'bg-primary' },
     { title: 'Clientes Atrasados', value: stats.delayedClients, icon: AlertCircle, color: 'bg-red-500' },
     { title: 'Recebido no Mês', value: formatCurrency(stats.receivedThisMonth), icon: CheckCircle, color: 'bg-green-500' },
@@ -222,15 +310,17 @@ export default function Dashboard() {
             <Clock className="text-yellow-600 mr-3 hidden sm:block" size={24} />
             <div>
               <h3 className="font-bold text-yellow-800">Você está no período de teste (7 dias)</h3>
-              <p className="text-sm text-yellow-700">Evite a interrupção do serviço. Assine agora e garanta acesso contínuo.</p>
+              <p className="text-sm text-yellow-700">
+                Evite a interrupção do serviço. Assine agora e garanta acesso contínuo. Clique no botao contato.
+              </p>
             </div>
           </div>
           <button
-            onClick={handlePay}
+            onClick={() => window.open('https://wa.me/5567992499469', '_blank')}
             className="w-full sm:w-auto px-6 py-2 bg-yellow-500 hover:bg-yellow-600 text-white font-semibold rounded-lg shadow-sm transition-colors flex items-center justify-center whitespace-nowrap"
           >
-            <CreditCard size={18} className="mr-2" />
-            Assinar Agora
+            <MessageCircle size={18} className="mr-2" />
+            Contato
           </button>
         </div>
       )}
@@ -268,7 +358,7 @@ export default function Dashboard() {
               <div key={client.id} className="bg-white p-3 rounded shadow-sm border border-red-100 flex flex-col justify-center">
                 <span className="font-bold text-gray-800">{client.name}</span>
                 <span className="text-sm text-gray-500">
-                  {client.lastVisitDate ? `Última visita: ${client.lastVisitDate.toDate().toLocaleDateString('pt-BR')}` : 'Nenhuma visita registrada'}
+                  {client.lastVisitDate ? `Última visita: ${new Date(client.lastVisitDate).toLocaleDateString('pt-BR')}` : 'Nenhuma visita registrada'}
                 </span>
               </div>
             ))}
@@ -277,10 +367,6 @@ export default function Dashboard() {
             <p className="text-sm text-red-600 mt-4 font-semibold italic">... e mais {clientsWithoutVisits.length - 9} clientes.</p>
           )}
         </div>
-      )}
-
-      {(userProfile?.role === 'admin' || userProfile?.role === 'manager') && (
-        <EmployeeMap />
       )}
     </div>
   );

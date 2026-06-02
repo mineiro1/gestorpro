@@ -1,8 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { auth } from '../lib/firebase';
-import { signOut } from 'firebase/auth';
+import { supabase } from '../lib/supabase';
 import { Menu, X, Home, Users, UserCircle, Map, LogOut, Bell, MessageSquare, Headphones, Briefcase, History, Contact } from 'lucide-react';
 import clsx from 'clsx';
 import EmployeeLocationTracker from './EmployeeLocationTracker';
@@ -13,8 +12,21 @@ export default function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
 
+  useEffect(() => {
+    // Solicita permissões de notificação e localização ativamente
+    // Isso forçará o WebView ou app Wrapper no Android a exibir os dialogs
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {});
+    }
+    
+    // Tenta obter a localização apenas uma vez logo no início para ativar a permissão
+    if ('geolocation' in navigator) {
+      navigator.geolocation.getCurrentPosition(() => {}, () => {}, { timeout: 5000 });
+    }
+  }, []);
+
   const handleLogout = async () => {
-    await signOut(auth);
+    await supabase.auth.signOut();
     navigate('/login');
   };
 

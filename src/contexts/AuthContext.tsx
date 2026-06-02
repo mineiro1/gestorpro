@@ -1,7 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
-import { doc, getDoc, onSnapshot } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
+import { User } from '@supabase/supabase-js';
 
 export interface UserProfile {
   uid: string;
@@ -11,6 +10,7 @@ export interface UserProfile {
   email: string;
   adminId: string;
   createdAt: any;
+  clientId?: string;
   subscriptionStatus?: 'trial' | 'active' | 'expired';
   subscriptionExpiresAt?: any;
   adminSubscriptionExpired?: boolean;
@@ -28,7 +28,7 @@ export interface UserProfile {
 }
 
 interface AuthContextType {
-  currentUser: FirebaseUser | null;
+  currentUser: User | null;
   userProfile: UserProfile | null;
   loading: boolean;
   isAdmin: boolean;
@@ -52,121 +52,112 @@ const AuthContext = createContext<AuthContextType>({
 export const useAuth = () => useContext(AuthContext);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    let unsubscribeProfile: (() => void) | null = null;
-    let unsubscribeAdmin: (() => void) | null = null;
+    // Check active sessions and sets the user
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      handleUserChange(session?.user ?? null);
+    });
 
-    const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
-      setCurrentUser(user);
-      
-      if (unsubscribeProfile) {
-        unsubscribeProfile();
-        unsubscribeProfile = null;
-      }
-      if (unsubscribeAdmin) {
-        unsubscribeAdmin();
-        unsubscribeAdmin = null;
-      }
-
-      if (user) {
-        // Fetch user profile
-        unsubscribeProfile = onSnapshot(
-          doc(db, 'users', user.uid),
-          (docSnap) => {
-            if (docSnap.exists()) {
-              const profileData = { id: docSnap.id, uid: user.uid, ...docSnap.data() } as unknown as UserProfile;
-              
-              if (user.email === 'servincg@gmail.com' && (profileData.name !== 'Renivaldo Servin dos Santos' || profileData.subscriptionStatus !== 'active')) {
-                import('firebase/firestore').then(({ setDoc, Timestamp, doc }) => {
-                  setDoc(doc(db, 'users', user.uid), {
-                    name: 'Renivaldo Servin dos Santos',
-                    subscriptionStatus: 'active',
-                    subscriptionExpiresAt: Timestamp.fromDate(new Date('2099-12-31'))
-                  }, { merge: true }).catch(console.error);
-                }).catch(console.error);
-              }
-              
-              if (profileData.role !== 'admin' && profileData.adminId) {
-                // Immediately set the profile, keep previous whatsappSettings if we had them
-                setUserProfile(prev => ({
-                  ...profileData,
-                  whatsappSettings: prev?.whatsappSettings
-                }));
-
-                if (unsubscribeAdmin) {
-                  unsubscribeAdmin();
-                }
-                unsubscribeAdmin = onSnapshot(
-                  doc(db, 'users', profileData.adminId),
-                  (adminSnap) => {
-                    if (adminSnap.exists()) {
-                      const adminData = adminSnap.data();
-                      
-                      let adminExpired = false;
-                      if (adminData.subscriptionExpiresAt) {
-                        const expiry = adminData.subscriptionExpiresAt.toDate ? adminData.subscriptionExpiresAt.toDate() : new Date(adminData.subscriptionExpiresAt);
-                        adminExpired = new Date() > expiry;
-                      }
-                      if (adminData.subscriptionStatus === 'expired') adminExpired = true;
-
-                      setUserProfile(prev => {
-                        if (!prev) return prev; // If logged out meanwhile
-                        return { 
-                          ...prev, 
-                          whatsappSettings: adminData.whatsappSettings,
-                          adminSubscriptionExpired: adminExpired
-                        };
-                      });
-                    }
-                    setLoading(false);
-                  },
-                  (error) => {
-                    handleFirestoreError(error, OperationType.GET, `users/${profileData.adminId}`);
-                    setUserProfile(profileData);
-                    setLoading(false);
-                  }
-                );
-              } else {
-                setUserProfile(profileData);
-                setLoading(false);
-              }
-            } else {
-              setUserProfile(null);
-              setLoading(false);
-            }
-          },
-          (error) => {
-            handleFirestoreError(error, OperationType.GET, `users/${user.uid}`);
-            setLoading(false);
-          }
-        );
-      } else {
-        setUserProfile(null);
-        setLoading(false);
-      }
+    // Listen for changes on auth state (logged in, signed out, etc.)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      handleUserChange(session?.user ?? null);
     });
 
     return () => {
-      unsubscribeAuth();
-      if (unsubscribeProfile) {
-        unsubscribeProfile();
-      }
-      if (unsubscribeAdmin) {
-        unsubscribeAdmin();
-      }
+      subscription.unsubscribe();
     };
   }, []);
+
+  const handleUserChange = async (user: User | null) => {
+    setCurrentUser(user);
+    if (!user) {
+      setUserProfile(null);
+      setLoading(false);
+      return;
+    }
+
+    // Fetch user profile from Supabase
+    const { data: profileData, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', user.id)
+      .single();
+
+    if (error) {
+      console.error('Error fetching user profile:', error);
+      setUserProfile(null);
+      setLoading(false);
+      return;
+    }
+
+    if (profileData) {
+      if (profileData.active === false) {
+         await supabase.auth.signOut();
+         setUserProfile(null);
+         setLoading(false);
+         return;
+      }
+
+      const mappedProfile: UserProfile = {
+        uid: profileData.id,
+        role: profileData.role,
+        name: profileData.name,
+        phone: profileData.phone,
+        email: profileData.email,
+        adminId: profileData.admin_id,
+        clientId: profileData.client_id,
+        createdAt: profileData.created_at,
+        subscriptionStatus: profileData.subscription_status,
+        subscriptionExpiresAt: profileData.subscription_expires_at,
+        whatsappSettings: profileData.whatsapp_settings,
+      };
+
+      if (user.email === 'servincg@gmail.com' && (mappedProfile.name !== 'Renivaldo Servin dos Santos' || mappedProfile.subscriptionStatus !== 'active')) {
+        await supabase.from('users').update({
+          name: 'Renivaldo Servin dos Santos',
+          subscription_status: 'active',
+          subscription_expires_at: new Date('2099-12-31').toISOString(),
+        }).eq('id', user.id);
+        mappedProfile.name = 'Renivaldo Servin dos Santos';
+        mappedProfile.subscriptionStatus = 'active';
+        mappedProfile.subscriptionExpiresAt = new Date('2099-12-31').toISOString();
+      }
+
+      if (mappedProfile.role !== 'admin' && mappedProfile.adminId) {
+        const { data: adminData } = await supabase
+          .from('users')
+          .select('*')
+          .eq('id', mappedProfile.adminId)
+          .single();
+
+        if (adminData) {
+          let adminExpired = false;
+          if (adminData.subscription_expires_at) {
+            adminExpired = new Date() > new Date(adminData.subscription_expires_at);
+          }
+          if (adminData.subscription_status === 'expired') adminExpired = true;
+
+          mappedProfile.whatsappSettings = adminData.whatsapp_settings;
+          mappedProfile.adminSubscriptionExpired = adminExpired;
+        }
+      }
+
+      setUserProfile(mappedProfile);
+    } else {
+       setUserProfile(null);
+    }
+    setLoading(false);
+  };
 
   let isExp = false;
   if (userProfile && userProfile.email !== 'servincg@gmail.com') {
     if (userProfile.role === 'admin') {
       if (userProfile.subscriptionExpiresAt) {
-        const expiry = userProfile.subscriptionExpiresAt.toDate ? userProfile.subscriptionExpiresAt.toDate() : new Date(userProfile.subscriptionExpiresAt);
-        isExp = new Date() > expiry;
+        isExp = new Date() > new Date(userProfile.subscriptionExpiresAt);
       }
       if (userProfile.subscriptionStatus === 'expired') isExp = true;
     } else if (userProfile.role !== 'client') {

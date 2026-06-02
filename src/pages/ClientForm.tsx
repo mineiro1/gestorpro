@@ -1,17 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { doc, getDoc, getDocs, addDoc, updateDoc, deleteDoc, collection, serverTimestamp, query, where, onSnapshot, setDoc } from 'firebase/firestore';
+import { supabase, secondarySupabase } from '../lib/supabase';
 import { History, Plus, X, Download } from 'lucide-react';
 import { openMap } from '../lib/maps';
-import { initializeApp } from 'firebase/app';
-import { getAuth, createUserWithEmailAndPassword } from 'firebase/auth';
-import firebaseConfig from '../../firebase-applet-config.json';
-
-// Secondary app for creating/updating users without logging out the current admin
-const secondaryApp = initializeApp(firebaseConfig, 'SecondaryClient');
-const secondaryAuth = getAuth(secondaryApp);
 
 const DAYS_OF_WEEK = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 
@@ -48,25 +40,24 @@ export default function ClientForm() {
     if (id) {
       const fetchClient = async () => {
         try {
-          const docRef = doc(db, 'clients', id);
-          const docSnap = await getDoc(docRef);
-          if (docSnap.exists()) {
-            const data = docSnap.data();
+          const { data, error } = await supabase.from('clients').select('*').eq('id', id).single();
+          if (error) throw error;
+          if (data) {
             setFormData({
               name: data.name || '',
-              cpfCnpj: data.cpfCnpj || '',
+              cpfCnpj: data.cpf_cnpj || data.cpfCnpj || '',
               phone: data.phone || '',
               address: data.address || '',
-              monthlyFee: data.monthlyFee?.toString() || '',
-              dueDate: data.dueDate?.toString() || '',
-              visitDays: data.visitDays || [],
-              extraVisits: data.extraVisits || [],
-              employeeId: data.employeeId || '',
-              poolCount: data.poolCount || 1,
+              monthlyFee: data.monthly_price?.toString() || data.monthlyFee?.toString() || '',
+              dueDate: data.due_date?.toString() || data.dueDate?.toString() || '',
+              visitDays: data.visit_days || data.visitDays || [],
+              extraVisits: data.extra_visits || data.extraVisits || [],
+              employeeId: data.employee_id || data.employeeId || '',
+              poolCount: data.pool_count || data.poolCount || 1,
             });
           }
         } catch (error) {
-          handleFirestoreError(error, OperationType.GET, `clients/${id}`);
+          console.error(error);
         } finally {
           setFetching(false);
         }
@@ -75,25 +66,25 @@ export default function ClientForm() {
 
       if (userProfile) {
         const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
-        const visitsQuery = query(
-          collection(db, 'visits'),
-          where('clientId', '==', id),
-          where('adminId', '==', adminId)
-        );
         
-        const unsubscribeVisits = onSnapshot(visitsQuery, (snapshot) => {
-          const visitsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-          visitsData.sort((a: any, b: any) => {
-            const dateA = a.date?.toMillis() || 0;
-            const dateB = b.date?.toMillis() || 0;
-            return dateB - dateA;
-          });
-          setVisits(visitsData);
-        }, (err) => {
-          console.error("Erro ao buscar histórico de visitas:", err);
-        });
+        const fetchVisits = async () => {
+          const { data, error } = await supabase
+            .from('visits')
+            .select('*')
+            .eq('client_id', id)
+            .eq('admin_id', adminId)
+            .order('date', { ascending: false });
+          if(data) setVisits(data);
+        };
+        fetchVisits();
 
-        return () => unsubscribeVisits();
+        const channel = supabase.channel('client_visits')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'visits', filter: `client_id=eq.${id}` }, fetchVisits)
+          .subscribe();
+
+        return () => {
+          supabase.removeChannel(channel);
+        };
       }
     }
   }, [id, userProfile, isAdmin]);
@@ -103,13 +94,14 @@ export default function ClientForm() {
       const fetchEmployees = async () => {
         try {
           const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
-          const empQuery = query(
-            collection(db, 'users'),
-            where('adminId', '==', adminId),
-            where('role', 'in', ['employee', 'manager'])
-          );
-          const empSnap = await getDocs(empQuery);
-          setEmployees(empSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+          const { data, error } = await supabase
+            .from('users')
+            .select('*')
+            .eq('admin_id', adminId)
+            .in('role', ['employee', 'manager']);
+            
+          if (error) throw error;
+          if (data) setEmployees(data);
         } catch (err) {
           console.error("Erro ao buscar funcionários", err);
         }
@@ -134,50 +126,144 @@ export default function ClientForm() {
 
     const clientData = {
       name: formData.name,
-      cpfCnpj: formData.cpfCnpj,
+      cpf_cnpj: formData.cpfCnpj,
       phone: formData.phone,
       address: formData.address,
-      monthlyFee: parseFloat(formData.monthlyFee) || 0,
-      dueDate: formData.dueDate, // Now a string YYYY-MM-DD
-      baseDueDay: parseInt(formData.dueDate.split('-')[2], 10) || 1, // Extract day
-      visitDays: formData.visitDays,
-      extraVisits: formData.extraVisits,
-      employeeId: formData.employeeId,
-      poolCount: formData.poolCount,
+      monthly_price: parseFloat(formData.monthlyFee) || 0,
+      due_date: formData.dueDate, // Now a string YYYY-MM-DD
+      base_due_day: parseInt(formData.dueDate.split('-')[2], 10) || 1, // Extract day
+      visit_days: formData.visitDays,
+      extra_visits: formData.extraVisits,
+      employee_id: formData.employeeId || null,
+      pool_count: formData.poolCount,
     };
 
     try {
       if (id) {
-        await updateDoc(doc(db, 'clients', id), clientData);
-      } else {
-        const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
+        await supabase.from('clients').update(clientData).eq('id', id);
         
-        // Add client to 'clients' collection
-        const newClientRef = await addDoc(collection(db, 'clients'), {
-          ...clientData,
-          adminId: adminId,
-          employeeId: (isAdmin || isManager) ? formData.employeeId : userProfile.uid,
-          createdAt: serverTimestamp(),
-        });
-
-        // Add client user to auth so they can login
         if (formData.phone) {
           try {
             const cleanPhone = formData.phone.replace(/\D/g, '');
             if (cleanPhone.length >= 10) {
-              const emailGestao = `${cleanPhone}@gestaopro.com`;
-              const userCredential = await createUserWithEmailAndPassword(secondaryAuth, emailGestao, cleanPhone);
-              const clientUid = userCredential.user.uid;
-
-              await setDoc(doc(db, 'users', clientUid), {
-                uid: clientUid,
-                role: 'client',
-                name: formData.name,
-                phone: cleanPhone,
-                adminId: adminId,
-                clientId: newClientRef.id,
-                createdAt: serverTimestamp(),
+              const email = `${cleanPhone}@gestaopro.com`;
+              let authDataToUse = null;
+              
+              const { data: authData, error: authErr } = await secondarySupabase.auth.signUp({
+                email,
+                password: cleanPhone
               });
+              
+              if (authErr) {
+                if (authErr.message?.includes('already registered') || authErr.message?.includes('unique constraint')) {
+                  const { data: signInData, error: signInErr } = await secondarySupabase.auth.signInWithPassword({
+                    email,
+                    password: cleanPhone
+                  });
+                  if (!signInErr && signInData?.user) {
+                    authDataToUse = signInData.user;
+                    await secondarySupabase.auth.signOut();
+                  }
+                }
+              } else if (authData?.user) {
+                authDataToUse = authData.user;
+              }
+              
+              if (authDataToUse) {
+                const { error } = await supabase.from('users').upsert({
+                  id: authDataToUse.id,
+                  email: email,
+                  role: 'client',
+                  name: formData.name,
+                  phone: cleanPhone,
+                  client_id: id
+                });
+              }
+            }
+          } catch (e) {
+            console.error(e);
+          }
+        }
+      } else {
+        const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
+        
+        const { data: newClientData, error: clientInsertErr } = await supabase.from('clients').insert({
+          ...clientData,
+          admin_id: adminId,
+          employee_id: (isAdmin || isManager) ? (formData.employeeId || null) : userProfile.uid,
+        }).select().single();
+        
+        if(clientInsertErr) throw clientInsertErr;
+
+        if (formData.phone && newClientData) {
+          try {
+            const cleanPhone = formData.phone.replace(/\D/g, '');
+            if (cleanPhone.length >= 10) {
+              const email = `${cleanPhone}@gestaopro.com`;
+              let authDataToUse = null;
+
+              const { data: authData, error: authErr } = await secondarySupabase.auth.signUp({
+                email,
+                password: cleanPhone
+              });
+              
+              if (authErr) {
+                if (authErr.message?.includes('already registered') || authErr.message?.includes('unique constraint')) {
+                  const { data: signInData, error: signInErr } = await secondarySupabase.auth.signInWithPassword({
+                    email,
+                    password: cleanPhone
+                  });
+                  if (!signInErr && signInData?.user) {
+                    authDataToUse = signInData.user;
+                    await secondarySupabase.auth.signOut();
+                  } else {
+                    throw new Error('Este contato já foi registrado como cliente anteriormente (e possivelmente utilizou uma senha diferente).');
+                  }
+                } else if (authErr.message?.includes('Email logins are disabled')) {
+                  throw new Error('Por favor, ative o provedor de E-mail no painel do Supabase: Authentication -> Providers -> Email -> Enable Email provider.');
+                } else {
+                  throw authErr;
+                }
+              } else {
+                if (authData?.user) {
+                  authDataToUse = authData.user;
+                }
+              }
+              
+              if (authDataToUse) {
+                let retryCount = 0;
+                let pgUpdateErr = null;
+                
+                while (retryCount < 3) {
+                  const { data: updatedData, error } = await supabase.from('users').update({
+                    role: 'client',
+                    name: formData.name,
+                    phone: cleanPhone,
+                    admin_id: adminId,
+                    client_id: newClientData.id
+                  }).eq('id', authDataToUse.id).select();
+                  
+                  if (!error && updatedData && updatedData.length > 0) {
+                    pgUpdateErr = null;
+                    break;
+                  }
+                  pgUpdateErr = error || new Error('Row not found yet');
+                  retryCount++;
+                  await new Promise(r => setTimeout(r, 1000));
+                }
+                
+                if (pgUpdateErr && retryCount >= 3) {
+                   await supabase.from('users').upsert({
+                      id: authDataToUse.id,
+                      email: email,
+                      role: 'client',
+                      name: formData.name,
+                      phone: cleanPhone,
+                      admin_id: adminId,
+                      client_id: newClientData.id
+                   });
+                }
+              }
             }
           } catch(authErr) {
              console.error("Não foi possível criar login para o cliente", authErr);
@@ -202,13 +288,7 @@ export default function ClientForm() {
     } catch (err: any) {
       console.error(err);
       let errorMsg = err.message || 'Erro ao salvar cliente';
-      if (err.code === 'auth/email-already-in-use') {
-        errorMsg = 'Este cliente já está cadastrado com este telefone.';
-      } else if (err.code === 'auth/invalid-credential' || err.code === 'auth/invalid-login-credentials' || err.message?.includes('invalid-credential')) {
-        errorMsg = 'A senha ou telefone não confere (credenciais inválidas).';
-      }
       setError(errorMsg);
-      handleFirestoreError(err, id ? OperationType.UPDATE : OperationType.CREATE, id ? `clients/${id}` : 'clients');
     } finally {
       setLoading(false);
     }
@@ -233,40 +313,39 @@ export default function ClientForm() {
 
     try {
       const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
-      await addDoc(collection(db, 'visits'), {
-        adminId,
-        clientId: id,
-        employeeId: isAdmin ? null : userProfile.uid,
-        date: serverTimestamp(),
+      await supabase.from('visits').insert({
+        admin_id: adminId,
+        client_id: id,
+        employee_id: isAdmin ? null : userProfile.uid,
         notes: newVisitNotes.trim(),
-        location: locationData
+        location: locationData ? `${locationData.lat},${locationData.lng}` : null
       });
 
       // Update client with lastVisitDate
-      await updateDoc(doc(db, 'clients', id), {
-        lastVisitDate: serverTimestamp()
-      });
+      await supabase.from('clients').update({
+        last_visit_date: new Date().toISOString()
+      }).eq('id', id);
 
       setNewVisitNotes('');
 
       // Cleanup old visits (keep only the 3 most recent)
       try {
-        const q = query(collection(db, 'visits'), where('clientId', '==', id), where('adminId', '==', adminId));
-        const snap = await getDocs(q);
-        const visitsData = snap.docs.map(d => ({ id: d.id, date: d.data().date?.toMillis() || 0 }));
-        visitsData.sort((a, b) => b.date - a.date);
-        
-        if (visitsData.length > 3) {
-          const toDelete = visitsData.slice(3);
-          for (const v of toDelete) {
-            await deleteDoc(doc(db, 'visits', v.id));
-          }
+        const { data: visitsData, error: fetchErr } = await supabase
+          .from('visits')
+          .select('id, date')
+          .eq('client_id', id)
+          .eq('admin_id', adminId)
+          .order('date', { ascending: false });
+          
+        if(!fetchErr && visitsData && visitsData.length > 3) {
+          const toDelete = visitsData.slice(3).map((v: any) => v.id);
+          await supabase.from('visits').delete().in('id', toDelete);
         }
       } catch (cleanupErr) {
         console.error("Erro ao limpar visitas antigas:", cleanupErr);
       }
     } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, 'visits');
+      console.error(err);
     } finally {
       setAddingVisit(false);
     }
@@ -535,14 +614,17 @@ export default function ClientForm() {
                   <div key={visit.id} className="border border-gray-100 rounded-lg p-4 bg-gray-50">
                     <div className="flex justify-between items-start mb-2">
                       <span className="text-sm font-semibold text-gray-600">
-                        {visit.date ? new Date(visit.date.toMillis()).toLocaleDateString('pt-BR', {
+                        {visit.date ? new Date(visit.date).toLocaleDateString('pt-BR', {
                           day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'
                         }) : 'Data não disponível'}
                       </span>
                       {isAdmin && visit.location && (
                         <button 
                           type="button"
-                          onClick={() => openMap({ lat: visit.location.lat, lng: visit.location.lng })}
+                          onClick={() => {
+                            const [lat, lng] = visit.location.split(',');
+                            openMap({ lat: parseFloat(lat), lng: parseFloat(lng) });
+                          }}
                           className="text-xs font-semibold text-blue-600 bg-blue-50 px-2 py-1 rounded hover:bg-blue-100 flex items-center transition-colors border-none"
                         >
                           Ver Localização
@@ -550,14 +632,28 @@ export default function ClientForm() {
                       )}
                     </div>
                     <p className="text-gray-800 whitespace-pre-wrap">{visit.notes}</p>
-                    {visit.photoUrl && (
+                    {visit.photo_url && (!visit.photo_urls || visit.photo_urls.length === 0) && (
                       <div className="mt-3">
                         <img 
-                          src={visit.photoUrl} 
+                          src={visit.photo_url} 
                           alt="Foto da visita" 
-                          onClick={() => setFullscreenImage(visit.photoUrl)}
+                          onClick={() => setFullscreenImage(visit.photo_url)}
                           className="max-w-full h-auto max-h-64 rounded-lg border border-gray-200 cursor-pointer hover:opacity-90 transition-opacity" 
                         />
+                      </div>
+                    )}
+                    
+                    {visit.photo_urls && visit.photo_urls.length > 0 && (
+                      <div className="mt-3 flex gap-2 overflow-x-auto pb-2">
+                        {visit.photo_urls.map((photo: string, index: number) => (
+                           <img 
+                             key={index}
+                             src={photo} 
+                             alt={`Foto da visita ${index}`} 
+                             onClick={() => setFullscreenImage(photo)}
+                             className="w-32 h-32 object-cover rounded-lg shadow-sm border border-gray-200 cursor-pointer hover:opacity-90 transition-opacity shrink-0" 
+                           />
+                        ))}
                       </div>
                     )}
                   </div>

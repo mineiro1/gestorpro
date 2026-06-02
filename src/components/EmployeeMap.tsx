@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { supabase } from '../lib/supabase';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
@@ -20,6 +19,7 @@ interface EmployeeLocation {
   id: string;
   name: string;
   email: string;
+  role?: string;
   lastLocation?: {
     lat: number;
     lng: number;
@@ -43,32 +43,91 @@ export default function EmployeeMap({
 
     const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
     
-    // We fetch all users belonging to this admin
-    const q = query(
-      collection(db, 'users'),
-      where('adminId', '==', adminId)
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const emps: EmployeeLocation[] = [];
-      snapshot.forEach((doc) => {
-        const data = doc.data();
-        if (data.role === 'employee' || data.role === 'manager') {
-          emps.push({
-            id: doc.id,
-            name: data.name,
-            email: data.email,
-            lastLocation: data.lastLocation,
-            locationUpdatedAt: data.locationUpdatedAt,
-          });
+    // We fetch all users belonging to this admin, plus the admin themselves
+    const fetchEmployees = async () => {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .or(`admin_id.eq.${adminId},id.eq.${adminId}`);
+        
+      if (error) {
+        console.error('Error fetching users:', error);
+        return;
+      }
+      
+      const emps = data.map((doc: any) => {
+        let lat: number | null = null;
+        let lng: number | null = null;
+        
+        if (doc.last_location) {
+           if (typeof doc.last_location === 'object' && doc.last_location !== null) {
+              lat = parseFloat(doc.last_location.lat);
+              lng = parseFloat(doc.last_location.lng);
+           } else if (typeof doc.last_location === 'string') {
+              try {
+                 const parsed = JSON.parse(doc.last_location);
+                 if (parsed && parsed.lat) {
+                    lat = parseFloat(parsed.lat);
+                    lng = parseFloat(parsed.lng);
+                 } else {
+                    const parts = doc.last_location.split(',');
+                    if (parts.length >= 2) {
+                       lat = parseFloat(parts[0]);
+                       lng = parseFloat(parts[1]);
+                    }
+                 }
+              } catch(e) {
+                 const parts = doc.last_location.split(',');
+                 if (parts.length >= 2) {
+                    lat = parseFloat(parts[0]);
+                    lng = parseFloat(parts[1]);
+                 }
+              }
+           }
         }
+        
+        return {
+          id: doc.id,
+          name: doc.name,
+          email: doc.email,
+          role: doc.role,
+          lastLocation: (lat !== null && lng !== null && !isNaN(lat) && !isNaN(lng)) ? { lat, lng } : undefined,
+          locationUpdatedAt: doc.location_updated_at,
+        };
       });
       setEmployees(emps);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'users');
-    });
+    }
+    
+    let fallbackInterval: any;
 
-    return () => unsubscribe();
+    fetchEmployees();
+
+    // Set up realtime subscription
+    const channel = supabase
+      .channel('users_changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'users' },
+        (payload: any) => {
+          // Verify if it's relevant to our session
+          if (payload.new && (payload.new.admin_id === adminId || payload.new.id === adminId)) {
+            fetchEmployees();
+          }
+        }
+      )
+      .subscribe();
+
+    // Fallback polling every 5 minutes just in case realtime isn't enabled on the table
+    fallbackInterval = setInterval(() => {
+        fetchEmployees();
+    }, 300000);
+
+    return () => {
+      supabase.removeChannel(channel);
+      if (fallbackInterval) {
+         clearInterval(fallbackInterval);
+      }
+    };
   }, [userProfile, isAdmin, isManager]);
 
   useEffect(() => {
@@ -118,10 +177,15 @@ export default function EmployeeMap({
             {activeEmployees.map(emp => (
               <Marker key={`emp-${emp.id}`} position={[emp.lastLocation!.lat, emp.lastLocation!.lng]}>
                 <Popup>
-                  <div className="font-semibold text-gray-800">{emp.name} <span className="text-xs ml-1 bg-blue-100 text-blue-800 px-1 rounded">Colaborador</span></div>
+                  <div className="font-semibold text-gray-800">
+                    {emp.name} 
+                    <span className="text-xs ml-1 bg-blue-100 text-blue-800 px-1 rounded">
+                      {emp.role === 'admin' ? 'Administrador' : emp.role === 'manager' ? 'Gestor' : 'Colaborador'}
+                    </span>
+                  </div>
                   <div className="text-sm text-gray-500">{emp.email}</div>
                   <div className="text-xs text-blue-500 mt-1">
-                    Última att: {emp.locationUpdatedAt ? new Date(emp.locationUpdatedAt.toDate()).toLocaleString('pt-BR') : 'Desconhecida'}
+                    Última att: {emp.locationUpdatedAt ? new Date(emp.locationUpdatedAt).toLocaleString('pt-BR') : 'Desconhecida'}
                   </div>
                 </Popup>
               </Marker>

@@ -1,24 +1,24 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { CreditCard, AlertTriangle, LogOut } from 'lucide-react';
-import { auth, db } from '../lib/firebase';
-import { signOut } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
+import { CreditCard, AlertTriangle, LogOut, MessageCircle } from 'lucide-react';
+import { supabase } from '../lib/supabase';
 
 export default function SubscriptionWall() {
   const { userProfile } = useAuth();
+  const [loading, setLoading] = useState(false);
 
-  const handleLogout = () => {
-    signOut(auth);
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
   };
 
   const handlePay = async () => {
+    setLoading(true);
     try {
       let price = 99.90;
       try {
-        const settingsSnap = await getDoc(doc(db, 'settings', 'platform'));
-        if (settingsSnap.exists() && settingsSnap.data().monthlyPrice) {
-          price = settingsSnap.data().monthlyPrice;
+        const { data } = await supabase.from('settings').select('*').eq('id', 'platform').single();
+        if (data && data.monthlyprice) {
+          price = data.monthlyprice;
         }
       } catch (e) {
         console.error('Failed to get price', e);
@@ -61,6 +61,8 @@ export default function SubscriptionWall() {
     } catch (err: any) {
       console.error(err);
       alert('Houve um problema ao processar o pagamento: ' + err.message + '. Verifique com o SuperAdmin.');
+    } finally {
+        setLoading(false);
     }
   };
 
@@ -74,17 +76,18 @@ export default function SubscriptionWall() {
         <h1 className="text-2xl font-bold text-gray-800 mb-2">Assinatura Expirada</h1>
         <p className="text-gray-600 mb-6">
           {userProfile?.role === 'admin' 
-            ? 'O seu período de utilização (teste grátis ou assinatura) terminou. Renove agora para continuar utilizando o sistema.'
+            ? 'O seu período de utilização (teste grátis ou assinatura) terminou. Renove agora para continuar utilizando o sistema. clique no botao entre em contato e tenha acesso novamente.'
             : 'A assinatura da sua empresa encontra-se inativa. Por favor, contate o seu administrador.'}
         </p>
 
         {userProfile?.role === 'admin' && (
           <button
-            onClick={handlePay}
-            className="w-full flex justify-center items-center bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors mb-4"
+            onClick={() => window.open('https://wa.me/5567992499469', '_blank')}
+            disabled={loading}
+            className="w-full flex justify-center items-center bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors mb-4 disabled:opacity-50"
           >
-            <CreditCard className="mr-2" size={20} />
-            Renovar Assinatura
+            <MessageCircle className="mr-2" size={20} />
+            Contato
           </button>
         )}
 
