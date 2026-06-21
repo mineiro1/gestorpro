@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { MessageCircle, AlertCircle, Clock, History, Settings, X, Play, Calendar, CheckCircle, XCircle } from 'lucide-react';
+import { MessageCircle, AlertCircle, Clock, History, Settings, X, Play, Calendar, CheckCircle, XCircle, DollarSign } from 'lucide-react';
 
 interface ClientBilling {
   id: string;
@@ -12,6 +12,7 @@ interface ClientBilling {
   status: 'delayed' | 'upcoming' | 'today';
   extraAmount?: number;
   extraReason?: string;
+  rawClient?: any;
 }
 
 export default function Billing() {
@@ -27,6 +28,12 @@ export default function Billing() {
   const [clientPayments, setClientPayments] = useState<any[]>([]);
   const [loadingPayments, setLoadingPayments] = useState(false);
   const [activeTab, setActiveTab] = useState<'all' | 'delayed' | 'today' | 'upcoming'>('all');
+
+  // Payment Settings
+  const [paymentModalOpen, setPaymentModalOpen] = useState(false);
+  const [clientToPay, setClientToPay] = useState<any>(null);
+  const [isSubmittingPayment, setIsSubmittingPayment] = useState(false);
+  const [fetchTrigger, setRefreshTrigger] = useState(0);
 
   // WhatsApp Settings State
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
@@ -253,7 +260,8 @@ export default function Billing() {
             dueDate: data.due_date,
             status: 'upcoming',
             extraAmount: data.extra_amount,
-            extraReason: data.extra_reason
+            extraReason: data.extra_reason,
+            rawClient: data
           });
 
           // Generate multiple missing installments logic
@@ -283,7 +291,8 @@ export default function Billing() {
               dueDate: currentDueDateStr,
               status: 'upcoming',
               extraAmount: isFirstIteration ? data.extra_amount : undefined,
-              extraReason: isFirstIteration ? data.extra_reason : undefined
+              extraReason: isFirstIteration ? data.extra_reason : undefined,
+              rawClient: data
             };
             isFirstIteration = false;
 
@@ -327,7 +336,7 @@ export default function Billing() {
     };
 
     fetchBillingData();
-  }, [userProfile, waSettings.reminderDays]);
+  }, [userProfile, waSettings.reminderDays, fetchTrigger]);
 
   useEffect(() => {
     if (!selectedClientId || !userProfile?.uid) {
@@ -547,6 +556,95 @@ export default function Billing() {
     );
   };
 
+  const handlePaymentClick = (client: ClientBilling) => {
+    setClientToPay(client);
+    setPaymentModalOpen(true);
+  };
+
+  const calculateNextDueDateHelper = (currentDateStr: string, baseDueDay: number) => {
+    const [yearStr, monthStr] = currentDateStr.split('-');
+    let year = parseInt(yearStr, 10);
+    let month = parseInt(monthStr, 10);
+    month += 1;
+    if (month > 12) {
+      month = 1;
+      year += 1;
+    }
+    const lastDayOfNewMonth = new Date(year, month, 0).getDate();
+    const nextDay = Math.min(baseDueDay, lastDayOfNewMonth);
+    const formattedMonth = month.toString().padStart(2, '0');
+    const formattedDay = nextDay.toString().padStart(2, '0');
+    return `${year}-${formattedMonth}-${formattedDay}`;
+  };
+
+  const confirmPayment = async () => {
+    if (!clientToPay || !clientToPay.rawClient || !userProfile || isSubmittingPayment) return;
+    setIsSubmittingPayment(true);
+
+    try {
+      const data = clientToPay.rawClient;
+      const currentDate = new Date();
+      const previousDueDate = data.due_date || null;
+
+      let refMonth = currentDate.getMonth() + 1;
+      let refYear = currentDate.getFullYear();
+      if (data.due_date) {
+        const due = new Date(data.due_date + 'T12:00:00');
+        refMonth = due.getMonth() + 1;
+        refYear = due.getFullYear();
+      }
+
+      const extraAmt = Number(clientToPay.extraAmount || 0);
+      const extraRsn = clientToPay.extraReason || null;
+      const totalAmountPaid = Number(clientToPay.monthlyFee || 0) + extraAmt;
+
+      const currentAdminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
+      const { error: insertError } = await supabase.from('payments').insert({
+        admin_id: currentAdminId,
+        client_id: data.id,
+        amount: totalAmountPaid,
+        base_amount: clientToPay.monthlyFee,
+        extra_amount: extraAmt,
+        extra_reason: extraRsn,
+        month: currentDate.getMonth() + 1,
+        year: currentDate.getFullYear(),
+        ref_month: refMonth,
+        ref_year: refYear,
+        previous_due_date: previousDueDate,
+        status: 'pago',
+        paid_date: new Date().toISOString().split('T')[0],
+        due_date: clientToPay.dueDate || new Date().toISOString().split('T')[0]
+      });
+      
+      if(insertError) throw new Error(insertError.message);
+
+      if (data.due_date) {
+        try {
+          const baseDay = data.base_due_day || parseInt(data.due_date.split('-')[2], 10) || 1;
+          const nextDueDate = calculateNextDueDateHelper(data.due_date, baseDay);
+          
+          await supabase.from('clients').update({
+            due_date: nextDueDate,
+            base_due_day: baseDay,
+            extra_amount: 0,
+            extra_reason: ''
+          }).eq('id', data.id);
+        } catch (err) {
+          console.error("Erro ao atualizar data de vencimento:", err);
+        }
+      }
+
+      setPaymentModalOpen(false);
+      setClientToPay(null);
+      setRefreshTrigger(prev => prev + 1); // trigger refresh
+    } catch (err) {
+      console.error(err);
+      alert("Erro ao registrar pagamento.");
+    } finally {
+      setIsSubmittingPayment(false);
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto">
       <div className="mb-8 flex flex-col sm:flex-row justify-between items-start sm:items-center">
@@ -672,19 +770,29 @@ export default function Billing() {
                       <span>{client.phone}</span>
                     </div>
                   </div>
-                  <div className="shrink-0 flex items-center">
+                  <div className="shrink-0 flex items-center gap-2">
                     {(isAdmin || isManager) && (
-                      <button
-                        onClick={() => handleSendWhatsApp(client)}
-                        className={`flex items-center px-4 py-2 rounded-lg transition-colors font-semibold shadow-sm border ${
-                          client.status === 'delayed' 
-                            ? 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100' 
-                            : 'bg-[#25D366] text-white border-transparent hover:bg-[#20b858]'
-                        }`}
-                      >
-                        <MessageCircle size={18} className="mr-2" />
-                        {client.status === 'delayed' ? 'Cobrar agora' : 'Mandar Lembrete'}
-                      </button>
+                      <>
+                        <button
+                          onClick={() => handlePaymentClick(client)}
+                          className="flex items-center px-4 py-2 rounded-lg transition-colors font-semibold shadow-sm border bg-green-50 text-green-700 border-green-200 hover:bg-green-100"
+                          title="Registrar Pagamento"
+                        >
+                          <DollarSign size={18} className="mr-2" />
+                          Registrar
+                        </button>
+                        <button
+                          onClick={() => handleSendWhatsApp(client)}
+                          className={`flex items-center px-4 py-2 rounded-lg transition-colors font-semibold shadow-sm border ${
+                            client.status === 'delayed' 
+                              ? 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100' 
+                              : 'bg-[#25D366] text-white border-transparent hover:bg-[#20b858]'
+                          }`}
+                        >
+                          <MessageCircle size={18} className="mr-2" />
+                          {client.status === 'delayed' ? 'Cobrar agora' : 'Mandar Lembrete'}
+                        </button>
+                      </>
                     )}
                   </div>
                 </li>
@@ -985,6 +1093,39 @@ export default function Billing() {
           <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-primary mb-4"></div>
           <p className="text-white text-xl font-bold">Enviando mensagens em background...</p>
           <p className="text-gray-300 mt-2 text-center max-w-md">Por favor, não feche esta janela. O sistema aguarda 2 segundos entre cada envio para evitar o bloqueio do seu número pelo WhatsApp.</p>
+        </div>
+      )}
+
+      {/* Payment Modal */}
+      {paymentModalOpen && (
+        <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl p-6 max-w-sm w-full">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Registrar Pagamento</h3>
+            <p className="text-gray-600 mb-6">
+              Confirmar pagamento de R$ {((clientToPay?.monthlyFee || 0) + (clientToPay?.extraAmount || 0)).toFixed(2)} para {clientToPay?.name} neste mês?
+              {clientToPay?.extraAmount && clientToPay.extraAmount > 0 ? (
+                <span className="block mt-2 text-sm text-pink-600 font-medium">
+                  Inclui R$ {clientToPay.extraAmount.toFixed(2)} de extra ({clientToPay.extraReason || 'Sem motivo'}).
+                </span>
+              ) : null}
+            </p>
+            <div className="flex justify-end space-x-3">
+              <button
+                onClick={() => setPaymentModalOpen(false)}
+                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                disabled={isSubmittingPayment}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={confirmPayment}
+                disabled={isSubmittingPayment}
+                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50"
+              >
+                {isSubmittingPayment ? 'Confirmando...' : 'Confirmar'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

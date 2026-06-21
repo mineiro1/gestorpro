@@ -36,6 +36,47 @@ export default function Dashboard() {
         const currentDay = currentDate.getDate();
 
         const adminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
+
+        // Base variables
+        let totalClients = 0;
+        let inactiveClients = 0;
+        let totalToReceive = 0;
+        let actualDelayedClients = 0;
+        let pendingThisMonth = 0;
+        let receivedThisMonth = 0;
+        const clientsNoVisit: any[] = [];
+        const totalActiveClientsList: any[] = [];
+
+        const clientsWhoPaidThisMonth = new Set<string>();
+
+        // Fetch Payments for current month (Admins/Managers) FIRST to know who paid
+        if (userProfile.role === 'admin' || userProfile.role === 'manager') {
+          const paymentsSnap = await supabase.from('payments').select('*').eq('admin_id', adminId);
+          if (paymentsSnap.data) {
+            paymentsSnap.data.forEach((data: any) => {
+              const paymentDate = data.paid_date || data.created_at;
+              if (paymentDate) {
+                let py, pm;
+                if (typeof paymentDate === 'string' && paymentDate.includes('-')) {
+                  const parts = paymentDate.split('T')[0].split('-');
+                  py = parseInt(parts[0], 10);
+                  pm = parseInt(parts[1], 10);
+                } else {
+                  const dateObj = new Date(paymentDate);
+                  py = dateObj.getFullYear();
+                  pm = dateObj.getMonth() + 1;
+                }
+                
+                if (pm === currentMonth && py === currentYear) {
+                  receivedThisMonth += Number(data.amount || 0);
+                  totalToReceive += Number(data.extra_amount || 0);
+                  clientsWhoPaidThisMonth.add(data.client_id);
+                }
+              }
+            });
+          }
+        }
+
         // Fetch Clients
         let clientsSnap;
         if (userProfile.role === 'employee') {
@@ -43,14 +84,6 @@ export default function Dashboard() {
         } else {
           clientsSnap = await supabase.from('clients').select('*').eq('admin_id', adminId);
         }
-        
-        let totalClients = 0;
-        let inactiveClients = 0;
-        let totalToReceive = 0;
-        let actualDelayedClients = 0;
-        let pendingThisMonth = 0;
-        const clientsNoVisit: any[] = [];
-        const totalActiveClientsList: any[] = [];
 
         const today = new Date();
         today.setHours(0, 0, 0, 0);
@@ -63,17 +96,9 @@ export default function Dashboard() {
             if (data.active === false) {
                inactiveClients++;
                
-               let skipCalculations = true;
-               if (data.inactivated_at) {
-                 const inactiveDate = new Date(data.inactivated_at);
-                 if (inactiveDate.getMonth() + 1 === currentMonth && inactiveDate.getFullYear() === currentYear) {
-                    // Include in current month's revenue calculations if inactivated this month
-                    skipCalculations = false;
-                 }
-               }
-               
-               if (skipCalculations) {
-                  return; // Skip calculating revenue and visits for clients inactive prior to this month
+               // Se inativo, só somamos receita/visitas se ele pagou nesse mês específico
+               if (!clientsWhoPaidThisMonth.has(data.id)) {
+                  return; // Ignora o cliente em inativo para "a receber" se não pagou
                }
             } else {
                totalClients++;
@@ -127,7 +152,6 @@ export default function Dashboard() {
         });
 
         // Fetch One-Off Jobs (Avulsos)
-        let receivedThisMonth = 0;
         const currentMonthString = `${currentYear}-${currentMonth.toString().padStart(2, '0')}`;
         let jobsSnap;
         if (userProfile.role === 'employee') {
@@ -194,34 +218,6 @@ export default function Dashboard() {
               receivedThisMonth += Number(data.price || 0);
             }
           });
-        }
-
-        // Fetch Payments for current month (Admins only for now or we must adjust rules)
-        if (userProfile.role === 'admin' || userProfile.role === 'manager') {
-          const paymentsSnap = await supabase.from('payments').select('*').eq('admin_id', adminId);
-          if (paymentsSnap.data) {
-            paymentsSnap.data.forEach((data: any) => {
-              const paymentDate = data.paid_date || data.created_at;
-              if (paymentDate) {
-                let py, pm;
-                if (typeof paymentDate === 'string' && paymentDate.includes('-')) {
-                  const parts = paymentDate.split('T')[0].split('-');
-                  py = parseInt(parts[0], 10);
-                  pm = parseInt(parts[1], 10);
-                } else {
-                  const dateObj = new Date(paymentDate);
-                  py = dateObj.getFullYear();
-                  pm = dateObj.getMonth() + 1;
-                }
-                
-                if (pm === currentMonth && py === currentYear) {
-                  receivedThisMonth += Number(data.amount || 0);
-                  // Add extra_amount back to totalToReceive since it was cleared from the client profile upon payment
-                  totalToReceive += Number(data.extra_amount || 0);
-                }
-              }
-            });
-          }
         }
 
         setStats({

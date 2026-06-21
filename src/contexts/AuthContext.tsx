@@ -58,8 +58,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     // Check active sessions and sets the user
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(({ data: { session }, error }) => {
+      if (error) console.error('Error getting session:', error.message);
       handleUserChange(session?.user ?? null);
+    }).catch(err => {
+      console.error('Session fetch error:', err);
+      handleUserChange(null);
     });
 
     // Listen for changes on auth state (logged in, signed out, etc.)

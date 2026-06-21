@@ -398,22 +398,40 @@ export default function RoutesPage() {
     
     try {
       const geocodedClients = [...routeClients];
+      let userLocation: { lat: number, lng: number } | null = null;
+
+      // Try to get user's current location to start the route
+      try {
+        if (navigator.geolocation) {
+          const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
+            navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000 });
+          });
+          userLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        }
+      } catch (err) {
+        console.warn("Could not get user location for optimization.");
+      }
       
       // Basic Nominatim Geocoding with a small delay to avoid aggressive rate limits 
+      let geocodeCount = 0;
       for (let i = 0; i < geocodedClients.length; i++) {
         const c = geocodedClients[i];
         if (c.address && (!c.lat || !c.lng)) {
           try {
-            const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(c.address)}`);
+            const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=br&q=${encodeURIComponent(c.address)}`;
+            const res = await fetch(url, { headers: { 'Accept-Language': 'pt-BR,pt;q=0.9' } });
             const data = await res.json();
             if (data && data.length > 0) {
                geocodedClients[i].lat = parseFloat(data[0].lat);
                geocodedClients[i].lng = parseFloat(data[0].lon);
+               geocodeCount++;
             }
-            await new Promise(r => setTimeout(r, 600)); // Be nice to Nominatim (max 1 req/s per their terms, 600ms is OK for small bursts)
+            await new Promise(r => setTimeout(r, 700)); // Be nice to Nominatim
           } catch(err) {
             console.warn("Geocode failed for " + c.address);
           }
+        } else if (c.lat && c.lng) {
+          geocodeCount++; // Already geocoded
         }
       }
 
@@ -421,10 +439,13 @@ export default function RoutesPage() {
       const clientsWithLocation = geocodedClients.filter(c => c.lat && c.lng);
       const clientsWithoutLocation = geocodedClients.filter(c => !c.lat || !c.lng);
 
-      if (clientsWithLocation.length > 1) {
+      if (clientsWithLocation.length > 0) {
         const sorted = [];
-        let current = clientsWithLocation.shift(); // start from the first one
-        if (current) sorted.push(current);
+        let current = userLocation ? userLocation : clientsWithLocation.shift(); 
+        
+        if (!userLocation && current) {
+          sorted.push(current as any);
+        }
 
         while (clientsWithLocation.length > 0 && current) {
           let nearestIdx = 0;
@@ -432,7 +453,6 @@ export default function RoutesPage() {
 
           for (let i = 0; i < clientsWithLocation.length; i++) {
              const candidate = clientsWithLocation[i];
-             // Euclidean distance (mock, sufficient for small local areas)
              const d = Math.pow(candidate.lat - current.lat, 2) + Math.pow(candidate.lng - current.lng, 2);
              if (d < minDistance) {
                  minDistance = d;
@@ -445,15 +465,20 @@ export default function RoutesPage() {
         }
 
         setRouteClients([...sorted, ...clientsWithoutLocation]);
+        
+        const missed = clientsWithoutLocation.length;
+        if (missed > 0) {
+          alert(`Rota otimizada! Nota: ${missed} cliente(s) não puderam ser localizados no mapa com precisão e foram movidos para o final da lista.`);
+        } else {
+          alert("A rota foi otimizada com sucesso com base na proximidade!");
+        }
       } else {
         setRouteClients(geocodedClients);
-        if (clientsWithoutLocation.length > 0) {
-           alert("Poucos clientes com endereço válido/geolocalizado. Ordene manualmente.");
-        }
+        alert("Lamentamos, mas não conseguimos localizar os endereços dos clientes no mapa. Use o botão do Google Maps para traçar a rota.");
       }
     } catch (err) {
       console.error(err);
-      alert("Falha ao otimizar rota.");
+      alert("Falha ao otimizar rota. Verifique sua conexão.");
     } finally {
       setOptimizing(false);
     }
