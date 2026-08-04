@@ -216,7 +216,13 @@ export default function RoutesPage() {
         return (matchesDate || matchesReturnDate) && job.status !== 'cancelado';
       });
 
-      setRouteClients([...clientsData, ...filteredJobs]);
+      const mergedClients = [...clientsData, ...filteredJobs];
+      mergedClients.sort((a, b) => {
+        const nameA = (a.name || '').toLowerCase();
+        const nameB = (b.name || '').toLowerCase();
+        return nameA.localeCompare(nameB);
+      });
+      setRouteClients(mergedClients);
 
       // Check which clients were already visited ON THE ROUTE DATE
       const activeRouteDate = routeDate || getLocalISODate();

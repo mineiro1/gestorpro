@@ -43,7 +43,8 @@ export default function EmployeeLocationTracker() {
             }).eq('id', userProfile.uid);
             
             if (error) {
-              console.error('Error updating location in Supabase:', error);
+              // Silently ignore to avoid console errors if columns are missing
+              // console.error('Error updating location in Supabase:', error);
             }
           } catch (error) {
             console.error('Error in location update process:', error);
