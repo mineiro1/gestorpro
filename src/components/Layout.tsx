@@ -11,6 +11,42 @@ export default function Layout() {
   const { isAdmin, isManager, isClient, userProfile } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  
+  // Client Selection State
+  const [availableClients, setAvailableClients] = useState<any[]>([]);
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Fetch available clients if the user is a client
+    if (!userProfile) return;
+
+    const fetchAllClients = async () => {
+      if (isClient || userProfile.role === 'client' || userProfile.clientId) {
+        try {
+          const cleanedProfilePhone = (userProfile.phone || '').replace(/\D/g, '');
+          const { data: clientsData } = await supabase.from('clients').select('id, name, phone, cpf_cnpj');
+          
+          if (clientsData) {
+            const matchedClients = clientsData.filter(c => {
+              const cleanedClientPhone = (c.phone || '').replace(/\D/g, '');
+              const cleanedClientCpf = (c.cpf_cnpj || '').replace(/\D/g, '');
+              return cleanedClientPhone === cleanedProfilePhone || 
+                     cleanedClientCpf === cleanedProfilePhone || 
+                     c.id === userProfile.clientId;
+            });
+            
+            setAvailableClients(matchedClients);
+            if (matchedClients.length > 0 && !selectedClientId) {
+              setSelectedClientId(matchedClients[0].id);
+            }
+          }
+        } catch (err) {
+          console.error(err);
+        }
+      }
+    };
+    fetchAllClients();
+  }, [userProfile, isClient]);
 
   useEffect(() => {
     // Solicita permissões de notificação e localização ativamente
@@ -106,26 +142,57 @@ export default function Layout() {
             const Icon = item.icon;
             const isActive = location.pathname === item.path || (item.path !== '/' && location.pathname.startsWith(item.path));
             return (
-              <Link
-                key={item.name}
-                to={item.path}
-                onClick={() => setIsDrawerOpen(false)}
-                className={clsx(
-                  "flex items-center px-4 py-3 rounded-xl transition-all duration-200 group",
-                  isActive 
-                    ? "bg-primary text-white shadow-md" 
-                    : "text-gray-300 hover:bg-primary/40 hover:text-white"
-                )}
-              >
-                <Icon 
-                  size={20} 
+              <div key={item.name}>
+                <Link
+                  to={item.path}
+                  onClick={() => setIsDrawerOpen(false)}
                   className={clsx(
-                    "mr-3 transition-colors duration-200",
-                    isActive ? "text-secondary-light" : "text-gray-400 group-hover:text-secondary-light"
-                  )} 
-                />
-                <span className="font-medium">{item.name}</span>
-              </Link>
+                    "flex items-center px-4 py-3 rounded-xl transition-all duration-200 group",
+                    isActive 
+                      ? "bg-primary text-white shadow-md" 
+                      : "text-gray-300 hover:bg-primary/40 hover:text-white"
+                  )}
+                >
+                  <Icon 
+                    size={20} 
+                    className={clsx(
+                      "mr-3 transition-colors duration-200",
+                      isActive ? "text-secondary-light" : "text-gray-400 group-hover:text-secondary-light"
+                    )} 
+                  />
+                  <span className="font-medium">{item.name}</span>
+                </Link>
+                
+                {/* Client Selection List (If client has multiple profiles) */}
+                {item.name === 'Meu Painel' && isClient && availableClients.length > 1 && (
+                  <div className="mt-2 ml-4 pl-4 border-l border-primary-light/20 space-y-1">
+                    <div className="text-[10px] font-bold text-primary-light uppercase tracking-wider mb-2 mt-2">
+                      Meus Cadastros
+                    </div>
+                    {availableClients.map(client => (
+                      <button
+                        key={client.id}
+                        onClick={() => {
+                          setSelectedClientId(client.id);
+                          setIsDrawerOpen(false); // Close drawer on mobile after selection
+                        }}
+                        className={clsx(
+                          "flex items-center w-full px-3 py-2 rounded-lg transition-all duration-200 text-left",
+                          selectedClientId === client.id
+                            ? "bg-primary/30 text-white shadow-sm ring-1 ring-primary-light/30"
+                            : "text-gray-400 hover:bg-primary/30 hover:text-white"
+                        )}
+                      >
+                        <Users size={14} className={clsx(
+                          "mr-2 shrink-0",
+                          selectedClientId === client.id ? "text-secondary-light" : "text-gray-500"
+                        )} />
+                        <span className="text-xs font-medium truncate">{client.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             );
           })}
         </nav>
@@ -158,7 +225,7 @@ export default function Layout() {
         </header>
 
         <main className="flex-1 p-4 lg:p-8 overflow-y-auto bg-gray-100">
-          <Outlet />
+          <Outlet context={{ availableClients, selectedClientId }} />
         </main>
         
         {/* Mobile Bottom Navigation */}
