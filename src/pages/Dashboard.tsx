@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Users, DollarSign, AlertCircle, CheckCircle, Clock, CreditCard, MessageCircle, Eye, EyeOff } from 'lucide-react';
+import { useAutoRefresh } from '../hooks/useAutoRefresh';
 
 interface DashboardStats {
   totalClients: number;
@@ -25,6 +26,9 @@ export default function Dashboard() {
   const [clientsWithoutVisits, setClientsWithoutVisits] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showValues, setShowValues] = useState(false);
+
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  useAutoRefresh(() => setRefreshTrigger(t => t + 1), 30000); // 30s refresh
 
   useEffect(() => {
     if (!userProfile?.uid) return;
@@ -240,7 +244,7 @@ export default function Dashboard() {
     };
 
     fetchStats();
-  }, [userProfile]);
+  }, [userProfile, refreshTrigger]);
 
   if (loading) {
     return <div className="flex justify-center items-center h-64">Carregando métricas...</div>;

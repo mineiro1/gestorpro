@@ -8,10 +8,16 @@ import { openMap, openRouteMap, openWaze } from '../lib/maps';
 import EmployeeMap from '../components/EmployeeMap';
 import exifr from 'exifr';
 
+import { useAutoRefresh } from '../hooks/useAutoRefresh';
+
 const DAYS_OF_WEEK = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 
 export default function RoutesPage() {
   const { userProfile, isAdmin, isManager } = useAuth();
+  
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  useAutoRefresh(() => setRefreshTrigger(t => t + 1), 15000); // 15s refresh
+
   const [employees, setEmployees] = useState<any[]>([]);
   const [selectedEmployee, setSelectedEmployee] = useState('');
   const [selectedDay, setSelectedDay] = useState('');
@@ -249,12 +255,21 @@ export default function RoutesPage() {
       supabase.removeChannel(channel1);
       supabase.removeChannel(channel2);
     };
-  }, [generated, routeDate, userProfile, isAdmin]);
+  }, [generated, routeDate, userProfile, isAdmin, refreshTrigger]);
 
-  const handleGenerateRoute = async () => {
+  // Auto-refresh the route if it's already generated
+  useEffect(() => {
+    if (generated) {
+      handleGenerateRoute(true);
+    }
+  }, [refreshTrigger]);
+
+  const handleGenerateRoute = async (silent = false) => {
     if (!selectedEmployee || (!selectedDay && !routeDate) || !userProfile) return;
-    setLoading(true);
-    setGenerated(false);
+    if (!silent) {
+      setLoading(true);
+      setGenerated(false);
+    }
 
     try {
       const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
