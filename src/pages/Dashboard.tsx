@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { Users, DollarSign, AlertCircle, CheckCircle, Clock, CreditCard, MessageCircle } from 'lucide-react';
+import { Users, DollarSign, AlertCircle, CheckCircle, Clock, CreditCard, MessageCircle, Eye, EyeOff } from 'lucide-react';
 
 interface DashboardStats {
   totalClients: number;
@@ -24,6 +24,7 @@ export default function Dashboard() {
   });
   const [clientsWithoutVisits, setClientsWithoutVisits] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showValues, setShowValues] = useState(false);
 
   useEffect(() => {
     if (!userProfile?.uid) return;
@@ -246,6 +247,7 @@ export default function Dashboard() {
   }
 
   const formatCurrency = (value: number) => {
+    if (!showValues) return 'R$ ****';
     return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
   };
 
@@ -322,7 +324,16 @@ export default function Dashboard() {
         </div>
       )}
 
-      <h1 className="text-2xl font-bold text-gray-800 mb-6">Dashboard</h1>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold text-gray-800">Dashboard</h1>
+        <button 
+          onClick={() => setShowValues(!showValues)}
+          className="flex items-center justify-center p-2 bg-white rounded-lg shadow-sm border border-gray-200 text-gray-600 hover:text-primary transition-colors"
+          title={showValues ? "Ocultar valores" : "Mostrar valores"}
+        >
+          {showValues ? <EyeOff size={24} /> : <Eye size={24} />}
+        </button>
+      </div>
       
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {statCards.map((stat, index) => {

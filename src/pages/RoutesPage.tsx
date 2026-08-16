@@ -49,6 +49,7 @@ export default function RoutesPage() {
   const [isOrderingMode, setIsOrderingMode] = useState(false);
   const [orderedClients, setOrderedClients] = useState<any[]>([]);
   const [savingOrder, setSavingOrder] = useState(false);
+  const [routeOrderChanged, setRouteOrderChanged] = useState(false);
 
   useEffect(() => {
     if (routeDate) {
@@ -234,7 +235,14 @@ export default function RoutesPage() {
     if (!isAdmin && !isManager) jobFilter += `&employee_id=eq.${userProfile.uid}`;
 
     const channel2 = supabase.channel('routes-jobs')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'oneoffjobs', filter: jobFilter }, fetchStatus)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'oneoffjobs', filter: jobFilter }, (payload) => {
+        fetchStatus();
+        if (payload.new && (payload.new as any).client_name && (payload.new as any).client_name.startsWith('system_route_order_')) {
+          if (!isAdmin) {
+             setRouteOrderChanged(true);
+          }
+        }
+      })
       .subscribe();
 
     return () => {
@@ -813,6 +821,24 @@ export default function RoutesPage() {
           {loading ? 'Gerando...' : 'Gerar Rota'}
         </button>
       </div>
+
+      {routeOrderChanged && (
+        <div className="bg-blue-50 border-l-4 border-blue-500 p-4 mb-6 rounded-r-xl shadow-sm flex items-center justify-between">
+          <div>
+            <h3 className="font-bold text-blue-800">Ordem atualizada!</h3>
+            <p className="text-blue-700 text-sm">O administrador alterou a ordem da sua rota. Clique no botão ao lado para atualizar.</p>
+          </div>
+          <button 
+            onClick={() => {
+              setRouteOrderChanged(false);
+              handleGenerateRoute();
+            }}
+            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-semibold transition-colors whitespace-nowrap"
+          >
+            Atualizar Rota
+          </button>
+        </div>
+      )}
 
       {generated && (
         <div className="bg-white rounded-xl shadow-sm p-6">
