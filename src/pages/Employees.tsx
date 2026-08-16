@@ -4,9 +4,14 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Edit, Trash2, Plus, MapPin } from 'lucide-react';
 import { openMap } from '../lib/maps';
+import { useAutoRefresh } from '../hooks/useAutoRefresh';
 
 export default function Employees() {
   const { userProfile, isAdmin, isManager } = useAuth();
+  
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  useAutoRefresh(() => setRefreshTrigger(t => t + 1), 30000);
+
   const [employees, setEmployees] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
@@ -47,7 +52,7 @@ export default function Employees() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [userProfile]);
+  }, [userProfile, refreshTrigger]);
 
   const handleDeleteClick = (employee: any) => {
     setEmployeeToDelete(employee);

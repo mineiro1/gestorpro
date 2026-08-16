@@ -6,9 +6,14 @@ import { Link } from 'react-router-dom';
 import { openMap } from '../lib/maps';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { useAutoRefresh } from '../hooks/useAutoRefresh';
 
 export default function VisitsHistory() {
   const { userProfile, isAdmin, isManager } = useAuth();
+  
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  useAutoRefresh(() => setRefreshTrigger(t => t + 1), 30000); // 30s refresh
+
   const [visits, setVisits] = useState<any[]>([]);
   const [clients, setClients] = useState<Record<string, any>>({});
   const [employees, setEmployees] = useState<Record<string, any>>({});
@@ -67,7 +72,7 @@ export default function VisitsHistory() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [userProfile, isAdmin, isManager]);
+  }, [userProfile, isAdmin, isManager, refreshTrigger]);
 
   const filteredVisits = visits.filter(visit => {
     let keep = true;

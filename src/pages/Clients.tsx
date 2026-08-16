@@ -3,9 +3,14 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Edit, Trash2, Plus, DollarSign, RotateCcw, Package, Search, MessageCircle, PlusCircle } from 'lucide-react';
+import { useAutoRefresh } from '../hooks/useAutoRefresh';
 
 export default function Clients() {
   const { userProfile, isAdmin, isManager } = useAuth();
+  
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  useAutoRefresh(() => setRefreshTrigger(t => t + 1), 30000); // 30s refresh
+
   const [clients, setClients] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
@@ -133,7 +138,7 @@ export default function Clients() {
       supabase.removeChannel(clientChannel);
       supabase.removeChannel(paymentChannel);
     };
-  }, [userProfile, isAdmin, isManager, loadLimit, searchTerm]);
+  }, [userProfile, isAdmin, isManager, loadLimit, searchTerm, refreshTrigger]);
 
   const handleDeleteClick = (client: any) => {
     setClientToDelete(client);

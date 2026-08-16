@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Briefcase, MapPin, Calendar, DollarSign, User, Plus, Edit, Trash2, CheckCircle } from 'lucide-react';
+import { useAutoRefresh } from '../hooks/useAutoRefresh';
 
 interface OneOffJob {
   id?: string;
@@ -21,6 +22,10 @@ interface OneOffJob {
 
 export default function OneOffJobs() {
   const { userProfile } = useAuth();
+  
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  useAutoRefresh(() => setRefreshTrigger(t => t + 1), 30000);
+
   const [jobs, setJobs] = useState<OneOffJob[]>([]);
   const [employees, setEmployees] = useState<{id: string, name: string}[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -95,7 +100,7 @@ export default function OneOffJobs() {
       fetchJobs();
       fetchEmployees();
     }
-  }, [userProfile]);
+  }, [userProfile, refreshTrigger]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

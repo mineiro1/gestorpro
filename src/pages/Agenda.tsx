@@ -2,9 +2,14 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Edit2, Trash2, Plus, X } from 'lucide-react';
+import { useAutoRefresh } from '../hooks/useAutoRefresh';
 
 export default function Agenda() {
   const { userProfile, isAdmin, isManager } = useAuth();
+  
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  useAutoRefresh(() => setRefreshTrigger(t => t + 1), 30000);
+
   const [contacts, setContacts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -21,7 +26,7 @@ export default function Agenda() {
   useEffect(() => {
     if (!userProfile) return;
     fetchAgenda();
-  }, [userProfile]);
+  }, [userProfile, refreshTrigger]);
 
   const fetchAgenda = async () => {
     try {

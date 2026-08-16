@@ -1,6 +1,7 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { User } from '@supabase/supabase-js';
+import { useAutoRefresh } from '../hooks/useAutoRefresh';
 
 export interface UserProfile {
   uid: string;
@@ -55,6 +56,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+
+  useAutoRefresh(() => {
+    if (currentUser) {
+      handleUserChange(currentUser);
+    }
+  }, 60000); // 1 minute refresh for auth context
 
   useEffect(() => {
     // Check active sessions and sets the user

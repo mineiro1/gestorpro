@@ -2,9 +2,14 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { MessageCircle, CheckSquare, Square, Image as ImageIcon, Video, X, Play } from 'lucide-react';
+import { useAutoRefresh } from '../hooks/useAutoRefresh';
 
 export default function Messages() {
   const { userProfile, isAdmin, isManager } = useAuth();
+  
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  useAutoRefresh(() => setRefreshTrigger(t => t + 1), 30000);
+
   const [clients, setClients] = useState<any[]>([]);
   const [selectedClients, setSelectedClients] = useState<Set<string>>(new Set());
   const [messageText, setMessageText] = useState('');
@@ -54,7 +59,7 @@ export default function Messages() {
     };
 
     fetchRecipients();
-  }, [userProfile, isAdmin, isManager]);
+  }, [userProfile, isAdmin, isManager, refreshTrigger]);
 
   const handleSelectAll = (checked: boolean) => {
     if (checked) {

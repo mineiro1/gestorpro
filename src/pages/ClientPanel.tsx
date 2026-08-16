@@ -3,9 +3,14 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Calendar, CheckCircle, X, Download } from 'lucide-react';
 import { useOutletContext } from 'react-router-dom';
+import { useAutoRefresh } from '../hooks/useAutoRefresh';
 
 export default function ClientPanel() {
   const { userProfile } = useAuth();
+  
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  useAutoRefresh(() => setRefreshTrigger(t => t + 1), 30000);
+
   const { availableClients, selectedClientId } = useOutletContext<{ availableClients: any[], selectedClientId: string | null }>();
   
   const [clientData, setClientData] = useState<any>(null);
@@ -130,7 +135,7 @@ export default function ClientPanel() {
     };
 
     loadClientDetails();
-  }, [selectedClientId, availableClients]);
+  }, [selectedClientId, availableClients, refreshTrigger]);
 
   if (!availableClients || availableClients.length === 0) return <div className="p-8 text-center text-red-500">Dados do cliente não encontrados.</div>;
 
