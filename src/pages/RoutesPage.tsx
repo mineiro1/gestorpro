@@ -289,8 +289,8 @@ export default function RoutesPage() {
       const routeOrderName = 'system_route_order_' + currentDayOfWeek;
       const orderJob = jobsSnap?.find(job => job.client_name === routeOrderName);
       let savedOrder: string[] = [];
-      if (orderJob && orderJob.notes) {
-        try { savedOrder = JSON.parse(orderJob.notes); } catch(e) {}
+      if (orderJob && orderJob.description) {
+        try { savedOrder = JSON.parse(orderJob.description); } catch(e) {}
       }
 
       const filteredJobs = allJobs.filter((job: any) => {
@@ -427,21 +427,21 @@ export default function RoutesPage() {
       const orderJob = jobsSnap && jobsSnap.length > 0 ? jobsSnap[0] : null;
       
       if (orderJob) {
-        await supabase.from('oneoffjobs').update({ notes: JSON.stringify(orderArray) }).eq('id', orderJob.id);
+        const { error } = await supabase.from('oneoffjobs').update({ description: JSON.stringify(orderArray) }).eq('id', orderJob.id);
+        if (error) throw error;
       } else {
-        await supabase.from('oneoffjobs').insert({
+        const { error } = await supabase.from('oneoffjobs').insert({
            admin_id: adminId,
            employee_id: selectedEmployee,
            title: routeOrderName,
            client_name: routeOrderName,
            client_phone: '00000000000',
-           description: 'Sistema',
-           service_type: 'system',
+           description: JSON.stringify(orderArray),
            price: 0,
            date: routeDate,
-           status: 'cancelado',
-           notes: JSON.stringify(orderArray)
+           status: 'cancelado'
         });
+        if (error) throw error;
       }
       setRouteClients(orderedClients);
       setIsOrderingMode(false);
