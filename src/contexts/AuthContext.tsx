@@ -85,74 +85,88 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     // Fetch user profile from Supabase
-    const { data: profileData, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('id', user.id)
-      .single();
+    try {
+      const { data: profileData, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', user.id)
+        .single();
 
-    if (error) {
-      console.error('Error fetching user profile:', error);
-      setUserProfile(null);
-      setLoading(false);
-      return;
-    }
-
-    if (profileData) {
-      if (profileData.active === false) {
-         await supabase.auth.signOut();
-         setUserProfile(null);
-         setLoading(false);
-         return;
+      if (error) {
+        throw error;
       }
 
-      const mappedProfile: UserProfile = {
-        uid: profileData.id,
-        role: profileData.role,
-        name: profileData.name,
-        phone: profileData.phone,
-        email: profileData.email,
-        adminId: profileData.admin_id,
-        clientId: profileData.client_id,
-        createdAt: profileData.created_at,
-        subscriptionStatus: profileData.subscription_status,
-        subscriptionExpiresAt: profileData.subscription_expires_at,
-        whatsappSettings: profileData.whatsapp_settings,
-      };
-
-      if (user.email === 'servincg@gmail.com' && (mappedProfile.name !== 'Renivaldo Servin dos Santos' || mappedProfile.subscriptionStatus !== 'active')) {
-        await supabase.from('users').update({
-          name: 'Renivaldo Servin dos Santos',
-          subscription_status: 'active',
-          subscription_expires_at: new Date('2099-12-31').toISOString(),
-        }).eq('id', user.id);
-        mappedProfile.name = 'Renivaldo Servin dos Santos';
-        mappedProfile.subscriptionStatus = 'active';
-        mappedProfile.subscriptionExpiresAt = new Date('2099-12-31').toISOString();
-      }
-
-      if (mappedProfile.role !== 'admin' && mappedProfile.adminId) {
-        const { data: adminData } = await supabase
-          .from('users')
-          .select('*')
-          .eq('id', mappedProfile.adminId)
-          .single();
-
-        if (adminData) {
-          let adminExpired = false;
-          if (adminData.subscription_expires_at) {
-            adminExpired = new Date() > new Date(adminData.subscription_expires_at);
-          }
-          if (adminData.subscription_status === 'expired') adminExpired = true;
-
-          mappedProfile.whatsappSettings = adminData.whatsapp_settings;
-          mappedProfile.adminSubscriptionExpired = adminExpired;
+      if (profileData) {
+        if (profileData.active === false) {
+           await supabase.auth.signOut();
+           setUserProfile(null);
+           localStorage.removeItem('cachedUserProfile');
+           setLoading(false);
+           return;
         }
-      }
 
-      setUserProfile(mappedProfile);
-    } else {
-       setUserProfile(null);
+        const mappedProfile: UserProfile = {
+          uid: profileData.id,
+          role: profileData.role,
+          name: profileData.name,
+          phone: profileData.phone,
+          email: profileData.email,
+          adminId: profileData.admin_id,
+          clientId: profileData.client_id,
+          createdAt: profileData.created_at,
+          subscriptionStatus: profileData.subscription_status,
+          subscriptionExpiresAt: profileData.subscription_expires_at,
+          whatsappSettings: profileData.whatsapp_settings,
+        };
+
+        if (user.email === 'servincg@gmail.com' && (mappedProfile.name !== 'Renivaldo Servin dos Santos' || mappedProfile.subscriptionStatus !== 'active')) {
+          await supabase.from('users').update({
+            name: 'Renivaldo Servin dos Santos',
+            subscription_status: 'active',
+            subscription_expires_at: new Date('2099-12-31').toISOString(),
+          }).eq('id', user.id);
+          mappedProfile.name = 'Renivaldo Servin dos Santos';
+          mappedProfile.subscriptionStatus = 'active';
+          mappedProfile.subscriptionExpiresAt = new Date('2099-12-31').toISOString();
+        }
+
+        if (mappedProfile.role !== 'admin' && mappedProfile.adminId) {
+          const { data: adminData } = await supabase
+            .from('users')
+            .select('*')
+            .eq('id', mappedProfile.adminId)
+            .single();
+
+          if (adminData) {
+            let adminExpired = false;
+            if (adminData.subscription_expires_at) {
+              adminExpired = new Date() > new Date(adminData.subscription_expires_at);
+            }
+            if (adminData.subscription_status === 'expired') adminExpired = true;
+
+            mappedProfile.whatsappSettings = adminData.whatsapp_settings;
+            mappedProfile.adminSubscriptionExpired = adminExpired;
+          }
+        }
+
+        setUserProfile(mappedProfile);
+        localStorage.setItem('cachedUserProfile', JSON.stringify(mappedProfile));
+      } else {
+         setUserProfile(null);
+         localStorage.removeItem('cachedUserProfile');
+      }
+    } catch (err) {
+      console.error('Error fetching user profile, attempting to use cached profile:', err);
+      const cached = localStorage.getItem('cachedUserProfile');
+      if (cached) {
+        try {
+          setUserProfile(JSON.parse(cached));
+        } catch (e) {
+          setUserProfile(null);
+        }
+      } else {
+        setUserProfile(null);
+      }
     }
     setLoading(false);
   };

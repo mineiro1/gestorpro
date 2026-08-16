@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { jsPDF } from 'jspdf';
-import { Share2, FileText, Map, Camera, CheckCircle, MapPin, Image as ImageIcon } from 'lucide-react';
+import { Share2, FileText, Map, Camera, CheckCircle, MapPin, Image as ImageIcon, ArrowUp, ArrowDown, Save, ListOrdered } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { openMap, openRouteMap, openWaze } from '../lib/maps';
 import EmployeeMap from '../components/EmployeeMap';
@@ -26,8 +26,6 @@ export default function RoutesPage() {
   const [loading, setLoading] = useState(false);
   const [generated, setGenerated] = useState(false);
 
-  // TSP Optimization state
-  const [optimizing, setOptimizing] = useState(false);
   const [highlightedClientId, setHighlightedClientId] = useState<string | null>(null);
 
   // Anticipation state
@@ -47,6 +45,11 @@ export default function RoutesPage() {
   const [needsReturn, setNeedsReturn] = useState(false);
   const [returnDate, setReturnDate] = useState('');
 
+  // Ordering mode state
+  const [isOrderingMode, setIsOrderingMode] = useState(false);
+  const [orderedClients, setOrderedClients] = useState<any[]>([]);
+  const [savingOrder, setSavingOrder] = useState(false);
+
   useEffect(() => {
     if (routeDate) {
       const dateStr = routeDate + 'T12:00:00';
@@ -58,6 +61,78 @@ export default function RoutesPage() {
       }
     }
   }, [routeDate]);
+
+  const syncOfflineVisits = async () => {
+    if (!navigator.onLine) return;
+    
+    const offlineVisitsStr = localStorage.getItem('offlineVisits');
+    if (!offlineVisitsStr) return;
+    
+    let offlineVisits: any[] = [];
+    try {
+      offlineVisits = JSON.parse(offlineVisitsStr);
+    } catch (e) {
+      localStorage.removeItem('offlineVisits');
+      return;
+    }
+    
+    if (offlineVisits.length === 0) return;
+    
+    let remainingVisits = [...offlineVisits];
+    let syncedCount = 0;
+    
+    for (const payload of offlineVisits) {
+      try {
+        if (payload.isOneOffJob) {
+          const { error } = await supabase.from('oneoffjobs').update({
+            status: payload.needsReturn ? 'em_andamento' : 'concluido',
+            return_date: payload.needsReturn ? payload.returnDate : null,
+            report: payload.notes,
+            updated_at: payload.date
+          }).eq('id', payload.clientId);
+          if (error) throw error;
+        } else {
+          const { error: insertError } = await supabase.from('visits').insert({
+            admin_id: payload.adminId,
+            client_id: payload.clientId,
+            employee_id: payload.employeeId,
+            date: payload.date,
+            time: payload.time,
+            notes: payload.notes,
+            photo_urls: payload.photoUrls,
+            location: payload.location
+          });
+          if (insertError) throw insertError;
+          
+          await supabase.from('clients').update({
+            last_visit_date: payload.date
+          }).eq('id', payload.clientId);
+        }
+        
+        remainingVisits = remainingVisits.filter((v: any) => v !== payload);
+        syncedCount++;
+      } catch (err) {
+        console.error("Failed to sync visit", err);
+      }
+    }
+    
+    if (syncedCount > 0) {
+      alert(`${syncedCount} visita(s) offline sincronizada(s) com sucesso!`);
+    }
+    
+    if (remainingVisits.length === 0) {
+      localStorage.removeItem('offlineVisits');
+    } else {
+      localStorage.setItem('offlineVisits', JSON.stringify(remainingVisits));
+    }
+  };
+
+  useEffect(() => {
+    syncOfflineVisits();
+    const handleOnline = () => syncOfflineVisits();
+    window.addEventListener('online', handleOnline);
+    return () => window.removeEventListener('online', handleOnline);
+  }, []);
 
   useEffect(() => {
     if ((isAdmin || isManager) && userProfile?.uid) {
@@ -210,18 +285,33 @@ export default function RoutesPage() {
         phone: doc.client_phone
       })) as any[];
       
+      const [y, m, d] = routeDate.split('-').map(Number); const currentDayOfWeek = new Date(y, m - 1, d).getDay().toString();
+      const routeOrderName = 'system_route_order_' + currentDayOfWeek;
+      const orderJob = jobsSnap?.find(job => job.client_name === routeOrderName);
+      let savedOrder: string[] = [];
+      if (orderJob && orderJob.notes) {
+        try { savedOrder = JSON.parse(orderJob.notes); } catch(e) {}
+      }
+
       const filteredJobs = allJobs.filter((job: any) => {
+        if (job.client_name?.startsWith('system_route_order')) return false;
         const matchesDate = job.date === routeDate || (job.date && job.date.startsWith(routeDate));
         const matchesReturnDate = job.return_date === routeDate || (job.return_date && job.return_date.startsWith(routeDate));
         return (matchesDate || matchesReturnDate) && job.status !== 'cancelado';
       });
 
       const mergedClients = [...clientsData, ...filteredJobs];
-      mergedClients.sort((a, b) => {
-        const nameA = (a.name || '').toLowerCase();
-        const nameB = (b.name || '').toLowerCase();
-        return nameA.localeCompare(nameB);
-      });
+      
+      if (savedOrder.length > 0) {
+        mergedClients.sort((a, b) => {
+          const indexA = savedOrder.indexOf(a.id);
+          const indexB = savedOrder.indexOf(b.id);
+          if (indexA !== -1 && indexB !== -1) return indexA - indexB;
+          if (indexA !== -1) return -1;
+          if (indexB !== -1) return 1;
+          return 0; // Don't sort alphabetically if neither is in the saved order
+        });
+      }
       setRouteClients(mergedClients);
 
       // Check which clients were already visited ON THE ROUTE DATE
@@ -320,6 +410,50 @@ export default function RoutesPage() {
     }
   };
 
+  const saveOrder = async () => {
+    setSavingOrder(true);
+    try {
+      const orderArray = orderedClients.map(c => c.id);
+      const adminId = isAdmin ? userProfile?.uid : userProfile?.adminId;
+      const [y, m, d] = routeDate.split('-').map(Number); const currentDayOfWeek = new Date(y, m - 1, d).getDay().toString();
+      const routeOrderName = 'system_route_order_' + currentDayOfWeek;
+      
+      const { data: jobsSnap } = await supabase.from('oneoffjobs')
+        .select('*')
+        .eq('admin_id', adminId)
+        .eq('employee_id', selectedEmployee)
+        .eq('client_name', routeOrderName);
+        
+      const orderJob = jobsSnap && jobsSnap.length > 0 ? jobsSnap[0] : null;
+      
+      if (orderJob) {
+        await supabase.from('oneoffjobs').update({ notes: JSON.stringify(orderArray) }).eq('id', orderJob.id);
+      } else {
+        await supabase.from('oneoffjobs').insert({
+           admin_id: adminId,
+           employee_id: selectedEmployee,
+           title: routeOrderName,
+           client_name: routeOrderName,
+           client_phone: '00000000000',
+           description: 'Sistema',
+           service_type: 'system',
+           price: 0,
+           date: routeDate,
+           status: 'cancelado',
+           notes: JSON.stringify(orderArray)
+        });
+      }
+      setRouteClients(orderedClients);
+      setIsOrderingMode(false);
+      alert('Ordem da rota salva com sucesso!');
+    } catch(e) {
+       console.error(e);
+       alert('Erro ao salvar ordem.');
+    } finally {
+       setSavingOrder(false);
+    }
+  };
+
   const generatePDF = () => {
     const doc = new jsPDF();
     const employeeName = (isAdmin || isManager)
@@ -398,97 +532,7 @@ export default function RoutesPage() {
     openWaze(addresses[0]);
   };
 
-  const handleOptimizeRoute = async () => {
-    if (routeClients.length === 0) return;
-    setOptimizing(true);
-    
-    try {
-      const geocodedClients = [...routeClients];
-      let userLocation: { lat: number, lng: number } | null = null;
 
-      // Try to get user's current location to start the route
-      try {
-        if (navigator.geolocation) {
-          const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
-            navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000 });
-          });
-          userLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-        }
-      } catch (err) {
-        console.warn("Could not get user location for optimization.");
-      }
-      
-      // Basic Nominatim Geocoding with a small delay to avoid aggressive rate limits 
-      let geocodeCount = 0;
-      for (let i = 0; i < geocodedClients.length; i++) {
-        const c = geocodedClients[i];
-        if (c.address && (!c.lat || !c.lng)) {
-          try {
-            const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=br&q=${encodeURIComponent(c.address)}`;
-            const res = await fetch(url, { headers: { 'Accept-Language': 'pt-BR,pt;q=0.9' } });
-            const data = await res.json();
-            if (data && data.length > 0) {
-               geocodedClients[i].lat = parseFloat(data[0].lat);
-               geocodedClients[i].lng = parseFloat(data[0].lon);
-               geocodeCount++;
-            }
-            await new Promise(r => setTimeout(r, 700)); // Be nice to Nominatim
-          } catch(err) {
-            console.warn("Geocode failed for " + c.address);
-          }
-        } else if (c.lat && c.lng) {
-          geocodeCount++; // Already geocoded
-        }
-      }
-
-      // TSP algorithm (Nearest Neighbor)
-      const clientsWithLocation = geocodedClients.filter(c => c.lat && c.lng);
-      const clientsWithoutLocation = geocodedClients.filter(c => !c.lat || !c.lng);
-
-      if (clientsWithLocation.length > 0) {
-        const sorted = [];
-        let current = userLocation ? userLocation : clientsWithLocation.shift(); 
-        
-        if (!userLocation && current) {
-          sorted.push(current as any);
-        }
-
-        while (clientsWithLocation.length > 0 && current) {
-          let nearestIdx = 0;
-          let minDistance = Infinity;
-
-          for (let i = 0; i < clientsWithLocation.length; i++) {
-             const candidate = clientsWithLocation[i];
-             const d = Math.pow(candidate.lat - current.lat, 2) + Math.pow(candidate.lng - current.lng, 2);
-             if (d < minDistance) {
-                 minDistance = d;
-                 nearestIdx = i;
-             }
-          }
-
-          current = clientsWithLocation.splice(nearestIdx, 1)[0];
-          sorted.push(current);
-        }
-
-        setRouteClients([...sorted, ...clientsWithoutLocation]);
-        
-        const missed = clientsWithoutLocation.length;
-        if (missed > 0) {
-          alert(`Rota otimizada! Nota: ${missed} cliente(s) não puderam ser localizados no mapa com precisão e foram movidos para o final da lista.`);
-        } else {
-          alert("A rota foi otimizada com sucesso com base na proximidade!");
-        }
-      } else {
-        setRouteClients(geocodedClients);
-        alert("Lamentamos, mas não conseguimos localizar os endereços dos clientes no mapa. Use o botão do Google Maps para traçar a rota.");
-      }
-    } catch (err) {
-      console.error(err);
-      alert("Falha ao otimizar rota. Verifique sua conexão.");
-    } finally {
-      setOptimizing(false);
-    }
-  };
 
   const handleShare = async () => {
     const doc = generatePDF();
@@ -624,50 +668,81 @@ export default function RoutesPage() {
       const finalVisitDate = photoDate ? photoDate.toISOString() : new Date().toISOString();
       const activeRouteDate = routeDate || getLocalISODate();
       
-      if (selectedClientForReport.isOneOffJob) {
-        // Avulso Update
-        await supabase.from('oneoffjobs').update({
-          status: needsReturn ? 'em_andamento' : 'concluido',
-          return_date: needsReturn ? returnDate : null,
-          report: reportNotes.trim(),
-          updated_at: finalVisitDate
-        }).eq('id', selectedClientForReport.id);
+      const payload = {
+        adminId,
+        clientId: selectedClientForReport.id,
+        employeeId: (isAdmin || isManager) && selectedEmployee ? selectedEmployee : userProfile.uid,
+        date: finalVisitDate,
+        time: activeRouteDate,
+        notes: reportNotes.trim(),
+        photoUrls: reportPhotos,
+        location: locationData,
+        isOneOffJob: selectedClientForReport.isOneOffJob,
+        needsReturn,
+        returnDate
+      };
+      
+      const handleSaveOffline = () => {
+         const offlineVisits = JSON.parse(localStorage.getItem('offlineVisits') || '[]');
+         offlineVisits.push(payload);
+         localStorage.setItem('offlineVisits', JSON.stringify(offlineVisits));
+         alert("Você está offline ou ocorreu um erro de conexão. A visita foi salva localmente e será sincronizada automaticamente.");
+      };
+
+      if (!navigator.onLine) {
+         handleSaveOffline();
       } else {
-        // Normal Client Visit
-        const { error: insertError } = await supabase.from('visits').insert({
-          admin_id: adminId,
-          client_id: selectedClientForReport.id,
-          employee_id: (isAdmin || isManager) && selectedEmployee ? selectedEmployee : userProfile.uid,
-          date: finalVisitDate,
-          time: activeRouteDate,
-          notes: reportNotes.trim(),
-          photo_urls: reportPhotos,
-          location: locationData
-        });
-        
-        if (insertError) throw insertError;
-
-        // Update client with lastVisitDate
-        await supabase.from('clients').update({
-          last_visit_date: finalVisitDate
-        }).eq('id', selectedClientForReport.id);
-
-        // Cleanup old visits (keep only the 3 most recent)
         try {
-          const { data: visitsData } = await supabase.from('visits')
-            .select('id, date')
-            .eq('client_id', selectedClientForReport.id)
-            .eq('admin_id', adminId)
-            .order('date', { ascending: false });
-          
-          if (visitsData && visitsData.length > 3) {
-            const toDelete = visitsData.slice(3).map(v => v.id);
-            for (const id of toDelete) {
-               await supabase.from('visits').delete().eq('id', id);
+          if (selectedClientForReport.isOneOffJob) {
+            // Avulso Update
+            const { error: oneOffError } = await supabase.from('oneoffjobs').update({
+              status: needsReturn ? 'em_andamento' : 'concluido',
+              return_date: needsReturn ? returnDate : null,
+              report: reportNotes.trim(),
+              updated_at: finalVisitDate
+            }).eq('id', selectedClientForReport.id);
+            if (oneOffError) throw oneOffError;
+          } else {
+            // Normal Client Visit
+            const { error: insertError } = await supabase.from('visits').insert({
+              admin_id: adminId,
+              client_id: selectedClientForReport.id,
+              employee_id: payload.employeeId,
+              date: finalVisitDate,
+              time: activeRouteDate,
+              notes: reportNotes.trim(),
+              photo_urls: reportPhotos,
+              location: locationData
+            });
+            
+            if (insertError) throw insertError;
+
+            // Update client with lastVisitDate
+            await supabase.from('clients').update({
+              last_visit_date: finalVisitDate
+            }).eq('id', selectedClientForReport.id);
+
+            // Cleanup old visits (keep only the 3 most recent)
+            try {
+              const { data: visitsData } = await supabase.from('visits')
+                .select('id, date')
+                .eq('client_id', selectedClientForReport.id)
+                .eq('admin_id', adminId)
+                .order('date', { ascending: false });
+              
+              if (visitsData && visitsData.length > 3) {
+                const toDelete = visitsData.slice(3).map(v => v.id);
+                for (const id of toDelete) {
+                   await supabase.from('visits').delete().eq('id', id);
+                }
+              }
+            } catch (cleanupErr) {
+              console.error("Erro ao limpar visitas antigas:", cleanupErr);
             }
           }
-        } catch (cleanupErr) {
-          console.error("Erro ao limpar visitas antigas:", cleanupErr);
+        } catch (dbError) {
+          console.error("Database error, saving offline:", dbError);
+          handleSaveOffline();
         }
       }
 
@@ -753,7 +828,17 @@ export default function RoutesPage() {
               )}
             </div>
             <div className="flex flex-wrap gap-2">
-              {(isAdmin || isManager) && routeDate > getLocalISODate() && routeClients.length > 0 && (
+              {(isAdmin || isManager) && routeClients.length > 0 && !isOrderingMode && (
+                <button
+                  onClick={() => { setIsOrderingMode(true); setOrderedClients([...routeClients]); }}
+                  className="flex items-center bg-teal-600 text-white px-4 py-2 rounded-lg hover:bg-teal-700 transition-colors"
+                  title="Organizar ordem manualmente"
+                >
+                  <ListOrdered size={18} className="md:mr-2" />
+                  <span className="hidden md:inline">Organizar Rota</span>
+                </button>
+              )}
+              {(isAdmin || isManager) && routeDate > getLocalISODate() && routeClients.length > 0 && !isOrderingMode && (
                 <button
                   onClick={handleAnticipate}
                   disabled={selectedForAnticipation.size === 0 || anticipating}
@@ -763,14 +848,6 @@ export default function RoutesPage() {
                   {anticipating ? 'Processando...' : `Antecipar ${selectedForAnticipation.size > 0 ? `(${selectedForAnticipation.size})` : ''} para Hoje`}
                 </button>
               )}
-              <button
-                onClick={handleOptimizeRoute}
-                disabled={routeClients.length === 0 || optimizing}
-                className="flex items-center bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50"
-                title="Otimizar Rota (TSP)"
-              >
-                {optimizing ? 'Otimizando...' : 'Otimizar Rota'}
-              </button>
               <button
                 onClick={handleOpenGoogleMaps}
                 className="flex items-center bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
@@ -799,12 +876,75 @@ export default function RoutesPage() {
 
           {routeClients.length === 0 ? (
             <p className="text-gray-500 text-center py-8">Nenhum cliente encontrado para esta rota.</p>
+          ) : isOrderingMode ? (
+            <div className="space-y-4">
+              <div className="flex justify-between items-center mb-4 bg-teal-50 p-4 rounded-lg border border-teal-200">
+                <h3 className="font-bold text-teal-800">Modo de Organização</h3>
+                <div className="flex space-x-2">
+                  <button onClick={() => setIsOrderingMode(false)} className="px-4 py-2 text-teal-700 bg-white border border-teal-300 rounded hover:bg-teal-100">
+                    Cancelar
+                  </button>
+                  <button onClick={saveOrder} disabled={savingOrder} className="px-4 py-2 bg-teal-600 text-white rounded hover:bg-teal-700 flex items-center">
+                    <Save size={16} className="mr-2" />
+                    {savingOrder ? 'Salvando...' : 'Salvar Ordem'}
+                  </button>
+                </div>
+              </div>
+              {orderedClients.map((client, index) => (
+                <div 
+                  key={client.id} 
+                  draggable
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData('text/plain', index.toString());
+                    e.currentTarget.style.opacity = '0.5';
+                  }}
+                  onDragEnd={(e) => {
+                    e.currentTarget.style.opacity = '1';
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const sourceIndex = parseInt(e.dataTransfer.getData('text/plain'));
+                    const targetIndex = index;
+                    if (sourceIndex === targetIndex || isNaN(sourceIndex)) return;
+                    
+                    const newArr = [...orderedClients];
+                    const [removed] = newArr.splice(sourceIndex, 1);
+                    newArr.splice(targetIndex, 0, removed);
+                    setOrderedClients(newArr);
+                  }}
+                  className="border rounded-lg p-3 bg-white flex items-center justify-between border-gray-200 cursor-grab active:cursor-grabbing shadow-sm"
+                >
+                  <div className="flex items-center">
+                    <div className="bg-teal-100 text-teal-800 font-bold w-8 h-8 rounded-full flex items-center justify-center mr-4 flex-shrink-0">
+                      {index + 1}
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-gray-800">{client.name}</h3>
+                      <p className="text-sm text-gray-500">{client.address}</p>
+                    </div>
+                  </div>
+                  <div className="flex flex-col space-y-1 opacity-50">
+                    <ListOrdered size={20} className="text-gray-400" />
+                  </div>
+                </div>
+              ))}
+            </div>
           ) : (
             <div className="space-y-4">
               {routeClients.map((client, index) => {
                 const isCompleted = completedVisitsOnRouteDate.has(client.id);
                 const isFutureRoute = routeDate > getLocalISODate();
                 const isSelectedForAnticipation = selectedForAnticipation.has(client.id);
+                
+                const pendingClients = routeClients.filter(c => !completedVisitsOnRouteDate.has(c.id));
+                const activeEmployeeClientId = (!isAdmin && !isManager && pendingClients.length > 0) ? pendingClients[0].id : null;
+
+                if (!isAdmin && !isManager && !isCompleted && client.id !== activeEmployeeClientId) {
+                  return null;
+                }
                 
                 return (
                   <motion.div 

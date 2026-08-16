@@ -162,6 +162,7 @@ export default function Dashboard() {
 
         if (jobsSnap.data) {
           jobsSnap.data.forEach((data: any) => {
+            if (data.client_name === 'system_route_order' || data.title === 'system_route_order') return;
             let isCurrentMonthJob = false;
             let isPendingThisMonth = false;
             let isCompletedThisMonth = false;
