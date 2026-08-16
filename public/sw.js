@@ -1,5 +1,5 @@
-const CACHE_NAME = 'gestao-pro-v2';
-const DATA_CACHE_NAME = 'gestao-pro-data-v2';
+const CACHE_NAME = 'gestao-pro-v3';
+const DATA_CACHE_NAME = 'gestao-pro-data-v3';
 const SYNC_STORE_NAME = 'sync-queue';
 const DB_NAME = 'gestao-pro-sync-db';
 
@@ -112,6 +112,7 @@ self.addEventListener('fetch', (event) => {
 
   if (event.request.url.includes('/supabase.co') || event.request.url.includes('/api/')) {
     if (event.request.method === 'GET') {
+      // Network First for API GET requests
       event.respondWith(
         fetch(event.request)
           .then((response) => {
@@ -151,13 +152,29 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Static assets and general navigation
+  // Navigation requests (index.html) -> Network First
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request).then((networkResponse) => {
+        const responseToCache = networkResponse.clone();
+        caches.open(CACHE_NAME).then((cache) => {
+          cache.put(event.request, responseToCache);
+        });
+        return networkResponse;
+      }).catch(() => {
+        return caches.match(event.request).then((cachedResponse) => {
+          if (cachedResponse) return cachedResponse;
+          return caches.match('/index.html');
+        });
+      })
+    );
+    return;
+  }
+
+  // Static assets (JS, CSS, Images) -> Stale-While-Revalidate
   event.respondWith(
     caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-      return fetch(event.request).then((networkResponse) => {
+      const fetchPromise = fetch(event.request).then((networkResponse) => {
         if (event.request.method === 'GET' && networkResponse && networkResponse.status === 200) {
           const responseToCache = networkResponse.clone();
           caches.open(CACHE_NAME).then((cache) => {
@@ -166,10 +183,9 @@ self.addEventListener('fetch', (event) => {
         }
         return networkResponse;
       }).catch(() => {
-        if (event.request.mode === 'navigate') {
-          return caches.match('/index.html');
-        }
+        // ignore fetch errors for assets if we have cache
       });
+      return cachedResponse || fetchPromise;
     })
   );
 });
