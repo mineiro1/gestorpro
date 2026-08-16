@@ -142,6 +142,8 @@ export default function VisitsHistory() {
     try {
       const { error } = await supabase.from('visits').delete().eq('id', visitToDelete);
       if (error) throw error;
+      
+      setVisits(prev => prev.filter(v => v.id !== visitToDelete));
       setDeleteModalOpen(false);
       setVisitToDelete(null);
     } catch (e: any) {
