@@ -139,6 +139,12 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
+    
+    // Prevent silent SyntaxErrors: Return 404 for missing assets instead of index.html
+    app.get('/assets/*', (req, res) => {
+      res.status(404).send('Asset not found');
+    });
+
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });

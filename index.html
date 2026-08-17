@@ -8,6 +8,24 @@
     <link rel="manifest" href="/manifest.json" />
     <title>GestãoPro</title>
     <script>
+      // Fallback auto-recovery if JS bundle fails to load (PWA cache issue)
+      window.addEventListener('error', function(e) {
+        if (e.target.tagName === 'SCRIPT' && e.target.src.includes('/assets/')) {
+          console.error("Failed to load script, likely a stale cache. Forcing reload...");
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(function(registrations) {
+              for(let registration of registrations) {
+                registration.unregister();
+              }
+            });
+          }
+          if (!sessionStorage.getItem('reloaded_once')) {
+            sessionStorage.setItem('reloaded_once', 'true');
+            window.location.reload(true);
+          }
+        }
+      }, true);
+
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
           navigator.serviceWorker.register('/sw.js').then((registration) => {
