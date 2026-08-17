@@ -149,7 +149,7 @@ export default function ClientPanel() {
         <>
           <div className="bg-gradient-to-r from-primary to-primary-light rounded-xl shadow-lg p-6 text-white flex justify-between items-center">
             <div>
-              <h1 className="text-3xl font-bold mb-2">Olá, {clientData.name.split(' ')[0]}!</h1>
+              <h1 className="text-3xl font-bold mb-2">Olá, {(clientData.name || 'Cliente').split(' ')[0]}!</h1>
               <p className="text-secondary-light">Bem-vindo(a) ao seu painel.</p>
             </div>
           </div>
@@ -267,7 +267,12 @@ export default function ClientPanel() {
             </div>
           </div>
         </>
-      ) : null}
+      ) : (
+        <div className="p-8 text-center text-red-500 font-medium">
+          <p>Erro ao carregar os dados.</p>
+          <p className="text-sm mt-2 text-gray-500">Por favor, atualize a página ou verifique sua conexão.</p>
+        </div>
+      )}
 
       {/* Fullscreen Image Modal */}
       {fullscreenImage && (
