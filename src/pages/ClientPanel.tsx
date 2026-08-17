@@ -11,7 +11,9 @@ export default function ClientPanel() {
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   useAutoRefresh(() => setRefreshTrigger(t => t + 1), 30000);
 
-  const { availableClients, selectedClientId } = useOutletContext<{ availableClients: any[], selectedClientId: string | null }>();
+  const context = useOutletContext<{ availableClients: any[], selectedClientId: string | null }>();
+  const availableClients = context?.availableClients || [];
+  const selectedClientId = context?.selectedClientId || null;
   
   const [clientData, setClientData] = useState<any>(null);
   const [visits, setVisits] = useState<any[]>([]);
