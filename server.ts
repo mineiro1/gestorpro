@@ -85,6 +85,67 @@ async function startServer() {
     }
   });
 
+
+async function processPayment(paymentId, adminId) {
+  try {
+    // Check if already processed
+    const { data: existing } = await supabaseAdmin.from('settings').select('id').eq('id', 'payment_' + paymentId).single();
+    if (existing) {
+      console.log('Payment already processed:', paymentId);
+      return;
+    }
+    
+    // Add 30 days
+    const { data: userData } = await supabaseAdmin.from("users").select("subscription_expires_at").eq("id", adminId).single();
+    let currentExpiry = new Date();
+    if (userData && userData.subscription_expires_at) {
+       const userExpiry = new Date(userData.subscription_expires_at);
+       if (userExpiry > currentExpiry) {
+           currentExpiry = userExpiry;
+       }
+    }
+    currentExpiry.setDate(currentExpiry.getDate() + 30);
+    
+    await supabaseAdmin.from("users").update({
+      subscription_status: 'active',
+      subscription_expires_at: currentExpiry.toISOString(),
+    }).eq('id', adminId);
+    
+    // Mark as processed
+    await supabaseAdmin.from('settings').insert({ id: 'payment_' + paymentId });
+    console.log('Successfully processed payment:', paymentId);
+  } catch (error) {
+    console.error('Error processing payment:', error);
+  }
+}
+
+
+  app.post("/api/sync-payment", async (req, res) => {
+    const { payment_id } = req.body;
+    if (!payment_id) return res.status(400).json({ error: "Missing payment_id" });
+    
+    let mpToken = process.env.MP_ACCESS_TOKEN;
+    if (!mpToken || mpToken.length < 40) {
+      mpToken = "APP_USR-5520671839390863-031622-4f2fede32936291cc0567aebae0a319e-1434591190";
+    }
+    
+    try {
+      const client = new MercadoPagoConfig({ accessToken: mpToken });
+      const paymentDetails = new Payment(client);
+      const paymentInfo = await paymentDetails.get({ id: String(payment_id) });
+      
+      if (paymentInfo.status === "approved" && paymentInfo.external_reference) {
+        await processPayment(paymentInfo.id, paymentInfo.external_reference);
+        return res.json({ success: true });
+      } else {
+        return res.status(400).json({ error: "Payment not approved or missing external_reference" });
+      }
+    } catch (e: any) {
+      console.error(e);
+      return res.status(500).json({ error: e.message });
+    }
+  });
+
   app.post("/api/mp-webhook", async (req, res) => {
     console.log("Received MP Webhook:", req.query, req.body);
     const { "data.id": dataId, type } = req.query;
@@ -110,25 +171,7 @@ async function startServer() {
         if (paymentInfo.status === "approved" && paymentInfo.external_reference) {
           const adminId = paymentInfo.external_reference;
           
-          // Add 30 days to current date
-          
-          const { data: userData } = await supabaseAdmin.from("users").select("subscription_expires_at").eq("id", adminId).single();
-          let currentExpiry = new Date();
-          if (userData && userData.subscription_expires_at) {
-             const userExpiry = new Date(userData.subscription_expires_at);
-             if (userExpiry > currentExpiry) {
-                 currentExpiry = userExpiry;
-             }
-          }
-          currentExpiry.setDate(currentExpiry.getDate() + 30);
-          
-          await supabaseAdmin.from("users").update({
-
-            subscription_status: 'active',
-            subscription_expires_at: currentExpiry.toISOString(),
-          }).eq('id', adminId);
-
-          console.log(`Subscription activated for adminId: ${adminId}`);
+          await processPayment(paymentInfo.id, adminId);
         }
       } catch (error) {
         console.error("Webhook processing error:", error);

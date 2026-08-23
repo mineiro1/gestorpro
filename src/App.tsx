@@ -39,6 +39,29 @@ const ProtectedRoute = ({ children, allowedRoles }: { children: React.ReactNode,
 };
 
 export default function App() {
+
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const paymentId = params.get('payment_id');
+    const status = params.get('status');
+    
+    if (paymentId && status === 'approved') {
+      console.log('Payment returned, syncing...');
+      fetch('/api/sync-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payment_id: paymentId })
+      }).then(res => res.json()).then(data => {
+        if (data.success) {
+          // Remove query params
+          window.history.replaceState({}, document.title, window.location.pathname);
+          // Reload to fetch new subscription state
+          window.location.reload();
+        }
+      }).catch(err => console.error('Failed to sync payment:', err));
+    }
+  }, []);
+  
   return (
     <AuthProvider>
       <Router>
