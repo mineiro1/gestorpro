@@ -260,7 +260,14 @@ export default function Dashboard() {
   const handlePay = async () => {
     try {
       let price = 99.90;
-      // You may use settings table here
+      try {
+        const { data } = await supabase.from('settings').select('*').eq('id', 'platform').single();
+        if (data && data.monthlyprice) {
+          price = data.monthlyprice;
+        }
+      } catch (e) {
+        console.error('Failed to get price', e);
+      }
       const response = await fetch('/api/create-preference', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
