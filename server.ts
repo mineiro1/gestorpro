@@ -171,9 +171,12 @@ async function processPayment(paymentId, adminId) {
 
   app.post("/api/mp-webhook", async (req, res) => {
     console.log("Received MP Webhook:", req.query, req.body);
-    const { "data.id": dataId, type } = req.query;
+    let dataId = req.query["data.id"] || req.query.id || (req.body && req.body.data && req.body.data.id) || (req.body && req.body.id);
+    let type = req.query.type || req.query.topic || (req.body && req.body.type) || (req.body && req.body.topic) || (req.body && req.body.action);
+    
+    console.log("Extracted Webhook Data - type:", type, "dataId:", dataId);
 
-    if (type === "payment" && dataId) {
+    if ((type === "payment" || type === "payment.created" || type === "payment.updated") && dataId) {
       let mpToken = process.env.MP_ACCESS_TOKEN;
       if (!mpToken || mpToken.length < 40) {
         mpToken = "APP_USR-5520671839390863-031622-4f2fede32936291cc0567aebae0a319e-1434591190";
