@@ -32,6 +32,19 @@ async function startServer() {
   });
 
   // API Routes
+  app.get("/api/test-db", async (req, res) => {
+    try {
+      // test if we can read users without auth
+      const { data, error } = await supabaseAdmin.from("users").select("id").limit(1);
+      if (error) {
+         return res.json({ status: "error", message: error.message, code: error.code, usingServiceKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY });
+      }
+      return res.json({ status: "success", rows: data.length, usingServiceKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY });
+    } catch(e) {
+      return res.json({ status: "exception", message: e.message });
+    }
+  });
+
   app.post("/api/create-preference", async (req, res) => {
     try {
       const { title, price, quantity, adminId, email, origin } = req.body;
@@ -157,6 +170,7 @@ async function processPayment(paymentId, adminId) {
       const paymentDetails = new Payment(client);
       const paymentInfo = await paymentDetails.get({ id: String(payment_id) });
       
+      console.log("Sync Info:", paymentInfo.status, paymentInfo.external_reference);
       if (paymentInfo.status === "approved" && paymentInfo.external_reference) {
         await processPayment(paymentInfo.id, paymentInfo.external_reference);
         return res.json({ success: true });
