@@ -33,7 +33,7 @@ export default function SubscriptionWall() {
           title: 'Assinatura Mensal - GestãoPro',
           price: price,
           quantity: 1,
-          adminId: userProfile?.adminId,
+          adminId: userProfile?.role === 'admin' ? userProfile?.uid : userProfile?.adminId,
           email: userProfile?.email || 'admin@gestaopro.com'
         })
       });
@@ -81,14 +81,24 @@ export default function SubscriptionWall() {
         </p>
 
         {userProfile?.role === 'admin' && (
-          <button
-            onClick={() => window.open('https://wa.me/5567992499469', '_blank')}
-            disabled={loading}
-            className="w-full flex justify-center items-center bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors mb-4 disabled:opacity-50"
-          >
-            <MessageCircle className="mr-2" size={20} />
-            Contato
-          </button>
+          <div className="flex flex-col gap-3 mb-4">
+            <button
+              onClick={handlePay}
+              disabled={loading}
+              className="w-full flex justify-center items-center bg-primary text-white py-3 rounded-lg font-semibold hover:bg-primary/90 transition-colors disabled:opacity-50"
+            >
+              <CreditCard className="mr-2" size={20} />
+              {loading ? 'Processando...' : 'Pagar Assinatura'}
+            </button>
+            <button
+              onClick={() => window.open('https://wa.me/5567992499469', '_blank')}
+              disabled={loading}
+              className="w-full flex justify-center items-center bg-gray-100 text-gray-700 border border-gray-200 py-3 rounded-lg font-semibold hover:bg-gray-200 transition-colors disabled:opacity-50"
+            >
+              <MessageCircle className="mr-2" size={20} />
+              Contato (Suporte)
+            </button>
+          </div>
         )}
 
         <button

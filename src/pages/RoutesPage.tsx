@@ -2,21 +2,20 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { jsPDF } from 'jspdf';
-import { Share2, FileText, Map, Camera, CheckCircle, MapPin, Image as ImageIcon, ArrowUp, ArrowDown, Save, ListOrdered } from 'lucide-react';
+import { Share2, FileText, Map, Camera, CheckCircle, MapPin, Image as ImageIcon, ArrowUp, ArrowDown, Save, ListOrdered, Search } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { openMap, openRouteMap, openWaze } from '../lib/maps';
 import EmployeeMap from '../components/EmployeeMap';
 import exifr from 'exifr';
 
-import { useAutoRefresh } from '../hooks/useAutoRefresh';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
 const DAYS_OF_WEEK = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 
 export default function RoutesPage() {
   const { userProfile, isAdmin, isManager } = useAuth();
   
-  const [refreshTrigger, setRefreshTrigger] = useState(0);
-  useAutoRefresh(() => setRefreshTrigger(t => t + 1), 15000); // 15s refresh
+  const queryClient = useQueryClient();
 
   const [employees, setEmployees] = useState<any[]>([]);
   const [selectedEmployee, setSelectedEmployee] = useState('');
@@ -28,11 +27,12 @@ export default function RoutesPage() {
   };
 
   const [routeDate, setRouteDate] = useState(getLocalISODate());
-  const [routeClients, setRouteClients] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
+
   const [generated, setGenerated] = useState(false);
 
   const [highlightedClientId, setHighlightedClientId] = useState<string | null>(null);
+
+  const [searchTerm, setSearchTerm] = useState('');
 
   // Anticipation state
   const [selectedForAnticipation, setSelectedForAnticipation] = useState<Set<string>>(new Set());
@@ -45,7 +45,8 @@ export default function RoutesPage() {
   const [reportPhotos, setReportPhotos] = useState<string[]>([]);
   const [photoDate, setPhotoDate] = useState<Date | null>(null);
   const [submittingReport, setSubmittingReport] = useState(false);
-  const [completedVisitsOnRouteDate, setCompletedVisitsOnRouteDate] = useState<Set<string>>(new Set());
+  const [confirmSendReportPopupOpen, setConfirmSendReportPopupOpen] = useState(false);
+
   
   // Specific for One-Off Jobs (Avulsos)
   const [needsReturn, setNeedsReturn] = useState(false);
@@ -162,116 +163,12 @@ export default function RoutesPage() {
     }
   }, [isAdmin, isManager, userProfile]);
 
-  useEffect(() => {
-    if (!generated || !userProfile || !routeDate) return;
-
-    const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
-    if (!routeDate) return;
-    const [year, month, day] = routeDate.split('-').map(Number);
-    const start = new Date(year, month - 1, day, 0, 0, 0);
-    const end = new Date(year, month - 1, day, 23, 59, 59, 999);
-    const routeDateStart = start.toISOString();
-    const routeDateEnd = end.toISOString();
-
-    const fetchStatus = async () => {
-      try {
-        const activeRouteDate = routeDate || getLocalISODate();
-        const { data: visitsByTime } = await supabase.from('visits')
-          .select('client_id, date')
-          .eq('admin_id', adminId)
-          .eq('time', activeRouteDate);
-          
-        const { data: visitsByDate } = await supabase.from('visits')
-          .select('client_id, date')
-          .eq('admin_id', adminId)
-          .gte('date', routeDateStart)
-          .lte('date', routeDateEnd);
-          
-        const { data: visitsByCreated } = await supabase.from('visits')
-          .select('client_id, date')
-          .eq('admin_id', adminId)
-          .gte('created_at', routeDateStart)
-          .lte('created_at', routeDateEnd);
-          
-        const visitsData = [...(visitsByTime || []), ...(visitsByDate || []), ...(visitsByCreated || [])];
-        
-        let jobsQuery = supabase.from('oneoffjobs').select('*').eq('admin_id', adminId);
-        if (!isAdmin && !isManager) {
-          jobsQuery = jobsQuery.eq('employee_id', userProfile.uid);
-        }
-        const { data: jobsData } = await jobsQuery;
-
-        setCompletedVisitsOnRouteDate(prev => {
-          const next = new Set(prev);
-          if (visitsData) {
-            visitsData.forEach(data => {
-              if (data.date) {
-                next.add(data.client_id);
-              }
-            });
-          }
-          if (jobsData) {
-            jobsData.forEach(job => {
-              const updatedAtDate = job.updated_at ? new Date(job.updated_at) : null;
-              const ds = new Date(routeDateStart);
-              const de = new Date(routeDateEnd);
-              const updatedToday = updatedAtDate && updatedAtDate >= ds && updatedAtDate <= de;
-              
-              if (job.status === 'concluido' || (job.status === 'em_andamento' && updatedToday)) {
-                if ((job.date && job.date.startsWith(routeDate) && job.status !== 'pendente') || (job.return_date && job.return_date.startsWith(routeDate) && job.status === 'concluido') || updatedToday) {
-                   next.add(job.id);
-                }
-              }
-            });
-          }
-          return next;
-        });
-      } catch (err) {
-        console.error(err);
-      }
-    };
-
-    fetchStatus();
-
-    const channel1 = supabase.channel('routes-visits')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'visits', filter: `admin_id=eq.${adminId}` }, fetchStatus)
-      .subscribe();
-
-    let jobFilter = `admin_id=eq.${adminId}`;
-    if (!isAdmin && !isManager) jobFilter += `&employee_id=eq.${userProfile.uid}`;
-
-    const channel2 = supabase.channel('routes-jobs')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'oneoffjobs', filter: jobFilter }, (payload) => {
-        fetchStatus();
-        if (payload.new && (payload.new as any).client_name && (payload.new as any).client_name.startsWith('system_route_order_')) {
-          if (!isAdmin) {
-             setRouteOrderChanged(true);
-          }
-        }
-      })
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel1);
-      supabase.removeChannel(channel2);
-    };
-  }, [generated, routeDate, userProfile, isAdmin, refreshTrigger]);
-
-  // Auto-refresh the route if it's already generated
-  useEffect(() => {
-    if (generated) {
-      handleGenerateRoute(true);
-    }
-  }, [refreshTrigger]);
-
-  const handleGenerateRoute = async (silent = false) => {
-    if (!selectedEmployee || (!selectedDay && !routeDate) || !userProfile) return;
-    if (!silent) {
-      setLoading(true);
-      setGenerated(false);
-    }
-
-    try {
+  
+  const { data: queryData, isLoading, refetch } = useQuery({
+    queryKey: ['routeData', routeDate, selectedEmployee, selectedDay, userProfile?.uid, generated],
+    enabled: generated && !!userProfile && !!routeDate && !!selectedEmployee,
+    refetchInterval: 15000, // Substitui o autoRefresh manual
+    queryFn: async () => {
       const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
       
       const { data: clientsDataAPI, error: cErr } = await supabase.from('clients')
@@ -311,7 +208,7 @@ export default function RoutesPage() {
       const [y, m, d] = routeDate.split('-').map(Number); const currentDayOfWeek = new Date(y, m - 1, d).getDay().toString();
       const routeOrderName = 'system_route_order_' + currentDayOfWeek;
       const orderJob = jobsSnap?.find(job => job.client_name === routeOrderName);
-      let savedOrder: string[] = [];
+      let savedOrder = [];
       if (orderJob && orderJob.description) {
         try { savedOrder = JSON.parse(orderJob.description); } catch(e) {}
       }
@@ -332,10 +229,9 @@ export default function RoutesPage() {
           if (indexA !== -1 && indexB !== -1) return indexA - indexB;
           if (indexA !== -1) return -1;
           if (indexB !== -1) return 1;
-          return 0; // Don't sort alphabetically if neither is in the saved order
+          return 0;
         });
       }
-      setRouteClients(mergedClients);
 
       // Check which clients were already visited ON THE ROUTE DATE
       const activeRouteDate = routeDate || getLocalISODate();
@@ -364,14 +260,13 @@ export default function RoutesPage() {
         
       const visitsSnap = [...(visitsByTime || []), ...(visitsByDate || []), ...(visitsByCreated || [])];
         
-      const completedIds = new Set<string>();
+      const completedIds = new Set();
       if (visitsSnap) {
         visitsSnap.forEach(data => {
             completedIds.add(data.client_id);
         });
       }
       
-      // Add one-off jobs that are completed or already handled for this route date
       filteredJobs.forEach(job => {
         const updatedAtDate = job.updated_at ? new Date(job.updated_at) : null;
         const routeDateStart = new Date(routeDateStartStr);
@@ -383,16 +278,46 @@ export default function RoutesPage() {
             }
         }
       });
-
-      setCompletedVisitsOnRouteDate(completedIds);
-
-      setGenerated(true);
-      setSelectedForAnticipation(new Set());
-    } catch (error) {
-      console.error(error);
-    } finally {
-      setLoading(false);
+      
+      return { clients: mergedClients, completed: completedIds };
     }
+  });
+
+  const routeClients = queryData?.clients || [];
+  const completedVisitsOnRouteDate = queryData?.completed || new Set();
+
+  useEffect(() => {
+    if (!generated || !userProfile || !routeDate) return;
+    const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
+    let jobFilter = `admin_id=eq.${adminId}`;
+    if (!isAdmin && !isManager) jobFilter += `&employee_id=eq.${userProfile.uid}`;
+
+    const channel1 = supabase.channel('routes-visits')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'visits', filter: `admin_id=eq.${adminId}` }, () => refetch())
+      .subscribe();
+
+    const channel2 = supabase.channel('routes-jobs')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'oneoffjobs', filter: jobFilter }, (payload) => {
+        refetch();
+        if (payload.new && (payload.new as any).client_name && (payload.new as any).client_name.startsWith('system_route_order_')) {
+          if (!isAdmin) setRouteOrderChanged(true);
+        }
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel1);
+      supabase.removeChannel(channel2);
+    };
+  }, [generated, routeDate, userProfile, isAdmin]);
+
+
+  
+
+  
+  const handleGenerateRoute = () => {
+    if (!selectedEmployee || (!selectedDay && !routeDate) || !userProfile) return;
+    setGenerated(true);
   };
 
   const handleAnticipate = async () => {
@@ -466,7 +391,10 @@ export default function RoutesPage() {
         });
         if (error) throw error;
       }
-      setRouteClients(orderedClients);
+      queryClient.setQueryData(['routeData', routeDate, selectedEmployee, selectedDay, userProfile?.uid, generated], (old: any) => {
+        if (!old) return old;
+        return { ...old, clients: orderedClients };
+      });
       setIsOrderingMode(false);
       alert('Ordem da rota salva com sucesso!');
     } catch(e) {
@@ -671,7 +599,24 @@ export default function RoutesPage() {
   const handleSubmitReport = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedClientForReport || !userProfile || !reportNotes.trim()) return;
-    
+    setConfirmSendReportPopupOpen(true);
+  };
+
+  const processReportSubmission = async (sendWhatsApp: boolean) => {
+    if (sendWhatsApp) {
+      if (selectedClientForReport?.phone) {
+        const clientName = selectedClientForReport.name;
+        const clientPhone = selectedClientForReport.phone;
+        const message = `Olá ${clientName},\n\nO atendimento da sua piscina foi finalizado! Você pode acessar o nosso painel para acompanhar todas as informações do tratamento.\n\nAcesse: https://www.zapmass.app.br/client-panel\nLogin: ${clientPhone}\nSenha: ${clientPhone}`;
+        const phoneFormatted = clientPhone.replace(/\D/g, '');
+        const whatsappUrl = `https://wa.me/55${phoneFormatted}?text=${encodeURIComponent(message)}`;
+        window.open(whatsappUrl, '_blank');
+      } else {
+        alert('Este cliente não possui um número de telefone cadastrado para o envio do WhatsApp.');
+      }
+    }
+
+    setConfirmSendReportPopupOpen(false);
     setSubmittingReport(true);
     
     let locationData = null;
@@ -770,7 +715,15 @@ export default function RoutesPage() {
       }
 
       // Update local state to mark as completed
-      setCompletedVisitsOnRouteDate(prev => new Set(prev).add(selectedClientForReport.id));
+      
+      queryClient.setQueryData(['routeData', routeDate, selectedEmployee, selectedDay, userProfile?.uid, generated], (old: any) => {
+        if (!old) return old;
+        const nextSet = new Set(old.completed);
+        nextSet.add(selectedClientForReport.id);
+        return { ...old, completed: nextSet };
+      });
+      queryClient.invalidateQueries({ queryKey: ['routeData'] });
+
       
       setReportModalOpen(false);
       setSelectedClientForReport(null);
@@ -830,10 +783,10 @@ export default function RoutesPage() {
 
         <button
           onClick={handleGenerateRoute}
-          disabled={!selectedEmployee || (!selectedDay && !routeDate) || loading}
+          disabled={!selectedEmployee || (!selectedDay && !routeDate) || isLoading}
           className="w-full md:w-auto bg-primary text-white px-6 py-2 rounded-lg font-semibold hover:bg-primary-light transition-colors disabled:opacity-50"
         >
-          {loading ? 'Gerando...' : 'Gerar Rota'}
+          {isLoading ? 'Gerando...' : 'Gerar Rota'}
         </button>
       </div>
 
@@ -915,6 +868,19 @@ export default function RoutesPage() {
             </div>
           </div>
 
+          {!isOrderingMode && routeClients.length > 0 && (
+            <div className="mb-6 relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={20} />
+              <input
+                type="text"
+                placeholder="Buscar cliente por nome ou endereço..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none shadow-sm"
+              />
+            </div>
+          )}
+
           {routeClients.length === 0 ? (
             <p className="text-gray-500 text-center py-8">Nenhum cliente encontrado para esta rota.</p>
           ) : isOrderingMode ? (
@@ -976,16 +942,13 @@ export default function RoutesPage() {
           ) : (
             <div className="space-y-4">
               {routeClients.map((client, index) => {
+                if (searchTerm && !client.name?.toLowerCase().includes(searchTerm.toLowerCase()) && !client.address?.toLowerCase().includes(searchTerm.toLowerCase())) {
+                  return null;
+                }
+
                 const isCompleted = completedVisitsOnRouteDate.has(client.id);
                 const isFutureRoute = routeDate > getLocalISODate();
                 const isSelectedForAnticipation = selectedForAnticipation.has(client.id);
-                
-                const pendingClients = routeClients.filter(c => !completedVisitsOnRouteDate.has(c.id));
-                const activeEmployeeClientId = (!isAdmin && !isManager && pendingClients.length > 0) ? pendingClients[0].id : null;
-
-                if (!isAdmin && !isManager && !isCompleted && client.id !== activeEmployeeClientId) {
-                  return null;
-                }
                 
                 return (
                   <motion.div 
@@ -1246,6 +1209,35 @@ export default function RoutesPage() {
           </div>
         </div>
       )}
+
+      {/* Confirm Send Report Popup */}
+      {confirmSendReportPopupOpen && (
+        <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl p-6 max-w-sm w-full shadow-2xl">
+            <h3 className="text-xl font-bold text-gray-900 mb-2">Enviar Relatório?</h3>
+            <p className="text-gray-600 mb-6">
+              Deseja enviar o relatório para o cliente?
+            </p>
+            <div className="flex justify-end space-x-3">
+              <button
+                type="button"
+                onClick={() => processReportSubmission(false)}
+                className="px-6 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 transition-colors font-medium"
+              >
+                Não
+              </button>
+              <button
+                type="button"
+                onClick={() => processReportSubmission(true)}
+                className="px-6 py-2 bg-primary text-white rounded-lg hover:bg-primary-light transition-colors font-medium"
+              >
+                Sim
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

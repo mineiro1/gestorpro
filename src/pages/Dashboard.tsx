@@ -268,7 +268,7 @@ export default function Dashboard() {
           title: 'Assinatura Mensal - GestãoPro',
           price: price,
           quantity: 1,
-          adminId: userProfile?.adminId,
+          adminId: userProfile?.role === 'admin' ? userProfile?.uid : userProfile?.adminId,
           email: userProfile?.email || 'admin@gestaopro.com'
         })
       });
@@ -314,17 +314,26 @@ export default function Dashboard() {
             <div>
               <h3 className="font-bold text-yellow-800">Você está no período de teste (7 dias)</h3>
               <p className="text-sm text-yellow-700">
-                Evite a interrupção do serviço. Assine agora e garanta acesso contínuo. Clique no botao contato.
+                Evite a interrupção do serviço. Assine agora e garanta acesso contínuo para sua empresa.
               </p>
             </div>
           </div>
-          <button
-            onClick={() => window.open('https://wa.me/5567992499469', '_blank')}
-            className="w-full sm:w-auto px-6 py-2 bg-yellow-500 hover:bg-yellow-600 text-white font-semibold rounded-lg shadow-sm transition-colors flex items-center justify-center whitespace-nowrap"
-          >
-            <MessageCircle size={18} className="mr-2" />
-            Contato
-          </button>
+          <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto mt-4 sm:mt-0">
+            <button
+              onClick={() => window.open('https://wa.me/5567992499469', '_blank')}
+              className="px-6 py-2 bg-yellow-100 text-yellow-800 hover:bg-yellow-200 border border-yellow-300 font-semibold rounded-lg shadow-sm transition-colors flex items-center justify-center whitespace-nowrap"
+            >
+              <MessageCircle size={18} className="mr-2" />
+              Contato
+            </button>
+            <button
+              onClick={handlePay}
+              className="px-6 py-2 bg-yellow-500 hover:bg-yellow-600 text-white font-semibold rounded-lg shadow-sm transition-colors flex items-center justify-center whitespace-nowrap"
+            >
+              <CreditCard size={18} className="mr-2" />
+              Assinar Agora
+            </button>
+          </div>
         </div>
       )}
 

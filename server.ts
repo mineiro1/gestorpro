@@ -111,12 +111,21 @@ async function startServer() {
           const adminId = paymentInfo.external_reference;
           
           // Add 30 days to current date
-          const newExpiry = new Date();
-          newExpiry.setDate(newExpiry.getDate() + 30);
-
+          
+          const { data: userData } = await supabaseAdmin.from("users").select("subscription_expires_at").eq("id", adminId).single();
+          let currentExpiry = new Date();
+          if (userData && userData.subscription_expires_at) {
+             const userExpiry = new Date(userData.subscription_expires_at);
+             if (userExpiry > currentExpiry) {
+                 currentExpiry = userExpiry;
+             }
+          }
+          currentExpiry.setDate(currentExpiry.getDate() + 30);
+          
           await supabaseAdmin.from("users").update({
+
             subscription_status: 'active',
-            subscription_expires_at: newExpiry.toISOString(),
+            subscription_expires_at: currentExpiry.toISOString(),
           }).eq('id', adminId);
 
           console.log(`Subscription activated for adminId: ${adminId}`);

@@ -778,8 +778,7 @@ export default function Billing() {
                           className="flex items-center px-4 py-2 rounded-lg transition-colors font-semibold shadow-sm border bg-green-50 text-green-700 border-green-200 hover:bg-green-100"
                           title="Registrar Pagamento"
                         >
-                          <DollarSign size={18} className="mr-2" />
-                          Registrar
+                          <DollarSign size={18} />
                         </button>
                         <button
                           onClick={() => handleSendWhatsApp(client)}
@@ -790,7 +789,7 @@ export default function Billing() {
                           }`}
                         >
                           <MessageCircle size={18} className="mr-2" />
-                          {client.status === 'delayed' ? 'Cobrar agora' : 'Mandar Lembrete'}
+                          {client.status === 'delayed' ? 'Cobrar' : 'Lembrete'}
                         </button>
                       </>
                     )}
