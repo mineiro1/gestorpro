@@ -34,7 +34,7 @@ async function startServer() {
   // API Routes
   app.post("/api/create-preference", async (req, res) => {
     try {
-      const { title, price, quantity, adminId, email } = req.body;
+      const { title, price, quantity, adminId, email, origin } = req.body;
 
       let mpToken = process.env.MP_ACCESS_TOKEN;
       if (!mpToken || mpToken.length < 40) {
@@ -67,12 +67,12 @@ async function startServer() {
           },
           external_reference: adminId, // We use this to identify the user on webhook
           back_urls: {
-            success: `${process.env.PUBLIC_URL || req.headers.origin || 'https://gestaopro.com'}/`,
-            failure: `${process.env.PUBLIC_URL || req.headers.origin || 'https://gestaopro.com'}/`,
-            pending: `${process.env.PUBLIC_URL || req.headers.origin || 'https://gestaopro.com'}/`
+            success: `${(process.env.PUBLIC_URL || origin || req.headers.origin || 'https://gestaopro.com')}/`,
+            failure: `${(process.env.PUBLIC_URL || origin || req.headers.origin || 'https://gestaopro.com')}/`,
+            pending: `${(process.env.PUBLIC_URL || origin || req.headers.origin || 'https://gestaopro.com')}/`
           },
           auto_return: "approved",
-          notification_url: `${process.env.PUBLIC_URL || req.headers.origin || 'https://gestaopro.com'}/api/mp-webhook`
+          notification_url: `${(process.env.PUBLIC_URL || origin || req.headers.origin || 'https://gestaopro.com')}/api/mp-webhook`
         }
       });
 
@@ -88,15 +88,26 @@ async function startServer() {
 
 async function processPayment(paymentId, adminId) {
   try {
+    console.log('Processing payment:', paymentId, 'for admin:', adminId);
     // Check if already processed
-    const { data: existing } = await supabaseAdmin.from('settings').select('id').eq('id', 'payment_' + paymentId).single();
+    const { data: existing, error: selError } = await supabaseAdmin.from('settings').select('id').eq('id', 'payment_' + paymentId).single();
+    if (selError && selError.code !== 'PGRST116') {
+        console.error('Error checking existing payment (Possible RLS issue):', selError);
+        throw new Error("Failed to check existing payment: " + selError.message);
+    }
+    
     if (existing) {
       console.log('Payment already processed:', paymentId);
       return;
     }
     
-    // Add 30 days
-    const { data: userData } = await supabaseAdmin.from("users").select("subscription_expires_at").eq("id", adminId).single();
+    // Get user
+    const { data: userData, error: userError } = await supabaseAdmin.from("users").select("subscription_expires_at").eq("id", adminId).single();
+    if (userError) {
+       console.error('Error fetching user (Possible RLS issue):', userError);
+       throw new Error("Failed to fetch user: " + userError.message);
+    }
+
     let currentExpiry = new Date();
     if (userData && userData.subscription_expires_at) {
        const userExpiry = new Date(userData.subscription_expires_at);
@@ -106,16 +117,28 @@ async function processPayment(paymentId, adminId) {
     }
     currentExpiry.setDate(currentExpiry.getDate() + 30);
     
-    await supabaseAdmin.from("users").update({
+    // Update user
+    const { error: updateError } = await supabaseAdmin.from("users").update({
       subscription_status: 'active',
       subscription_expires_at: currentExpiry.toISOString(),
     }).eq('id', adminId);
+
+    if (updateError) {
+        console.error('Error updating user (Possible RLS issue):', updateError);
+        throw new Error("Failed to update user: " + updateError.message);
+    }
     
     // Mark as processed
-    await supabaseAdmin.from('settings').insert({ id: 'payment_' + paymentId });
+    const { error: insError } = await supabaseAdmin.from('settings').insert({ id: 'payment_' + paymentId });
+    if (insError) {
+        console.error('Error inserting settings (Possible RLS issue):', insError);
+        throw new Error("Failed to insert payment record: " + insError.message);
+    }
+    
     console.log('Successfully processed payment:', paymentId);
   } catch (error) {
-    console.error('Error processing payment:', error);
+    console.error('Critical Error processing payment:', error);
+    throw error;
   }
 }
 

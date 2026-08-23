@@ -276,7 +276,8 @@ export default function Dashboard() {
           price: price,
           quantity: 1,
           adminId: userProfile?.role === 'admin' ? userProfile?.uid : userProfile?.adminId,
-          email: userProfile?.email || 'admin@gestaopro.com'
+          email: userProfile?.email || 'admin@gestaopro.com',
+          origin: window.location.origin
         })
       });
 
