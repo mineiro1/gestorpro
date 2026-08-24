@@ -1,7 +1,7 @@
-const { MercadoPagoConfig, Payment } = require("mercadopago");
-const { createClient } = require("@supabase/supabase-js");
+import { MercadoPagoConfig, Payment } from "mercadopago";
+import { createClient } from "@supabase/supabase-js";
 
-module.exports = async function handler(req, res) {
+export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed. Use POST.' });
   }
@@ -29,7 +29,7 @@ module.exports = async function handler(req, res) {
   }
   
   res.status(200).send("OK");
-};
+}
 
 async function processPayment(paymentId, adminId) {
   const supabaseUrl = process.env.VITE_SUPABASE_URL || '';

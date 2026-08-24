@@ -1,13 +1,16 @@
-const { MercadoPagoConfig, Payment } = require("mercadopago");
-const { createClient } = require("@supabase/supabase-js");
-module.exports = async function handler(req, res) {
+import { MercadoPagoConfig, Payment } from "mercadopago";
+import { createClient } from "@supabase/supabase-js";
+
+export default async function handler(req, res) {
   try {
     const payment_id = req.body?.payment_id || req.query?.payment_id || req.query?.id;
     if (!payment_id) return res.status(400).json({ error: "Missing payment_id" });
+    
     let mpToken = process.env.MP_ACCESS_TOKEN || "APP_USR-5520671839390863-031622-4f2fede32936291cc0567aebae0a319e-1434591190";
     const client = new MercadoPagoConfig({ accessToken: mpToken });
     const paymentDetails = new Payment(client);
     const paymentInfo = await paymentDetails.get({ id: String(payment_id) });
+    
     if (paymentInfo.status === "approved" && paymentInfo.external_reference) {
       const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
       const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
@@ -33,4 +36,4 @@ module.exports = async function handler(req, res) {
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
-};
+}

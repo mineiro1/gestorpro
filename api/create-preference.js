@@ -1,11 +1,13 @@
-const { MercadoPagoConfig, Preference } = require("mercadopago");
-module.exports = async function handler(req, res) {
+import { MercadoPagoConfig, Preference } from "mercadopago";
+
+export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Use POST' });
   try {
     const { title, price, quantity, adminId, email, origin } = req.body || {};
     let mpToken = process.env.MP_ACCESS_TOKEN || "APP_USR-5520671839390863-031622-4f2fede32936291cc0567aebae0a319e-1434591190";
     const client = new MercadoPagoConfig({ accessToken: mpToken });
     const preference = new Preference(client);
+    
     const response = await preference.create({
       body: {
         items: [{ id: "subscription_monthly", title: title || "Subscription", quantity: quantity || 1, unit_price: Number(price) || 0, currency_id: "BRL" }],
@@ -24,4 +26,4 @@ module.exports = async function handler(req, res) {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
-};
+}
