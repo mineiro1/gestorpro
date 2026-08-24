@@ -1,5 +1,5 @@
-const CACHE_NAME = 'gestao-pro-v3';
-const DATA_CACHE_NAME = 'gestao-pro-data-v3';
+const CACHE_NAME = 'gestao-pro-v4';
+const DATA_CACHE_NAME = 'gestao-pro-data-v4';
 const SYNC_STORE_NAME = 'sync-queue';
 const DB_NAME = 'gestao-pro-sync-db';
 
@@ -189,3 +189,4 @@ self.addEventListener('fetch', (event) => {
     })
   );
 });
+console.log('SW Updated to v4');
