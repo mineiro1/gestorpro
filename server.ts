@@ -27,7 +27,7 @@ async function startServer() {
   app.use(express.json());
 
   app.use((req, res, next) => {
-    fs.appendFileSync('mp-debug.log', `[${req.method}] ${req.url}\n`);
+    console.log(`[${req.method}] ${req.url}`);
     next();
   });
 
@@ -89,11 +89,11 @@ async function startServer() {
         }
       });
 
-      fs.appendFileSync('mp-debug.log', `Success: ${response.id}\n`);
+      console.log(`Success: ${response.id}`);
       res.json({ id: response.id, init_point: response.init_point });
     } catch (error: any) {
       console.error(error);
-      fs.appendFileSync('mp-debug.log', `Error: ${error?.message || JSON.stringify(error)}\n`);
+      console.log(`Error: ${error?.message || JSON.stringify(error)}`);
       res.status(500).json({ error: error?.message || "Failed to create preference" });
     }
   });
@@ -131,10 +131,14 @@ async function processPayment(paymentId, adminId) {
     currentExpiry.setDate(currentExpiry.getDate() + 30);
     
     // Update user
-    const { error: updateError } = await supabaseAdmin.from("users").update({
+    const { data: updateData, error: updateError } = await supabaseAdmin.from("users").update({
       subscription_status: 'active',
       subscription_expires_at: currentExpiry.toISOString(),
-    }).eq('id', adminId);
+    }).eq('id', adminId).select();
+    
+    if (!updateError && (!updateData || updateData.length === 0)) {
+        throw new Error("Update silent failure: Check if SUPABASE_SERVICE_ROLE_KEY is valid. RLS might have blocked the update.");
+    }
 
     if (updateError) {
         console.error('Error updating user (Possible RLS issue):', updateError);
@@ -156,8 +160,8 @@ async function processPayment(paymentId, adminId) {
 }
 
 
-  app.post("/api/sync-payment", async (req, res) => {
-    const { payment_id } = req.body;
+  app.all("/api/sync-payment", async (req, res) => {
+    const payment_id = req.body?.payment_id || req.query?.payment_id || req.query?.id;
     if (!payment_id) return res.status(400).json({ error: "Missing payment_id" });
     
     let mpToken = process.env.MP_ACCESS_TOKEN;
