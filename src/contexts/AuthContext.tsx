@@ -25,6 +25,9 @@ export interface UserProfile {
     evolutionApiUrl?: string;
     evolutionApiKey?: string;
     evolutionInstanceName?: string;
+    useMetaApi?: boolean;
+    metaToken?: string;
+    metaPhoneNumberId?: string;
   };
 }
 
