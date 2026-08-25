@@ -608,10 +608,33 @@ export default function RoutesPage() {
       if (selectedClientForReport?.phone) {
         const clientName = selectedClientForReport.name;
         const clientPhone = selectedClientForReport.phone;
-        const message = `Olá ${clientName},\n\nO atendimento da sua piscina foi finalizado! Você pode acessar o nosso painel para acompanhar todas as informações do tratamento.\n\nAcesse: https://www.zapmass.app.br/client-panel\nLogin: ${clientPhone}\nSenha: ${clientPhone}`;
+        const cleanPhone = clientPhone.replace(/\D/g, '');
         
         try {
+          const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
+          const thirtyDaysAgo = new Date();
+          thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+          
+          let useMessage2 = false;
+          if (navigator.onLine) {
+            const { data: recentVisits } = await supabase.from('visits')
+              .select('date')
+              .eq('client_id', selectedClientForReport.id)
+              .eq('admin_id', adminId)
+              .gte('date', thirtyDaysAgo.toISOString())
+              .limit(1);
+            if (recentVisits && recentVisits.length > 0) {
+              useMessage2 = true;
+            }
+          }
+          
           const waSettings = userProfile?.whatsappSettings || {};
+          const msg1 = waSettings.reportMessage1 || `Olá {nome},\n\nO atendimento da sua piscina foi finalizado! Você pode acessar o nosso painel para acompanhar todas as informações do tratamento.\n\nAcesse: https://www.zapmass.app.br/client-panel\nLogin: {telefone}\nSenha: {telefone}`;
+          const msg2 = waSettings.reportMessage2 || `Olá {nome},\n\nO atendimento da sua piscina foi finalizado! Verifique as informações completas no nosso painel de clientes.\n\nAcesse: https://www.zapmass.app.br/client-panel`;
+          
+          let message = useMessage2 ? msg2 : msg1;
+          message = message.replace(/{nome}/g, clientName).replace(/{telefone}/g, cleanPhone);
+          
           if (waSettings.useMetaApi) {
             await sendMetaMessage(clientPhone, message, waSettings);
             alert('Mensagem enviada com sucesso (Meta API)');

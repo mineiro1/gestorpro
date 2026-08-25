@@ -21,6 +21,8 @@ export interface UserProfile {
     reminderMessage: string;
     delayedMessage: string;
     autoScheduleTime: string;
+    reportMessage1?: string;
+    reportMessage2?: string;
     useEvolutionApi?: boolean;
     evolutionApiUrl?: string;
     evolutionApiKey?: string;
