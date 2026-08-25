@@ -47,6 +47,12 @@ export default function RoutesPage() {
   const [photoDate, setPhotoDate] = useState<Date | null>(null);
   const [submittingReport, setSubmittingReport] = useState(false);
   const [confirmSendReportPopupOpen, setConfirmSendReportPopupOpen] = useState(false);
+  const [checklist, setChecklist] = useState({
+    peneirar: false,
+    escovar: false,
+    aspirar: false,
+    lavarFiltro: false
+  });
 
   
   // Specific for One-Off Jobs (Avulsos)
@@ -516,6 +522,7 @@ export default function RoutesPage() {
     setPhotoDate(null);
     setNeedsReturn(false);
     setReturnDate('');
+    setChecklist({ peneirar: false, escovar: false, aspirar: false, lavarFiltro: false });
     setReportModalOpen(true);
   };
 
@@ -1134,6 +1141,29 @@ export default function RoutesPage() {
             <p className="text-gray-600 mb-6 font-medium">{selectedClientForReport.name}</p>
             
             <form onSubmit={handleSubmitReport} className="space-y-4">
+              
+              <div className="mb-1">
+                <label className="block text-sm font-medium text-gray-700 mb-2">Checklist de Tarefas (Obrigatório) *</label>
+                <div className="grid grid-cols-2 gap-2 bg-gray-50 p-3 rounded-lg border border-gray-200">
+                  <label className="flex items-center space-x-2 cursor-pointer">
+                    <input type="checkbox" checked={checklist.peneirar} onChange={e => setChecklist({...checklist, peneirar: e.target.checked})} className="w-4 h-4 text-primary rounded focus:ring-primary border-gray-300" />
+                    <span className="text-gray-700 text-sm">Peneirar</span>
+                  </label>
+                  <label className="flex items-center space-x-2 cursor-pointer">
+                    <input type="checkbox" checked={checklist.escovar} onChange={e => setChecklist({...checklist, escovar: e.target.checked})} className="w-4 h-4 text-primary rounded focus:ring-primary border-gray-300" />
+                    <span className="text-gray-700 text-sm">Escovar Paredes</span>
+                  </label>
+                  <label className="flex items-center space-x-2 cursor-pointer">
+                    <input type="checkbox" checked={checklist.aspirar} onChange={e => setChecklist({...checklist, aspirar: e.target.checked})} className="w-4 h-4 text-primary rounded focus:ring-primary border-gray-300" />
+                    <span className="text-gray-700 text-sm">Aspirar</span>
+                  </label>
+                  <label className="flex items-center space-x-2 cursor-pointer">
+                    <input type="checkbox" checked={checklist.lavarFiltro} onChange={e => setChecklist({...checklist, lavarFiltro: e.target.checked})} className="w-4 h-4 text-primary rounded focus:ring-primary border-gray-300" />
+                    <span className="text-gray-700 text-sm">Lavar o Filtro</span>
+                  </label>
+                </div>
+              </div>
+              
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Observações da Visita *</label>
                 <textarea
@@ -1236,7 +1266,7 @@ export default function RoutesPage() {
                 </button>
                 <button
                   type="submit"
-                  disabled={submittingReport || !reportNotes.trim()}
+                  disabled={submittingReport || !reportNotes.trim() || !checklist.peneirar || !checklist.escovar || !checklist.aspirar || !checklist.lavarFiltro}
                   className="px-6 py-2 bg-primary text-white rounded-lg hover:bg-primary-light transition-colors disabled:opacity-50 flex items-center"
                 >
                   {submittingReport ? 'Salvando...' : 'Finalizar Atendimento'}
