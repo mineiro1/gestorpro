@@ -23,7 +23,26 @@ import Layout from './components/Layout';
 const ProtectedRoute = ({ children, allowedRoles }: { children: React.ReactNode, allowedRoles?: ('admin' | 'employee' | 'manager' | 'client')[] }) => {
   const { currentUser, userProfile, loading, isSubscriptionExpired } = useAuth();
 
-  if (loading) return <div className="flex h-screen items-center justify-center">Carregando...</div>;
+  if (loading) {
+    return (
+      <div className="flex h-screen w-full flex-col items-center justify-center bg-gray-50/80 backdrop-blur-sm">
+        <div className="flex flex-col items-center space-y-6">
+          <div className="relative flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-500 text-white shadow-xl ring-8 ring-blue-50">
+            <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="animate-spin">
+              <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+            </svg>
+            <div className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-indigo-400">
+              <span className="h-3 w-3 rounded-full bg-white animate-ping"></span>
+            </div>
+          </div>
+          <div className="flex flex-col items-center space-y-2 text-center animate-pulse">
+            <h3 className="text-xl font-bold text-gray-900 tracking-tight">GestãoPro</h3>
+            <p className="text-sm font-medium text-gray-500">Preparando painel...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
   if (!currentUser || !userProfile) return <Navigate to="/login" />;
   
   if (isSubscriptionExpired && userProfile.role !== 'client') {
