@@ -51,7 +51,9 @@ export default function RoutesPage() {
     peneirar: false,
     escovar: false,
     aspirar: false,
-    lavarFiltro: false
+    lavarFiltro: false,
+    lavarCapa: false,
+    limparBordas: false
   });
 
   
@@ -522,7 +524,7 @@ export default function RoutesPage() {
     setPhotoDate(null);
     setNeedsReturn(false);
     setReturnDate('');
-    setChecklist({ peneirar: false, escovar: false, aspirar: false, lavarFiltro: false });
+    setChecklist({ peneirar: false, escovar: false, aspirar: false, lavarFiltro: false, lavarCapa: false, limparBordas: false });
     setReportModalOpen(true);
   };
 
@@ -1161,6 +1163,14 @@ export default function RoutesPage() {
                     <input type="checkbox" checked={checklist.lavarFiltro} onChange={e => setChecklist({...checklist, lavarFiltro: e.target.checked})} className="w-4 h-4 text-primary rounded focus:ring-primary border-gray-300" />
                     <span className="text-gray-700 text-sm">Lavar o Filtro</span>
                   </label>
+                  <label className="flex items-center space-x-2 cursor-pointer">
+                    <input type="checkbox" checked={checklist.lavarCapa} onChange={e => setChecklist({...checklist, lavarCapa: e.target.checked})} className="w-4 h-4 text-primary rounded focus:ring-primary border-gray-300" />
+                    <span className="text-gray-700 text-sm">Lavar Capa</span>
+                  </label>
+                  <label className="flex items-center space-x-2 cursor-pointer">
+                    <input type="checkbox" checked={checklist.limparBordas} onChange={e => setChecklist({...checklist, limparBordas: e.target.checked})} className="w-4 h-4 text-primary rounded focus:ring-primary border-gray-300" />
+                    <span className="text-gray-700 text-sm">Limpar Bordas</span>
+                  </label>
                 </div>
               </div>
               
@@ -1266,7 +1276,7 @@ export default function RoutesPage() {
                 </button>
                 <button
                   type="submit"
-                  disabled={submittingReport || !reportNotes.trim() || !checklist.peneirar || !checklist.escovar || !checklist.aspirar || !checklist.lavarFiltro}
+                  disabled={submittingReport || !reportNotes.trim() || !checklist.peneirar || !checklist.escovar || !checklist.aspirar || !checklist.lavarFiltro || !checklist.lavarCapa || !checklist.limparBordas}
                   className="px-6 py-2 bg-primary text-white rounded-lg hover:bg-primary-light transition-colors disabled:opacity-50 flex items-center"
                 >
                   {submittingReport ? 'Salvando...' : 'Finalizar Atendimento'}
