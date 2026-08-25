@@ -5,6 +5,7 @@ import { jsPDF } from 'jspdf';
 import { Share2, FileText, Map, Camera, CheckCircle, MapPin, Image as ImageIcon, ArrowUp, ArrowDown, Save, ListOrdered, Search } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { openMap, openRouteMap, openWaze } from '../lib/maps';
+import { openWhatsApp, sendEvolutionMessage, sendMetaMessage } from '../lib/whatsapp';
 import EmployeeMap from '../components/EmployeeMap';
 import exifr from 'exifr';
 
@@ -608,9 +609,22 @@ export default function RoutesPage() {
         const clientName = selectedClientForReport.name;
         const clientPhone = selectedClientForReport.phone;
         const message = `Olá ${clientName},\n\nO atendimento da sua piscina foi finalizado! Você pode acessar o nosso painel para acompanhar todas as informações do tratamento.\n\nAcesse: https://www.zapmass.app.br/client-panel\nLogin: ${clientPhone}\nSenha: ${clientPhone}`;
-        const phoneFormatted = clientPhone.replace(/\D/g, '');
-        const whatsappUrl = `https://wa.me/55${phoneFormatted}?text=${encodeURIComponent(message)}`;
-        window.open(whatsappUrl, '_blank');
+        
+        try {
+          const waSettings = userProfile?.whatsappSettings || {};
+          if (waSettings.useMetaApi) {
+            await sendMetaMessage(clientPhone, message, waSettings);
+            alert('Mensagem enviada com sucesso (Meta API)');
+          } else if (waSettings.useEvolutionApi) {
+            await sendEvolutionMessage(clientPhone, message, waSettings);
+            alert('Mensagem enviada com sucesso (Evolution API)');
+          } else {
+            openWhatsApp(clientPhone, message);
+          }
+        } catch (err: any) {
+          alert('Erro ao enviar mensagem: ' + err.message);
+          console.error(err);
+        }
       } else {
         alert('Este cliente não possui um número de telefone cadastrado para o envio do WhatsApp.');
       }
