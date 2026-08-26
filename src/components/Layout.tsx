@@ -83,7 +83,7 @@ export default function Layout() {
       ]
     : [
         { name: 'Rotas', path: '/routes', icon: Map },
-        { name: 'Clientes', path: '/clients', icon: Users },
+        { name: 'Produtos', path: '/products', icon: Package },
       ];
 
   if (userProfile?.email === 'servincg@gmail.com') {
@@ -240,7 +240,7 @@ export default function Layout() {
              { name: 'Mensagens', path: '/messages', icon: MessageSquare }
            ] : [
              { name: 'Rotas', path: '/routes', icon: Map },
-             { name: 'Clientes', path: '/clients', icon: Users }
+             { name: 'Produtos', path: '/products', icon: Package }
            ]).map((item) => {
             const Icon = item.icon;
             const isActive = location.pathname === item.path || (item.path !== '/' && location.pathname.startsWith(item.path));

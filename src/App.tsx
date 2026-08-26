@@ -91,7 +91,7 @@ export default function App() {
           
           <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
             <Route index element={<ProtectedRoute allowedRoles={['admin', 'manager']}><Dashboard /></ProtectedRoute>} />
-            <Route path="clients" element={<ProtectedRoute allowedRoles={['admin', 'manager', 'employee']}><Clients /></ProtectedRoute>} />
+            <Route path="clients" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><Clients /></ProtectedRoute>} />
             <Route path="clients/new" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><ClientForm /></ProtectedRoute>} />
             <Route path="clients/:id" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><ClientForm /></ProtectedRoute>} />
             <Route path="clients/:id/supplies" element={<ProtectedRoute allowedRoles={['admin', 'manager', 'employee']}><SuppliesForm /></ProtectedRoute>} />
