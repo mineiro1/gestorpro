@@ -1156,7 +1156,7 @@ export default function RoutesPage() {
                             : 'border-gray-100 hover:border-primary/50 hover:bg-gray-50 cursor-pointer'
                     }`}
                   >
-                    {(isAdmin || isManager) && isFutureRoute && !isCompleted && (
+                    {(isAdmin || isManager) && routeDate >= getLocalISODate() && !isCompleted && !isOrderingMode && (
                       <div className="flex items-center justify-center mr-3 mt-1" onClick={e => e.stopPropagation()}>
                         <input
                           type="checkbox"
