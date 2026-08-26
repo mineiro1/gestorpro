@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { Package, Send, ArrowLeft, Settings, Plus, Trash2, X, Save } from 'lucide-react';
+import { Package, Send, Settings, Plus, Trash2, X, Save, Search, CheckCircle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { openWhatsApp, sendEvolutionMessage, sendMetaMessage } from '../lib/whatsapp';
 
@@ -27,23 +27,26 @@ type SupplyItem = {
   unit: string;
 };
 
-export default function SuppliesForm() {
-  const { id } = useParams();
+export default function ProductsPage() {
   const navigate = useNavigate();
-  const { userProfile } = useAuth();
+  const { userProfile, isAdmin, isManager } = useAuth();
   
-  const [client, setClient] = useState<any>(null);
+  const [clients, setClients] = useState<any[]>([]);
+  const [filteredClients, setFilteredClients] = useState<any[]>([]);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedClient, setSelectedClient] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   
   const [supplies, setSupplies] = useState<SupplyItem[]>([]);
   const [isManaging, setIsManaging] = useState(false);
   const [customProducts, setCustomProducts] = useState<{name: string, defaultUnit: string}[]>([]);
+  const [sendingMessage, setSendingMessage] = useState(false);
   const [waSettings, setWaSettings] = useState<any>(null);
-  
+
   
   useEffect(() => {
     const fetchSettings = async () => {
-      const adminId = userProfile?.role === 'admin' ? userProfile?.uid : userProfile?.adminId;
+      const adminId = isAdmin ? userProfile?.uid : userProfile?.adminId;
       if (!adminId) return;
       const { data } = await supabase.from('users').select('whatsapp_settings').eq('id', adminId).single();
       if (data) {
@@ -51,7 +54,7 @@ export default function SuppliesForm() {
       }
     };
     if (userProfile) fetchSettings();
-  }, [userProfile]);
+  }, [userProfile, isAdmin]);
 
   useEffect(() => {
     if (userProfile?.customProducts && userProfile.customProducts.length > 0) {
@@ -81,21 +84,22 @@ export default function SuppliesForm() {
   }, [userProfile]);
 
   useEffect(() => {
-    if (!id || id === 'new') {
-      navigate('/clients');
-      return;
-    }
-
-    const fetchClient = async () => {
+    if (!userProfile?.uid) return;
+    const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
+    
+    const fetchClients = async () => {
       try {
-        const { data, error } = await supabase.from('clients').select('*').eq('id', id).single();
+        let queryBuilder = supabase.from('clients').select('*').eq('admin_id', adminId).neq('active', false);
+        if (!isAdmin && !isManager) {
+          queryBuilder = queryBuilder.eq('employee_id', userProfile.uid);
+        }
+        
+        const { data, error } = await queryBuilder.order('name');
         if (error) throw error;
         
         if (data) {
-          setClient(data);
-        } else {
-          alert('Cliente não encontrado.');
-          navigate('/clients');
+          setClients(data);
+          setFilteredClients(data);
         }
       } catch (error) {
         console.error(error);
@@ -104,8 +108,17 @@ export default function SuppliesForm() {
       }
     };
 
-    fetchClient();
-  }, [id, navigate]);
+    fetchClients();
+  }, [userProfile, isAdmin, isManager]);
+
+  useEffect(() => {
+    if (!searchTerm) {
+      setFilteredClients(clients);
+      return;
+    }
+    const lower = searchTerm.toLowerCase();
+    setFilteredClients(clients.filter(c => c.name?.toLowerCase().includes(lower) || c.phone?.includes(lower)));
+  }, [searchTerm, clients]);
 
   const handleUpdateSupply = (index: number, field: keyof SupplyItem, value: string) => {
     const updated = [...supplies];
@@ -117,15 +130,13 @@ export default function SuppliesForm() {
     try {
       const adminId = userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId;
       if (!adminId) return;
-
       const validProducts = customProducts.filter(p => p.name.trim() !== '');
       
       const { error } = await supabase.from('users').update({
-        custom_products: validProducts // Custom columns generally stored nicely in json or specific columns. Using snake_case
+        custom_products: validProducts
       }).eq('id', adminId);
       
       if(error) throw error;
-
       setSupplies(validProducts.map(p => ({
         name: p.name,
         quantity: '',
@@ -133,17 +144,16 @@ export default function SuppliesForm() {
       })));
       
       setIsManaging(false);
-      alert('Estoque atualizado com sucesso!');
-    } catch (error) {
-      console.error(error);
-      alert('Erro ao salvar estoque.');
+      alert('Inventário atualizado!');
+    } catch(err) {
+      console.error(err);
+      alert('Erro ao salvar inventário.');
     }
   };
-  const [sendingMessage, setSendingMessage] = useState(false);
 
   const handleSend = async () => {
-    if (!client) {
-      alert('Cliente não encontrado.');
+    if (!selectedClient) {
+      alert('Selecione um cliente primeiro.');
       return;
     }
 
@@ -153,21 +163,23 @@ export default function SuppliesForm() {
       return;
     }
 
-    const number = client.phone;
+    const number = selectedClient.phone;
     if (!number) {
       alert('O cliente não possui um número de telefone cadastrado.');
       return;
     }
 
-    const message = `Olá *${client.name}*, estamos precisando de alguns insumos para a manutenção da sua piscina:\n\n` + 
+    const message = `Olá *${selectedClient.name}*, estamos precisando de alguns insumos para a manutenção da sua piscina:\n\n` + 
       selected.map(s => `• ${s.name}: ${s.quantity} ${s.unit}`).join('\n') + 
       `\n\nPor favor, providencie assim que possível para não interrompermos o tratamento.`;
 
     const settings = waSettings || userProfile?.whatsappSettings || {};
     
+    // Web WhatsApp natively (synchronous to avoid popup block if no API configured)
     if (!settings.useMetaApi && !settings.useEvolutionApi) {
        openWhatsApp(number, message);
-       navigate('/clients');
+       setSupplies(supplies.map(s => ({ ...s, quantity: '' })));
+       setSelectedClient(null);
        return;
     }
 
@@ -181,7 +193,8 @@ export default function SuppliesForm() {
         await sendEvolutionMessage(number, message, settings);
         alert('Mensagem de insumos enviada com sucesso via Evolution API!');
       }
-      navigate('/clients');
+      setSupplies(supplies.map(s => ({ ...s, quantity: '' })));
+      setSelectedClient(null);
     } catch (error: any) {
       console.error(error);
       alert('Falha ao enviar mensagem: ' + error.message);
@@ -196,17 +209,14 @@ export default function SuppliesForm() {
 
   return (
     <div className="max-w-4xl mx-auto pb-12">
-      <div className="flex items-center mb-6">
-        <button onClick={() => navigate('/clients')} className="mr-4 text-gray-500 hover:text-gray-700">
-          <ArrowLeft size={24} />
-        </button>
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 space-y-4 sm:space-y-0">
         <div>
           <h1 className="text-2xl font-bold text-gray-800 flex items-center">
-            <Package className="mr-2" /> Insumos para {client?.name}
+            <Package className="mr-2" /> Produtos / Insumos
           </h1>
-          <p className="text-gray-600">Selecione os produtos necessários para a piscina deste cliente.</p>
+          <p className="text-gray-600">Pesquise o cliente e selecione os produtos necessários.</p>
         </div>
-        <div className="ml-auto">
+        <div>
           <button 
             onClick={() => setIsManaging(true)}
             className="flex items-center text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-2 rounded-lg transition-colors"
@@ -217,61 +227,110 @@ export default function SuppliesForm() {
         </div>
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-        <div className="p-6">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-gray-50 border-b border-gray-200">
-                  <th className="p-3 font-semibold text-gray-600 w-1/2">Produto</th>
-                  <th className="p-3 font-semibold text-gray-600 w-1/4">Quantidade</th>
-                  <th className="p-3 font-semibold text-gray-600 w-1/4">Unidade de Medida</th>
-                </tr>
-              </thead>
-              <tbody>
-                {supplies.map((supply, index) => (
-                  <tr key={index} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
-                    <td className="p-3 font-medium text-gray-800">{supply.name}</td>
-                    <td className="p-3">
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.1"
-                        placeholder="0"
-                        className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-primary focus:border-primary outline-none"
-                        value={supply.quantity}
-                        onChange={(e) => handleUpdateSupply(index, 'quantity', e.target.value)}
-                      />
-                    </td>
-                    <td className="p-3">
-                      <select
-                        className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-primary focus:border-primary outline-none bg-white"
-                        value={supply.unit}
-                        onChange={(e) => handleUpdateSupply(index, 'unit', e.target.value)}
-                      >
-                        {UNITS.map(u => (
-                          <option key={u} value={u}>{u}</option>
-                        ))}
-                      </select>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      {!selectedClient ? (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-6">
+          <label className="block text-sm font-medium text-gray-700 mb-2">Selecionar Cliente</label>
+          <div className="relative mb-4">
+            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+              <Search size={18} className="text-gray-400" />
+            </div>
+            <input
+              type="text"
+              placeholder="Buscar cliente por nome ou telefone..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none"
+            />
           </div>
-
-          <div className="mt-8 flex justify-end">
-            <button
-              onClick={handleSend}
-              disabled={sendingMessage}
-              className="flex items-center px-6 py-3 bg-green-500 text-white font-bold rounded-lg hover:bg-green-600 transition-colors shadow-sm disabled:opacity-50"
-            >
-              <Send size={20} className="mr-2" />
-              {sendingMessage ? 'Enviando...' : 'Enviar Lista via WhatsApp'}
-            </button>
+          
+          <div className="max-h-96 overflow-y-auto border border-gray-100 rounded-lg">
+            {filteredClients.length > 0 ? (
+              filteredClients.map(c => (
+                <div 
+                  key={c.id} 
+                  onClick={() => setSelectedClient(c)}
+                  className="p-3 border-b border-gray-100 hover:bg-gray-50 cursor-pointer flex justify-between items-center transition-colors"
+                >
+                  <div>
+                    <div className="font-medium text-gray-800">{c.name}</div>
+                    <div className="text-sm text-gray-500">{c.phone}</div>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="p-6 text-center text-gray-500">Nenhum cliente encontrado</div>
+            )}
           </div>
         </div>
-      </div>
+      ) : (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden mb-6">
+          <div className="p-4 bg-gray-50 border-b border-gray-100 flex justify-between items-center">
+            <div>
+              <span className="text-sm text-gray-500 block mb-1">Cliente Selecionado:</span>
+              <div className="font-bold text-gray-800 text-lg">{selectedClient.name}</div>
+            </div>
+            <button 
+              onClick={() => setSelectedClient(null)}
+              className="text-sm text-primary hover:text-primary-dark underline"
+            >
+              Trocar Cliente
+            </button>
+          </div>
+          <div className="p-6">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-gray-50 border-b border-gray-200">
+                    <th className="p-3 font-semibold text-gray-600 w-1/2">Produto</th>
+                    <th className="p-3 font-semibold text-gray-600 w-1/4">Quantidade</th>
+                    <th className="p-3 font-semibold text-gray-600 w-1/4">Unidade</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {supplies.map((supply, index) => (
+                    <tr key={index} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
+                      <td className="p-3 font-medium text-gray-800">{supply.name}</td>
+                      <td className="p-3">
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.1"
+                          placeholder="0"
+                          className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-primary focus:border-primary outline-none"
+                          value={supply.quantity}
+                          onChange={(e) => handleUpdateSupply(index, 'quantity', e.target.value)}
+                        />
+                      </td>
+                      <td className="p-3">
+                        <select
+                          className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-primary focus:border-primary outline-none bg-white"
+                          value={supply.unit}
+                          onChange={(e) => handleUpdateSupply(index, 'unit', e.target.value)}
+                        >
+                          {UNITS.map(u => (
+                            <option key={u} value={u}>{u}</option>
+                          ))}
+                        </select>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            
+            <div className="mt-8 flex justify-end">
+              <button
+                onClick={handleSend}
+                disabled={sendingMessage}
+                className="flex items-center px-6 py-3 bg-green-500 text-white font-bold rounded-lg hover:bg-green-600 transition-colors shadow-sm disabled:opacity-50"
+              >
+                <Send size={20} className="mr-2" />
+                {sendingMessage ? 'Enviando...' : 'Enviar Lista via WhatsApp'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {isManaging && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
