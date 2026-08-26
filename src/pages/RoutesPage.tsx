@@ -505,7 +505,7 @@ export default function RoutesPage() {
         const splitAddress = doc.splitTextToSize(`Endereço: ${client.address}`, 180);
         doc.text(splitAddress, 14, yPos + 6);
         
-        doc.text(`Telefone: ${client.phone || 'N/A'}`, 14, yPos + 6 + (splitAddress.length * 5));
+        doc.text(`Telefone: ${(isAdmin || isManager) ? (client.phone || 'N/A') : '***'}`, 14, yPos + 6 + (splitAddress.length * 5));
         
         yPos += 15 + (splitAddress.length * 5);
       });
@@ -1230,7 +1230,7 @@ export default function RoutesPage() {
                         <Map size={16} className="mr-1 mt-1 shrink-0" />
                         {client.address}
                       </p>
-                      {client.phone && (
+                      {client.phone && (isAdmin || isManager) && (
                         <p className={`text-sm mt-1 ${isCompleted ? 'text-green-600/70' : 'text-gray-500'}`}>
                           Tel: {client.phone}
                         </p>

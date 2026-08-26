@@ -253,7 +253,7 @@ export default function ProductsPage() {
                 >
                   <div>
                     <div className="font-medium text-gray-800">{c.name}</div>
-                    <div className="text-sm text-gray-500">{c.phone}</div>
+                    {(isAdmin || isManager) && <div className="text-sm text-gray-500">{c.phone}</div>}
                   </div>
                 </div>
               ))
