@@ -200,8 +200,10 @@ export default function RoutesPage() {
         let extraVisits = [];
         try { extraVisits = Array.isArray(client.extra_visits) ? client.extra_visits : (client.extra_visits ? JSON.parse(client.extra_visits) : []); } catch(e) {}
         
+        const extraVisitsDates = extraVisits.map(v => typeof v === 'string' ? v.split(':from:')[0] : v);
+        
         const matchesDayOfWeek = selectedDay ? (visitDays.includes(selectedDay)) : false;
-        const matchesExtraVisit = routeDate ? (extraVisits.includes(routeDate)) : false;
+        const matchesExtraVisit = routeDate ? (extraVisitsDates.includes(routeDate)) : false;
         return matchesDayOfWeek || matchesExtraVisit;
       });
       
@@ -356,9 +358,10 @@ export default function RoutesPage() {
           await supabase.from('oneoffjobs').update(updates).eq('id', client.id);
         } else {
           const extraVisits = client.extra_visits || [];
-          if (!extraVisits.includes(today)) {
+          const newEntry = today + ':from:' + (routeDate || today);
+          if (!extraVisits.includes(newEntry) && !extraVisits.includes(today)) {
             await supabase.from('clients').update({
-              extra_visits: [...extraVisits, today]
+              extra_visits: [...extraVisits, newEntry]
             }).eq('id', client.id);
           }
         }
@@ -372,6 +375,51 @@ export default function RoutesPage() {
       setAnticipating(false);
     }
   };
+  const handlePostpone = async () => {
+    if (selectedForAnticipation.size === 0) return;
+    if (!confirm('Deseja adiar as visitas dos clientes selecionados para amanhã? Eles passarão a aparecer na rota de amanhã.')) return;
+    
+    setAnticipating(true);
+    const tomorrowDate = new Date();
+    tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+    
+    // Convert to ISO local
+    tomorrowDate.setMinutes(tomorrowDate.getMinutes() - tomorrowDate.getTimezoneOffset());
+    const tomorrowStr = tomorrowDate.toISOString().split('T')[0];
+    
+    try {
+      for (const clientId of selectedForAnticipation) {
+        const client = routeClients.find(c => c.id === clientId);
+        if (!client) continue;
+
+        if (client.isOneOffJob) {
+          const updates: any = { updated_at: new Date().toISOString() };
+          if (client.return_date === routeDate) {
+            updates.return_date = tomorrowStr;
+          } else {
+            updates.date = tomorrowStr;
+          }
+          await supabase.from('oneoffjobs').update(updates).eq('id', client.id);
+        } else {
+          const extraVisits = client.extra_visits || [];
+          const newEntry = tomorrowStr + ':from:' + (routeDate || getLocalISODate());
+          if (!extraVisits.includes(newEntry) && !extraVisits.includes(tomorrowStr)) {
+            await supabase.from('clients').update({
+              extra_visits: [...extraVisits, newEntry]
+            }).eq('id', client.id);
+          }
+        }
+      }
+      alert('Visitas adiadas com sucesso!');
+      setSelectedForAnticipation(new Set());
+    } catch (error) {
+      console.error(error);
+      alert('Erro ao tentar adiar visitas.');
+    } finally {
+      setAnticipating(false);
+    }
+  };
+
 
   const saveOrder = async () => {
     setSavingOrder(true);
@@ -775,6 +823,34 @@ export default function RoutesPage() {
             });
             
             if (insertError) throw insertError;
+            
+            // Check if this visit was rescheduled from another date
+            try {
+              const extraVisitsRaw = selectedClientForReport.extra_visits || [];
+              const targetStr = activeRouteDate + ':from:';
+              const rescheduleEntry = extraVisitsRaw.find((v: string) => typeof v === 'string' && v.startsWith(targetStr));
+              if (rescheduleEntry) {
+                 const originalDate = rescheduleEntry.split(':from:')[1];
+                 if (originalDate) {
+                   await supabase.from('visits').insert({
+                     admin_id: adminId,
+                     client_id: selectedClientForReport.id,
+                     employee_id: payload.employeeId,
+                     date: finalVisitDate,
+                     time: originalDate, // Setting time to originalDate makes it show up as completed for that original route
+                     notes: `[SERVIÇO REALIZADO NO DIA ${activeRouteDate.split('-').reverse().join('/')}]\n\n` + finalNotes,
+                     photo_urls: reportPhotos,
+                     location: locationData
+                   });
+                   
+                   // Clean up the extra_visit entry
+                   const newExtraVisits = extraVisitsRaw.filter((v: string) => v !== rescheduleEntry);
+                   await supabase.from('clients').update({ extra_visits: newExtraVisits }).eq('id', selectedClientForReport.id);
+                 }
+              }
+            } catch(e) {
+               console.error("Error saving ghost visit", e);
+            }
 
             // Update client with lastVisitDate
             await supabase.from('clients').update({
@@ -927,10 +1003,20 @@ export default function RoutesPage() {
                 <button
                   onClick={handleAnticipate}
                   disabled={selectedForAnticipation.size === 0 || anticipating}
-                  className="flex items-center bg-orange-500 text-white px-4 py-2 rounded-lg hover:bg-orange-600 transition-colors disabled:opacity-50"
+                  className="flex items-center bg-orange-500 text-white px-4 py-2 rounded-lg hover:bg-orange-600 transition-colors disabled:opacity-50 text-sm whitespace-nowrap"
                   title="Antecipar clientes selecionados para hoje"
                 >
-                  {anticipating ? 'Processando...' : `Antecipar ${selectedForAnticipation.size > 0 ? `(${selectedForAnticipation.size})` : ''} para Hoje`}
+                  {anticipating ? 'Processando...' : `Antecipar ${selectedForAnticipation.size > 0 ? `(${selectedForAnticipation.size})` : ''}`}
+                </button>
+              )}
+              {(isAdmin || isManager) && routeDate === getLocalISODate() && routeClients.length > 0 && !isOrderingMode && (
+                <button
+                  onClick={handlePostpone}
+                  disabled={selectedForAnticipation.size === 0 || anticipating}
+                  className="flex items-center bg-purple-500 text-white px-4 py-2 rounded-lg hover:bg-purple-600 transition-colors disabled:opacity-50 text-sm whitespace-nowrap"
+                  title="Adiar clientes selecionados para amanhã"
+                >
+                  {anticipating ? 'Processando...' : `Adiar ${selectedForAnticipation.size > 0 ? `(${selectedForAnticipation.size})` : ''} p/ Amanhã`}
                 </button>
               )}
               <button
