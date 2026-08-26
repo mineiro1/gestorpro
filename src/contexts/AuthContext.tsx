@@ -17,6 +17,8 @@ export interface UserProfile {
   adminSubscriptionExpired?: boolean;
   customProducts?: { name: string; defaultUnit: string }[];
   whatsappSettings?: {
+    companyName?: string;
+    companyLogo?: string;
     reminderDays: number;
     reminderMessage: string;
     delayedMessage: string;

@@ -15,6 +15,7 @@ import ProductsPage from './pages/ProductsPage';
 import Messages from './pages/Messages';
 import ClientPanel from './pages/ClientPanel';
 import OneOffJobs from './pages/OneOffJobs';
+import Settings from './pages/Settings';
 import VisitsHistory from './pages/VisitsHistory';
 import SubscriptionWall from './pages/SubscriptionWall';
 import SuperAdminPage from './pages/SuperAdminPage';
@@ -105,6 +106,7 @@ export default function App() {
             <Route path="routes" element={<ProtectedRoute allowedRoles={['admin', 'manager', 'employee']}><RoutesPage /></ProtectedRoute>} />
             <Route path="visits" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><VisitsHistory /></ProtectedRoute>} />
             <Route path="one-off-jobs" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><OneOffJobs /></ProtectedRoute>} />
+            <Route path="settings" element={<ProtectedRoute allowedRoles={['admin']}><Settings /></ProtectedRoute>} />
             <Route path="client-panel" element={<ProtectedRoute allowedRoles={['client']}><ClientPanel /></ProtectedRoute>} />
             <Route path="superadmin" element={<ProtectedRoute allowedRoles={['admin']}><SuperAdminPage /></ProtectedRoute>} />
           </Route>

@@ -247,6 +247,9 @@ export default function ClientPanel() {
         <>
           <div className="bg-gradient-to-r from-primary to-primary-light rounded-xl shadow-lg p-6 text-white flex justify-between items-center">
             <div>
+              {userProfile?.whatsappSettings?.companyLogo && (
+                <img key={userProfile.whatsappSettings.companyLogo} src={userProfile.whatsappSettings.companyLogo} alt="Logo Empresa" className="h-12 w-auto mb-4 object-contain bg-white/20 p-1 rounded" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+              )}
               <h1 className="text-3xl font-bold mb-2">Olá, {(clientData.name || 'Cliente').split(' ')[0]}!</h1>
               <p className="text-secondary-light">Bem-vindo(a) ao seu painel.</p>
             </div>

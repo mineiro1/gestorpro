@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import {  Menu, X, Home, Users, UserCircle, Map, LogOut, Bell, MessageSquare, Headphones, Briefcase, History, Contact , Package } from 'lucide-react';
+import {  Menu, X, Home, Users, UserCircle, Map, LogOut, Bell, MessageSquare, Headphones, Briefcase, History, Contact , Package, Settings } from 'lucide-react';
 import clsx from 'clsx';
 import EmployeeLocationTracker from './EmployeeLocationTracker';
 
@@ -80,11 +80,16 @@ export default function Layout() {
         { name: 'Rotas', path: '/routes', icon: Map },
         { name: 'Visitas', path: '/visits', icon: History },
         { name: 'Avulsos', path: '/one-off-jobs', icon: Briefcase },
+        // Will add Settings dynamically below
       ]
     : [
         { name: 'Rotas', path: '/routes', icon: Map },
         { name: 'Produtos', path: '/products', icon: Package },
       ];
+
+  if (isAdmin) {
+    navItems.push({ name: 'Configurações', path: '/settings', icon: Settings });
+  }
 
   if (userProfile?.email === 'servincg@gmail.com') {
     navItems.push({ name: 'SuperAdmin', path: '/superadmin', icon: Briefcase });
@@ -111,8 +116,8 @@ export default function Layout() {
         {/* Header */}
         <div className="flex items-center justify-between h-16 px-6 bg-primary shadow-md shrink-0">
           <div className="flex items-center space-x-2">
-            <img src="/logo.png" alt="Logo" className="w-8 h-8 object-contain" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
-            <span className="text-2xl font-bold text-secondary-light tracking-wide">GestãoPro</span>
+            {userProfile?.whatsappSettings?.companyLogo && <img key={userProfile.whatsappSettings.companyLogo} src={userProfile.whatsappSettings.companyLogo} alt="Logo" className="w-8 h-8 object-contain" onError={(e) => { e.currentTarget.style.display = "none"; }} />}
+            <span className="text-2xl font-bold text-secondary-light tracking-wide truncate max-w-[180px]">{userProfile?.whatsappSettings?.companyName || "GestãoPro"}</span>
           </div>
           <button onClick={() => setIsDrawerOpen(false)} className="lg:hidden text-white hover:text-gray-200 transition-colors">
             <X size={24} />
@@ -220,8 +225,8 @@ export default function Layout() {
             <Menu size={24} />
           </button>
           <div className="flex items-center space-x-2 ml-2">
-            <img src="/logo.png" alt="Logo" className="w-6 h-6 object-contain" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
-            <span className="text-lg font-bold text-primary">GestãoPro</span>
+            {userProfile?.whatsappSettings?.companyLogo && <img key={userProfile.whatsappSettings.companyLogo} src={userProfile.whatsappSettings.companyLogo} alt="Logo" className="w-6 h-6 object-contain" onError={(e) => { e.currentTarget.style.display = "none"; }} />}
+            <span className="text-lg font-bold text-primary truncate max-w-[150px]">{userProfile?.whatsappSettings?.companyName || "GestãoPro"}</span>
           </div>
         </header>
 
