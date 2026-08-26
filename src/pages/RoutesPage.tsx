@@ -53,7 +53,9 @@ export default function RoutesPage() {
     aspirar: false,
     lavarFiltro: false,
     lavarCapa: false,
-    limparBordas: false
+    limparBordas: false,
+    decantar: false,
+    motorLigado: false
   });
 
   
@@ -244,6 +246,7 @@ export default function RoutesPage() {
 
       // Check which clients were already visited ON THE ROUTE DATE
       const activeRouteDate = routeDate || getLocalISODate();
+
       const [year, month, day] = activeRouteDate.split('-').map(Number);
       const start = new Date(year, month - 1, day, 0, 0, 0);
       const end = new Date(year, month - 1, day, 23, 59, 59, 999);
@@ -524,7 +527,7 @@ export default function RoutesPage() {
     setPhotoDate(null);
     setNeedsReturn(false);
     setReturnDate('');
-    setChecklist({ peneirar: false, escovar: false, aspirar: false, lavarFiltro: false, lavarCapa: false, limparBordas: false });
+    setChecklist({ peneirar: false, escovar: false, aspirar: false, lavarFiltro: false, lavarCapa: false, limparBordas: false, decantar: false, motorLigado: false });
     setReportModalOpen(true);
   };
 
@@ -682,13 +685,27 @@ export default function RoutesPage() {
       const finalVisitDate = photoDate ? photoDate.toISOString() : new Date().toISOString();
       const activeRouteDate = routeDate || getLocalISODate();
       
+      
+      const checkedItems = [];
+      if (checklist.peneirar) checkedItems.push('A piscina foi peneirada');
+      if (checklist.escovar) checkedItems.push('As paredes da piscina foram escovadas');
+      if (checklist.aspirar) checkedItems.push('A piscina foi aspirada');
+      if (checklist.lavarFiltro) checkedItems.push('O filtro da piscina foi limpo');
+      if (checklist.lavarCapa) checkedItems.push('A capa da piscina foi lavada');
+      if (checklist.limparBordas) checkedItems.push('As bordas da piscina foram limpas');
+      if (checklist.decantar) checkedItems.push('A piscina foi decantada');
+      if (checklist.motorLigado) checkedItems.push('O motor ficou ligado filtrando');
+      
+      const checklistText = checkedItems.length > 0 ? `\n\nTarefas realizadas:\n- ${checkedItems.join('\n- ')}` : '';
+      const finalNotes = reportNotes.trim() + checklistText;
+      
       const payload = {
         adminId,
         clientId: selectedClientForReport.id,
         employeeId: (isAdmin || isManager) && selectedEmployee ? selectedEmployee : userProfile.uid,
         date: finalVisitDate,
         time: activeRouteDate,
-        notes: reportNotes.trim(),
+        notes: finalNotes,
         photoUrls: reportPhotos,
         location: locationData,
         isOneOffJob: selectedClientForReport.isOneOffJob,
@@ -712,7 +729,7 @@ export default function RoutesPage() {
             const { error: oneOffError } = await supabase.from('oneoffjobs').update({
               status: needsReturn ? 'em_andamento' : 'concluido',
               return_date: needsReturn ? returnDate : null,
-              report: reportNotes.trim(),
+              report: finalNotes,
               updated_at: finalVisitDate
             }).eq('id', selectedClientForReport.id);
             if (oneOffError) throw oneOffError;
@@ -724,7 +741,7 @@ export default function RoutesPage() {
               employee_id: payload.employeeId,
               date: finalVisitDate,
               time: activeRouteDate,
-              notes: reportNotes.trim(),
+              notes: finalNotes,
               photo_urls: reportPhotos,
               location: locationData
             });
@@ -1171,6 +1188,14 @@ export default function RoutesPage() {
                     <input type="checkbox" checked={checklist.limparBordas} onChange={e => setChecklist({...checklist, limparBordas: e.target.checked})} className="w-4 h-4 text-primary rounded focus:ring-primary border-gray-300" />
                     <span className="text-gray-700 text-sm">Limpar Bordas</span>
                   </label>
+                  <label className="flex items-center space-x-2 cursor-pointer">
+                    <input type="checkbox" checked={checklist.decantar} onChange={e => setChecklist({...checklist, decantar: e.target.checked})} className="w-4 h-4 text-primary rounded focus:ring-primary border-gray-300" />
+                    <span className="text-gray-700 text-sm">Decantar</span>
+                  </label>
+                  <label className="flex items-center space-x-2 cursor-pointer">
+                    <input type="checkbox" checked={checklist.motorLigado} onChange={e => setChecklist({...checklist, motorLigado: e.target.checked})} className="w-4 h-4 text-primary rounded focus:ring-primary border-gray-300" />
+                    <span className="text-gray-700 text-sm">Motor Ligado</span>
+                  </label>
                 </div>
               </div>
               
@@ -1276,7 +1301,7 @@ export default function RoutesPage() {
                 </button>
                 <button
                   type="submit"
-                  disabled={submittingReport || !reportNotes.trim() || !checklist.peneirar || !checklist.escovar || !checklist.aspirar || !checklist.lavarFiltro || !checklist.lavarCapa || !checklist.limparBordas}
+                  disabled={submittingReport || !reportNotes.trim() || !(checklist.peneirar || checklist.escovar || checklist.aspirar || checklist.lavarFiltro || checklist.lavarCapa || checklist.limparBordas || checklist.decantar || checklist.motorLigado)}
                   className="px-6 py-2 bg-primary text-white rounded-lg hover:bg-primary-light transition-colors disabled:opacity-50 flex items-center"
                 >
                   {submittingReport ? 'Salvando...' : 'Finalizar Atendimento'}

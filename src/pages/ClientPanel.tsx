@@ -5,6 +5,40 @@ import { Calendar, CheckCircle, X, Download } from 'lucide-react';
 import { useOutletContext } from 'react-router-dom';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
 
+
+const renderNotes = (notes: string) => {
+  if (!notes) return null;
+  const parts = notes.split('\n\nTarefas realizadas:\n- ');
+  
+  if (parts.length === 1) {
+    return <p className="text-sm text-gray-700 bg-gray-50 p-4 rounded-lg border border-gray-100 whitespace-pre-wrap">{notes}</p>;
+  }
+
+  const mainNotes = parts[0];
+  const checklistItems = parts[1].split('\n- ');
+
+  return (
+    <div className="bg-white rounded-lg border border-gray-100 overflow-hidden shadow-sm">
+      {mainNotes && (
+        <div className="p-4 bg-gray-50 border-b border-gray-100">
+          <p className="text-sm text-gray-700 whitespace-pre-wrap">{mainNotes}</p>
+        </div>
+      )}
+      <div className="p-4">
+        <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Serviços Executados</h4>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {checklistItems.map((item, idx) => (
+            <div key={idx} className="flex items-center space-x-2 text-sm text-gray-700">
+              <CheckCircle size={16} className="text-green-500 flex-shrink-0" />
+              <span>{item}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export default function ClientPanel() {
   const { userProfile } = useAuth();
   
@@ -196,7 +230,7 @@ export default function ClientPanel() {
                       </div>
                     )}
                   </div>
-                  {v.notes && <p className="text-sm text-gray-600 bg-gray-100 p-3 rounded-lg">{v.notes}</p>}
+                  {v.notes && renderNotes(v.notes)}
                   
                   {/* Legacy single photo support */}
                   {v.photo_url && (!v.photo_urls || v.photo_urls.length === 0) && (

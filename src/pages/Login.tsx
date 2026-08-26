@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
+import { useAuth } from '../contexts/AuthContext';
 
 export default function Login() {
   const location = useLocation();
@@ -9,6 +10,13 @@ export default function Login() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const { userProfile, loading: authLoading } = useAuth();
+
+  React.useEffect(() => {
+    if (userProfile && !authLoading) {
+      window.location.href = '/';
+    }
+  }, [userProfile, authLoading, navigate]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -130,7 +138,7 @@ export default function Login() {
         }
       }
       
-      navigate('/');
+      window.location.href = '/';
     } catch (err: any) {
       if (err.message?.includes('Invalid login credentials')) {
         setError('Telefone ou senha incorretos.');
