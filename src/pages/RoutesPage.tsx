@@ -1013,16 +1013,6 @@ export default function RoutesPage() {
                   {anticipating ? 'Processando...' : `Antecipar ${selectedForAnticipation.size > 0 ? `(${selectedForAnticipation.size})` : ''}`}
                 </button>
               )}
-              {(isAdmin || isManager) && routeDate === getLocalISODate() && routeClients.length > 0 && !isOrderingMode && (
-                <button
-                  onClick={handlePostpone}
-                  disabled={selectedForAnticipation.size === 0 || anticipating}
-                  className="flex items-center bg-purple-500 text-white px-4 py-2 rounded-lg hover:bg-purple-600 transition-colors disabled:opacity-50 text-sm whitespace-nowrap"
-                  title="Adiar clientes selecionados para amanhã"
-                >
-                  {anticipating ? 'Processando...' : `Adiar ${selectedForAnticipation.size > 0 ? `(${selectedForAnticipation.size})` : ''} p/ Amanhã`}
-                </button>
-              )}
               <button
                 onClick={handleOpenGoogleMaps}
                 className="flex items-center bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
