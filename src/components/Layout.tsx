@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import {  Menu, X, Home, Users, UserCircle, Map, LogOut, Bell, MessageSquare, Headphones, Briefcase, History, Contact , Package, Settings } from 'lucide-react';
+import {  Menu, Store, X, Home, Users, UserCircle, Map, LogOut, Bell, MessageSquare, Headphones, Briefcase, History, Contact , Package, Settings } from 'lucide-react';
 import clsx from 'clsx';
 import EmployeeLocationTracker from './EmployeeLocationTracker';
 
@@ -67,7 +67,8 @@ export default function Layout() {
   };
 
   let navItems = isClient ? [
-    { name: 'Meu Painel', path: '/client-panel', icon: Home }
+    { name: 'Meu Painel', path: '/client-panel', icon: Home },
+    { name: 'Lojas Parceiras', path: '/partners', icon: Store }
   ] : (isAdmin || isManager)
     ? [
         { name: 'Dashboard', path: '/', icon: Home },
@@ -89,6 +90,7 @@ export default function Layout() {
 
   if (isAdmin) {
     navItems.push({ name: 'Configurações', path: '/settings', icon: Settings });
+    navItems.push({ name: 'Lojas Parceiras', path: '/partners', icon: Store });
   }
 
   if (userProfile?.email === 'servincg@gmail.com') {
@@ -246,7 +248,8 @@ export default function Layout() {
         {/* Mobile Bottom Navigation */}
         <nav className="lg:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 h-16 flex justify-around items-center z-40 px-2 pb-safe">
           {(isClient ? [
-             { name: 'Painel', path: '/client-panel', icon: Home }
+             { name: 'Painel', path: '/client-panel', icon: Home },
+             { name: 'Lojas', path: '/partners', icon: Store }
            ] : (isAdmin || isManager) ? [
              { name: 'Painel', path: '/', icon: Home },
              { name: 'Clientes', path: '/clients', icon: Users },

@@ -25,6 +25,7 @@ export interface UserProfile {
     autoScheduleTime: string;
     reportMessage1?: string;
     reportMessage2?: string;
+    partnerStores?: { name: string; phone: string }[];
     useEvolutionApi?: boolean;
     evolutionApiUrl?: string;
     evolutionApiKey?: string;

@@ -1,32 +1,67 @@
 const fs = require('fs');
-let code = fs.readFileSync('src/pages/RoutesPage.tsx', 'utf-8');
 
-// 1. Add finalNotes logic
-const finalVisitDateLine = "const activeRouteDate = routeDate || getLocalISODate();";
-const finalNotesLogic = `
-      const checkedItems = [];
-      if (checklist.peneirar) checkedItems.push('Peneirar');
-      if (checklist.escovar) checkedItems.push('Escovar Paredes');
-      if (checklist.aspirar) checkedItems.push('Aspirar');
-      if (checklist.lavarFiltro) checkedItems.push('Lavar o Filtro');
-      if (checklist.lavarCapa) checkedItems.push('Lavar Capa');
-      if (checklist.limparBordas) checkedItems.push('Limpar Bordas');
-      
-      const checklistText = checkedItems.length > 0 ? \`\\n\\nTarefas realizadas:\\n- \${checkedItems.join('\\n- ')}\` : '';
-      const finalNotes = reportNotes.trim() + checklistText;
-`;
+// 1. Update App.tsx
+let appStr = fs.readFileSync('src/App.tsx', 'utf-8');
+if (!appStr.includes('import PartnerStores')) {
+  appStr = appStr.replace("import Settings from './pages/Settings';", "import Settings from './pages/Settings';\nimport PartnerStores from './pages/PartnerStores';");
+  appStr = appStr.replace('<Route path="settings" element={<ProtectedRoute allowedRoles={[\'admin\']}><Settings /></ProtectedRoute>} />', '<Route path="settings" element={<ProtectedRoute allowedRoles={[\'admin\']}><Settings /></ProtectedRoute>} />\n            <Route path="partners" element={<ProtectedRoute allowedRoles={[\'admin\', \'client\']}><PartnerStores /></ProtectedRoute>} />');
+  fs.writeFileSync('src/App.tsx', appStr);
+  console.log('App.tsx updated');
+}
 
-code = code.replace(finalVisitDateLine, finalVisitDateLine + "\n" + finalNotesLogic);
+// 2. Update Layout.tsx (Add to Admin side drawer and Client side drawer)
+let layoutStr = fs.readFileSync('src/components/Layout.tsx', 'utf-8');
 
-// 2. Replace reportNotes.trim() with finalNotes in payload, oneoffjobs and visits
-code = code.replace(/notes: reportNotes\.trim\(\),/g, "notes: finalNotes,");
-code = code.replace(/report: reportNotes\.trim\(\),/g, "report: finalNotes,");
+// Admin logic
+const adminNavTarget = `if (isAdmin) {
+    navItems.push({ name: 'Configurações', path: '/settings', icon: Settings });
+  }`;
+const adminNavReplacement = `if (isAdmin) {
+    navItems.push({ name: 'Configurações', path: '/settings', icon: Settings });
+    navItems.push({ name: 'Lojas Parceiras', path: '/partners', icon: Store });
+  }`;
 
-// 3. Fix the disabled condition on the submit button
-const oldDisabled = "disabled={submittingReport || !reportNotes.trim() || !checklist.peneirar || !checklist.escovar || !checklist.aspirar || !checklist.lavarFiltro || !checklist.lavarCapa || !checklist.limparBordas}";
-const newDisabled = "disabled={submittingReport || !reportNotes.trim() || !(checklist.peneirar || checklist.escovar || checklist.aspirar || checklist.lavarFiltro || checklist.lavarCapa || checklist.limparBordas)}";
+if (layoutStr.includes(adminNavTarget)) {
+  layoutStr = layoutStr.replace(adminNavTarget, adminNavReplacement);
+} else {
+  console.log("Admin nav target not found");
+}
 
-code = code.replace(oldDisabled, newDisabled);
+// Client logic (drawer)
+const clientNavTarget = `let navItems = isClient ? [
+    { name: 'Meu Painel', path: '/client-panel', icon: Home }
+  ] :`;
+const clientNavReplacement = `let navItems = isClient ? [
+    { name: 'Meu Painel', path: '/client-panel', icon: Home },
+    { name: 'Lojas Parceiras', path: '/partners', icon: Store }
+  ] :`;
 
-fs.writeFileSync('src/pages/RoutesPage.tsx', code);
-console.log("Patched successfully");
+if (layoutStr.includes(clientNavTarget)) {
+  layoutStr = layoutStr.replace(clientNavTarget, clientNavReplacement);
+} else {
+  console.log("Client nav target not found");
+}
+
+// Client logic (bottom bar mobile)
+const clientBottomTarget = `{(isClient ? [
+             { name: 'Painel', path: '/client-panel', icon: Home }
+           ] : (isAdmin || isManager) ? [`;
+const clientBottomReplacement = `{(isClient ? [
+             { name: 'Painel', path: '/client-panel', icon: Home },
+             { name: 'Lojas', path: '/partners', icon: Store }
+           ] : (isAdmin || isManager) ? [`;
+
+if (layoutStr.includes(clientBottomTarget)) {
+  layoutStr = layoutStr.replace(clientBottomTarget, clientBottomReplacement);
+} else {
+  console.log("Client bottom nav target not found");
+}
+
+// Fix imports in Layout.tsx
+if (!layoutStr.includes('import { Store')) {
+  layoutStr = layoutStr.replace("import { Home, Users, Settings, LogOut, Menu, X, Package, MessageSquare, ShieldAlert, History, Navigation, Map, ClipboardList, Briefcase, Contact, Bell, UserCircle } from 'lucide-react';", "import { Home, Users, Settings, LogOut, Menu, X, Package, MessageSquare, ShieldAlert, History, Navigation, Map, ClipboardList, Briefcase, Contact, Bell, UserCircle, Store } from 'lucide-react';");
+}
+
+fs.writeFileSync('src/components/Layout.tsx', layoutStr);
+console.log('Layout.tsx updated');
+
