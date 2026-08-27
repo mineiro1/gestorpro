@@ -26,6 +26,7 @@ export interface UserProfile {
     reportMessage1?: string;
     reportMessage2?: string;
     partnerStores?: { name: string; phone: string }[];
+    partnerTechnicians?: { name: string; phone: string }[];
     useEvolutionApi?: boolean;
     evolutionApiUrl?: string;
     evolutionApiKey?: string;
