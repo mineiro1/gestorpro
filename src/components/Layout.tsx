@@ -122,12 +122,12 @@ export default function Layout() {
             </button>
           </div>
           {userProfile?.whatsappSettings?.companyLogo && (
-            <div className="w-full aspect-square bg-white flex items-center justify-center p-2 border-b border-gray-200">
+            <div className="w-full aspect-square bg-white overflow-hidden border-b border-gray-200">
               <img 
                 key={userProfile.whatsappSettings.companyLogo} 
                 src={userProfile.whatsappSettings.companyLogo} 
                 alt="Logo" 
-                className="w-full h-full object-contain" 
+                className="w-full h-full object-cover" 
                 onError={(e) => { e.currentTarget.style.display = "none"; }} 
               />
             </div>
