@@ -49,9 +49,9 @@ export default function Layout() {
   }, [userProfile, isClient]);
 
   
-  // Escuta novas visitas (e limpezas avulsas) agendadas para este técnico
+  // Escuta novas visitas (e limpezas avulsas) agendadas para este técnico ou admin
   useEffect(() => {
-    if (!userProfile || (userProfile.role !== 'employee' && userProfile.role !== 'manager')) return;
+    if (!userProfile) return;
 
     const requestPerms = async () => {
       if (Capacitor.isNativePlatform()) {
@@ -99,21 +99,35 @@ export default function Layout() {
       }
     };
 
-    const handleNewVisit = (payload) => {
-      if (payload.new && payload.new.employee_id === userProfile.uid) {
-        showNotification('Nova Visita Agendada', 'Você tem uma nova visita/manutenção agendada para hoje!');
+    const handleNewVisit = (payload: any) => {
+      if (payload.new) {
+        const isAssignedToMe = payload.new.employee_id === userProfile.uid;
+        const isAdminOwner = userProfile.role === 'admin' && payload.new.admin_id === userProfile.uid;
+        if (isAssignedToMe || isAdminOwner) {
+          const msg = isAssignedToMe 
+            ? 'Você tem uma nova visita/manutenção agendada para hoje!'
+            : 'Uma nova visita foi criada no sistema.';
+          showNotification('Nova Visita Agendada', msg);
+        }
       }
     };
 
-    const handleNewJob = (payload) => {
-      if (payload.new && payload.new.employee_id === userProfile.uid) {
-        showNotification('Novo Serviço Avulso', 'Um novo serviço avulso foi agendado para você!');
+    const handleNewJob = (payload: any) => {
+      if (payload.new) {
+        const isAssignedToMe = payload.new.employee_id === userProfile.uid;
+        const isAdminOwner = userProfile.role === 'admin' && payload.new.admin_id === userProfile.uid;
+        if (isAssignedToMe || isAdminOwner) {
+          const msg = isAssignedToMe
+            ? 'Um novo serviço avulso foi agendado para você!'
+            : 'Um novo serviço avulso foi criado no sistema.';
+          showNotification('Novo Serviço Avulso', msg);
+        }
       }
     };
 
-    const channel = supabase.channel('employee-notifications')
+    const channel = supabase.channel('employee-notifications-fix')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'visits' }, handleNewVisit)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'one_off_jobs' }, handleNewJob)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'oneoffjobs' }, handleNewJob)
       .subscribe();
 
     return () => {
