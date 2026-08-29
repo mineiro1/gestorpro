@@ -53,22 +53,48 @@ export default function Layout() {
   useEffect(() => {
     if (!userProfile || (userProfile.role !== 'employee' && userProfile.role !== 'manager')) return;
 
-    if ('Notification' in window && Notification.permission !== 'granted') {
-      Notification.requestPermission().catch(() => {});
-    }
+    const requestPerms = async () => {
+      if (Capacitor.isNativePlatform()) {
+        try {
+          await LocalNotifications.requestPermissions();
+        } catch (e) {
+          console.error("Local notifications permission error", e);
+        }
+      } else if ('Notification' in window && Notification.permission !== 'granted') {
+        Notification.requestPermission().catch(() => {});
+      }
+    };
+    requestPerms();
 
-    const showNotification = (title, body) => {
-      if ('Notification' in window && Notification.permission === 'granted') {
-        if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-          navigator.serviceWorker.ready.then(registration => {
-            registration.showNotification(title, {
-              body,
-              icon: 'https://cdn-icons-png.flaticon.com/512/123/123382.png',
-              vibrate: [200, 100, 200],
-            });
+    const showNotification = async (title: string, body: string) => {
+      if (Capacitor.isNativePlatform()) {
+        try {
+          await LocalNotifications.schedule({
+            notifications: [
+              {
+                title,
+                body,
+                id: new Date().getTime(),
+                schedule: { at: new Date(Date.now() + 1000) }
+              }
+            ]
           });
-        } else {
-          new Notification(title, { body, icon: 'https://cdn-icons-png.flaticon.com/512/123/123382.png' });
+        } catch (e) {
+          console.error("Capacitor local notification error", e);
+        }
+      } else {
+        if ('Notification' in window && Notification.permission === 'granted') {
+          if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+            navigator.serviceWorker.ready.then(registration => {
+              registration.showNotification(title, {
+                body,
+                icon: 'https://cdn-icons-png.flaticon.com/512/123/123382.png',
+                vibrate: [200, 100, 200],
+              });
+            });
+          } else {
+            new Notification(title, { body, icon: 'https://cdn-icons-png.flaticon.com/512/123/123382.png' });
+          }
         }
       }
     };
