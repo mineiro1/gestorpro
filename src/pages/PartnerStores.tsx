@@ -35,7 +35,8 @@ export default function PartnerStores() {
       if (error) throw error;
 
       // Update local context
-      if (userProfile.whatsappSettings) {
+      if (userProfile) {
+        if (!userProfile.whatsappSettings) userProfile.whatsappSettings = {};
         userProfile.whatsappSettings.partnerStores = newStores;
       }
       
@@ -74,7 +75,8 @@ export default function PartnerStores() {
       if (error) throw error;
 
       // Update local context
-      if (userProfile.whatsappSettings) {
+      if (userProfile) {
+        if (!userProfile.whatsappSettings) userProfile.whatsappSettings = {};
         userProfile.whatsappSettings.partnerStores = newStores;
       }
     } catch (error) {

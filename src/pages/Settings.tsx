@@ -34,6 +34,12 @@ export default function Settings() {
       }).eq('id', userProfile.uid);
       
       if (error) throw error;
+
+      if (userProfile) {
+        if (!userProfile.whatsappSettings) userProfile.whatsappSettings = {};
+        userProfile.whatsappSettings.companyName = companyName;
+        userProfile.whatsappSettings.companyLogo = companyLogo;
+      }
       
       alert('Configurações salvas com sucesso! (As alterações no painel serão aplicadas no próximo login ou recarregamento)');
     } catch (error: any) {

@@ -34,7 +34,8 @@ export default function PartnerTechnicians() {
 
       if (error) throw error;
 
-      if (userProfile.whatsappSettings) {
+      if (userProfile) {
+        if (!userProfile.whatsappSettings) userProfile.whatsappSettings = {};
         userProfile.whatsappSettings.partnerTechnicians = newTechnicians;
       }
       
@@ -72,7 +73,8 @@ export default function PartnerTechnicians() {
 
       if (error) throw error;
 
-      if (userProfile.whatsappSettings) {
+      if (userProfile) {
+        if (!userProfile.whatsappSettings) userProfile.whatsappSettings = {};
         userProfile.whatsappSettings.partnerTechnicians = newTechnicians;
       }
     } catch (error) {

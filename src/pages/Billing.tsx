@@ -82,10 +82,20 @@ export default function Billing() {
     if (!userProfile?.uid) return;
     setSavingSettings(true);
     try {
+      const currentSettings = userProfile.whatsappSettings || {};
       const { error } = await supabase.from('users').update({
-        whatsapp_settings: waSettings
+        whatsapp_settings: {
+          ...currentSettings,
+          ...waSettings
+        }
       }).eq('id', userProfile.uid);
       if (error) throw error;
+      if (userProfile) {
+        userProfile.whatsappSettings = {
+          ...currentSettings,
+          ...waSettings
+        };
+      }
       // Give feedback that it saved
       setSettingsModalOpen(false);
     } catch (err) {

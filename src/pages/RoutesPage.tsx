@@ -664,7 +664,7 @@ export default function RoutesPage() {
 
   const handleSubmitReport = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedClientForReport || !userProfile || !reportNotes.trim()) return;
+    if (!selectedClientForReport || !userProfile) return;
     setConfirmSendReportPopupOpen(true);
   };
 
@@ -1384,9 +1384,8 @@ export default function RoutesPage() {
               </div>
               
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Observações da Visita *</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Observações da Visita</label>
                 <textarea
-                  required
                   rows={4}
                   value={reportNotes}
                   onChange={(e) => setReportNotes(e.target.value)}
@@ -1485,7 +1484,7 @@ export default function RoutesPage() {
                 </button>
                 <button
                   type="submit"
-                  disabled={submittingReport || !reportNotes.trim() || !(checklist.peneirar || checklist.escovar || checklist.aspirar || checklist.lavarFiltro || checklist.lavarCapa || checklist.limparBordas || checklist.decantar || checklist.motorLigado || checklist.ausente)}
+                  disabled={submittingReport || !(checklist.peneirar || checklist.escovar || checklist.aspirar || checklist.lavarFiltro || checklist.lavarCapa || checklist.limparBordas || checklist.decantar || checklist.motorLigado || checklist.ausente)}
                   className="px-6 py-2 bg-primary text-white rounded-lg hover:bg-primary-light transition-colors disabled:opacity-50 flex items-center"
                 >
                   {submittingReport ? 'Salvando...' : 'Finalizar Atendimento'}
