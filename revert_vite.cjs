@@ -1,4 +1,6 @@
-import tailwindcss from '@tailwindcss/vite';
+const fs = require('fs');
+
+const code = `import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig, loadEnv} from 'vite';
@@ -19,4 +21,7 @@ export default defineConfig(({mode}) => {
       hmr: process.env.DISABLE_HMR !== 'true',
     },
   };
-});
+});`;
+
+fs.writeFileSync('vite.config.ts', code);
+console.log('vite.config.ts reverted');
