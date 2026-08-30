@@ -144,7 +144,16 @@ export default function SuperAdminPage() {
     if (!adminToDelete) return;
     setProcessingId(adminToDelete);
     try {
-      await supabase.from('users').delete().eq('id', adminToDelete);
+      await supabase.from('visits').delete().eq('admin_id', adminToDelete);
+      await supabase.from('payments').delete().eq('admin_id', adminToDelete);
+      await supabase.from('agenda_contacts').delete().eq('admin_id', adminToDelete);
+      await supabase.from('oneoffjobs').delete().eq('admin_id', adminToDelete);
+      await supabase.from('clients').delete().eq('admin_id', adminToDelete);
+      await supabase.from('users').delete().eq('admin_id', adminToDelete);
+
+      const { error } = await supabase.from('users').delete().eq('id', adminToDelete);
+      if (error) throw error;
+      
       fetchAdmins();
       setDeleteModalOpen(false);
       setAdminToDelete(null);
