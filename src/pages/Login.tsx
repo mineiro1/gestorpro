@@ -14,7 +14,7 @@ export default function Login() {
 
   React.useEffect(() => {
     if (userProfile && !authLoading) {
-      window.location.href = '/';
+      window.location.href = '/dashboard';
     }
   }, [userProfile, authLoading, navigate]);
 
@@ -138,7 +138,7 @@ export default function Login() {
         }
       }
       
-      window.location.href = '/';
+      window.location.href = '/dashboard';
     } catch (err: any) {
       if (err.message?.includes('Invalid login credentials')) {
         setError('Telefone ou senha incorretos.');

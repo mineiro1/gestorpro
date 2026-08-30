@@ -83,7 +83,7 @@ export default function Register() {
         });
       }
 
-      navigate('/');
+      navigate('/dashboard');
     } catch (err: any) {
       if (err.message === 'Telefone inválido.') {
         setError(err.message);

@@ -159,7 +159,7 @@ export default function Layout() {
     { name: 'Técnicos Parceiros', path: '/technicians', icon: Wrench }
   ] : (isAdmin || isManager)
     ? [
-        { name: 'Dashboard', path: '/', icon: Home },
+        { name: 'Dashboard', path: '/dashboard', icon: Home },
         { name: 'Clientes', path: '/clients', icon: Users },
         { name: 'Produtos', path: '/products', icon: Package },
         { name: 'Agenda', path: '/agenda', icon: Contact },
@@ -341,7 +341,7 @@ export default function Layout() {
              { name: 'Lojas', path: '/partners', icon: Store },
              { name: 'Técnicos', path: '/technicians', icon: Wrench }
            ] : (isAdmin || isManager) ? [
-             { name: 'Painel', path: '/', icon: Home },
+             { name: 'Painel', path: '/dashboard', icon: Home },
              { name: 'Clientes', path: '/clients', icon: Users },
              { name: 'Rotas', path: '/routes', icon: Map },
              { name: 'Mensagens', path: '/messages', icon: MessageSquare }
