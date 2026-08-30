@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
-import OnboardingTour from './OnboardingTour';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import {  Menu, Store, Wrench, X, Home, Users, UserCircle, Map, LogOut, Bell, MessageSquare, Headphones, Briefcase, History, Contact , Package, Settings } from 'lucide-react';
+import {  Menu, Store, Wrench, X, Home, Users, UserCircle, Map, LogOut, Bell, MessageSquare, Headphones, Briefcase, History, Contact , Package, Settings, HelpCircle } from 'lucide-react';
 import clsx from 'clsx';
+import { Capacitor } from '@capacitor/core';
+import { LocalNotifications } from '@capacitor/local-notifications';
 import EmployeeLocationTracker from './EmployeeLocationTracker';
 
 export default function Layout() {
@@ -90,7 +91,6 @@ export default function Layout() {
               registration.showNotification(title, {
                 body,
                 icon: 'https://cdn-icons-png.flaticon.com/512/123/123382.png',
-                vibrate: [200, 100, 200],
               });
             });
           } else {
@@ -154,7 +154,7 @@ export default function Layout() {
     navigate('/login');
   };
 
-  let navItems = isClient ? [
+  let navItems: { name: string; path: string; icon: any; id?: string }[] = isClient ? [
     { name: 'Meu Painel', path: '/client-panel', icon: Home },
     { name: 'Lojas Parceiras', path: '/partners', icon: Store },
     { name: 'Técnicos Parceiros', path: '/technicians', icon: Wrench }
@@ -180,6 +180,7 @@ export default function Layout() {
   if (isAdmin) {
     navItems.push({ name: 'Configurações', path: '/settings', icon: Settings });
     navItems.push({ name: 'Lojas Parceiras', path: '/partners', icon: Store, id: 'tour-partners' });
+    navItems.push({ name: 'Tour do Sistema', path: '/tour', icon: HelpCircle });
     navItems.push({ name: 'Técnicos Parceiros', path: '/technicians', icon: Wrench, id: 'tour-technicians' });
   }
 
@@ -190,7 +191,6 @@ export default function Layout() {
   return (
     <div className="min-h-screen bg-gray-100 flex">
       <EmployeeLocationTracker />
-      <OnboardingTour />
       {/* Mobile drawer overlay */}
       {isDrawerOpen && (
         <div 

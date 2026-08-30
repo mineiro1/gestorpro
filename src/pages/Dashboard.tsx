@@ -255,7 +255,15 @@ export default function Dashboard() {
     return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
   };
 
+  
   const isTrial = userProfile?.role === 'admin' && userProfile?.subscriptionStatus === 'trial';
+  
+  const formatDate = (dateString: string | undefined) => {
+    if (!dateString) return '';
+    const d = new Date(dateString);
+    return d.toLocaleDateString('pt-BR');
+  };
+
 
   const handlePay = async () => {
     try {
@@ -315,6 +323,21 @@ export default function Dashboard() {
 
   return (
     <div>
+      
+      {userProfile?.role === 'admin' && userProfile?.subscriptionExpiresAt && !isTrial && (
+        <div className="bg-gradient-to-r from-blue-100 to-indigo-50 border border-blue-200 rounded-xl p-4 flex flex-col sm:flex-row items-center justify-between shadow-sm mb-6">
+          <div className="flex items-center mb-4 sm:mb-0">
+            <Clock className="text-blue-600 mr-3 hidden sm:block" size={24} />
+            <div>
+              <h3 className="font-bold text-blue-800">Assinatura Ativa</h3>
+              <p className="text-sm text-blue-700">
+                Sua mensalidade vence em: <span className="font-bold">{formatDate(userProfile.subscriptionExpiresAt)}</span>
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isTrial && (
         <div className="bg-gradient-to-r from-yellow-100 to-yellow-50 border border-yellow-200 rounded-xl p-4 flex flex-col sm:flex-row items-center justify-between shadow-sm mb-6">
           <div className="flex items-center mb-4 sm:mb-0">

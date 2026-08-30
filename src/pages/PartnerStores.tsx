@@ -7,7 +7,7 @@ export default function PartnerStores() {
   const { userProfile, isAdmin } = useAuth();
   const isClient = userProfile?.role === 'client';
   
-  const partnerStores = userProfile?.whatsappSettings?.partnerStores || [];
+  const partnerStores = (userProfile?.whatsappSettings as any)?.partnerStores || [];
   
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -19,7 +19,7 @@ export default function PartnerStores() {
     
     setLoading(true);
     try {
-      const currentSettings = userProfile.whatsappSettings || {};
+      const currentSettings = (userProfile.whatsappSettings as any) || {};
       const newStores = [...(currentSettings.partnerStores || []), { name, phone }];
       
       const { error } = await supabase
@@ -36,8 +36,8 @@ export default function PartnerStores() {
 
       // Update local context
       if (userProfile) {
-        if (!userProfile.whatsappSettings) userProfile.whatsappSettings = {};
-        userProfile.whatsappSettings.partnerStores = newStores;
+        if (!userProfile.whatsappSettings) userProfile.whatsappSettings = {} as any;
+        (userProfile.whatsappSettings as any).partnerStores = newStores;
       }
       
       setName('');
@@ -58,7 +58,7 @@ export default function PartnerStores() {
 
     setLoading(true);
     try {
-      const currentSettings = userProfile.whatsappSettings || {};
+      const currentSettings = (userProfile.whatsappSettings as any) || {};
       const currentStores = currentSettings.partnerStores || [];
       const newStores = currentStores.filter((_, i) => i !== index);
       
@@ -76,8 +76,8 @@ export default function PartnerStores() {
 
       // Update local context
       if (userProfile) {
-        if (!userProfile.whatsappSettings) userProfile.whatsappSettings = {};
-        userProfile.whatsappSettings.partnerStores = newStores;
+        if (!userProfile.whatsappSettings) userProfile.whatsappSettings = {} as any;
+        (userProfile.whatsappSettings as any).partnerStores = newStores;
       }
     } catch (error) {
       console.error('Error removing partner store:', error);

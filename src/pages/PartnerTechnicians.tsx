@@ -7,7 +7,7 @@ export default function PartnerTechnicians() {
   const { userProfile, isAdmin } = useAuth();
   const isClient = userProfile?.role === 'client';
   
-  const partnerTechnicians = userProfile?.whatsappSettings?.partnerTechnicians || [];
+  const partnerTechnicians = (userProfile?.whatsappSettings as any)?.partnerTechnicians || [];
   
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -19,7 +19,7 @@ export default function PartnerTechnicians() {
     
     setLoading(true);
     try {
-      const currentSettings = userProfile.whatsappSettings || {};
+      const currentSettings = (userProfile.whatsappSettings as any) || {};
       const newTechnicians = [...(currentSettings.partnerTechnicians || []), { name, phone }];
       
       const { error } = await supabase
@@ -35,8 +35,8 @@ export default function PartnerTechnicians() {
       if (error) throw error;
 
       if (userProfile) {
-        if (!userProfile.whatsappSettings) userProfile.whatsappSettings = {};
-        userProfile.whatsappSettings.partnerTechnicians = newTechnicians;
+        if (!userProfile.whatsappSettings) userProfile.whatsappSettings = {} as any;
+        (userProfile.whatsappSettings as any).partnerTechnicians = newTechnicians;
       }
       
       setName('');
@@ -57,7 +57,7 @@ export default function PartnerTechnicians() {
 
     setLoading(true);
     try {
-      const currentSettings = userProfile.whatsappSettings || {};
+      const currentSettings = (userProfile.whatsappSettings as any) || {};
       const currentTechnicians = currentSettings.partnerTechnicians || [];
       const newTechnicians = currentTechnicians.filter((_, i) => i !== index);
       
@@ -74,8 +74,8 @@ export default function PartnerTechnicians() {
       if (error) throw error;
 
       if (userProfile) {
-        if (!userProfile.whatsappSettings) userProfile.whatsappSettings = {};
-        userProfile.whatsappSettings.partnerTechnicians = newTechnicians;
+        if (!userProfile.whatsappSettings) userProfile.whatsappSettings = {} as any;
+        (userProfile.whatsappSettings as any).partnerTechnicians = newTechnicians;
       }
     } catch (error) {
       console.error('Error removing partner technician:', error);

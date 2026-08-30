@@ -697,7 +697,7 @@ export default function RoutesPage() {
               }
             }
             
-            const waSettings = userProfile?.whatsappSettings || {};
+            const waSettings = (userProfile?.whatsappSettings as any) || {};
             const msg1 = waSettings.reportMessage1 || `Olá {nome},\n\nO atendimento da sua piscina foi finalizado! Você pode acessar o nosso painel para acompanhar todas as informações do tratamento.\n\nAcesse: https://www.zapmass.app.br/client-panel\nLogin: {telefone}\nSenha: {telefone}`;
             const msg2 = waSettings.reportMessage2 || `Olá {nome},\n\nO atendimento da sua piscina foi finalizado! Verifique as informações completas no nosso painel de clientes.\n\nAcesse: https://www.zapmass.app.br/client-panel`;
             

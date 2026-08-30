@@ -11,8 +11,8 @@ export default function Settings() {
 
   useEffect(() => {
     if (userProfile?.whatsappSettings) {
-      setCompanyName(userProfile.whatsappSettings.companyName || '');
-      setCompanyLogo(userProfile.whatsappSettings.companyLogo || '');
+      setCompanyName((userProfile.whatsappSettings as any).companyName || '');
+      setCompanyLogo((userProfile.whatsappSettings as any).companyLogo || '');
     }
   }, [userProfile]);
 
@@ -36,9 +36,9 @@ export default function Settings() {
       if (error) throw error;
 
       if (userProfile) {
-        if (!userProfile.whatsappSettings) userProfile.whatsappSettings = {};
-        userProfile.whatsappSettings.companyName = companyName;
-        userProfile.whatsappSettings.companyLogo = companyLogo;
+        if (!userProfile.whatsappSettings) userProfile.whatsappSettings = {} as any;
+        (userProfile.whatsappSettings as any).companyName = companyName;
+        (userProfile.whatsappSettings as any).companyLogo = companyLogo;
       }
       
       alert('Configurações salvas com sucesso! (As alterações no painel serão aplicadas no próximo login ou recarregamento)');

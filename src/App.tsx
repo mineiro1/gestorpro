@@ -23,6 +23,7 @@ import VisitsHistory from './pages/VisitsHistory';
 import SubscriptionWall from './pages/SubscriptionWall';
 import SuperAdminPage from './pages/SuperAdminPage';
 import Agenda from './pages/Agenda';
+import TourPage from './pages/TourPage';
 import Layout from './components/Layout';
 
 const ProtectedRoute = ({ children, allowedRoles }: { children: React.ReactNode, allowedRoles?: ('admin' | 'employee' | 'manager' | 'client')[] }) => {
@@ -115,6 +116,7 @@ export default function App() {
             <Route path="technicians" element={<ProtectedRoute allowedRoles={['admin', 'client']}><PartnerTechnicians /></ProtectedRoute>} />
             <Route path="client-panel" element={<ProtectedRoute allowedRoles={['client']}><ClientPanel /></ProtectedRoute>} />
             <Route path="superadmin" element={<ProtectedRoute allowedRoles={['admin']}><SuperAdminPage /></ProtectedRoute>} />
+            <Route path="tour" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><TourPage /></ProtectedRoute>} />
           </Route>
         </Routes>
       </Router>
