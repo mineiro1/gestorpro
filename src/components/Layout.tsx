@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
+import OnboardingTour from './OnboardingTour';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import {  Menu, Store, Wrench, X, Home, Users, UserCircle, Map, LogOut, Bell, MessageSquare, Headphones, Briefcase, History, Contact , Package, Settings } from 'lucide-react';
@@ -178,8 +179,8 @@ export default function Layout() {
 
   if (isAdmin) {
     navItems.push({ name: 'Configurações', path: '/settings', icon: Settings });
-    navItems.push({ name: 'Lojas Parceiras', path: '/partners', icon: Store });
-    navItems.push({ name: 'Técnicos Parceiros', path: '/technicians', icon: Wrench });
+    navItems.push({ name: 'Lojas Parceiras', path: '/partners', icon: Store, id: 'tour-partners' });
+    navItems.push({ name: 'Técnicos Parceiros', path: '/technicians', icon: Wrench, id: 'tour-technicians' });
   }
 
   if (userProfile?.email === 'servincg@gmail.com') {
@@ -189,6 +190,7 @@ export default function Layout() {
   return (
     <div className="min-h-screen bg-gray-100 flex">
       <EmployeeLocationTracker />
+      <OnboardingTour />
       {/* Mobile drawer overlay */}
       {isDrawerOpen && (
         <div 
@@ -251,6 +253,7 @@ export default function Layout() {
             return (
               <div key={item.name}>
                 <Link
+                  id={item.id}
                   to={item.path}
                   onClick={() => setIsDrawerOpen(false)}
                   className={clsx(
