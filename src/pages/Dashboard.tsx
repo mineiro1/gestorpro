@@ -257,6 +257,15 @@ export default function Dashboard() {
 
   
   const isTrial = userProfile?.role === 'admin' && userProfile?.subscriptionStatus === 'trial';
+
+  const isExpiringSoon = () => {
+    if (!userProfile?.subscriptionExpiresAt) return false;
+    const expiresAt = new Date(userProfile.subscriptionExpiresAt);
+    const now = new Date();
+    const diffTime = expiresAt.getTime() - now.getTime();
+    const diffDays = diffTime / (1000 * 3600 * 24);
+    return diffDays <= 1;
+  };
   
   const formatDate = (dateString: string | undefined) => {
     if (!dateString) return '';
@@ -335,6 +344,17 @@ export default function Dashboard() {
               </p>
             </div>
           </div>
+          {isExpiringSoon() && (
+            <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto mt-4 sm:mt-0">
+              <button
+                onClick={handlePay}
+                className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-sm transition-colors flex items-center justify-center whitespace-nowrap"
+              >
+                <CreditCard size={18} className="mr-2" />
+                Renovar Assinatura
+              </button>
+            </div>
+          )}
         </div>
       )}
 
