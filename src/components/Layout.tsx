@@ -7,6 +7,7 @@ import clsx from 'clsx';
 import { Capacitor } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import EmployeeLocationTracker from './EmployeeLocationTracker';
+import SmsGatewayListener from './SmsGatewayListener';
 
 export default function Layout() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -191,6 +192,7 @@ export default function Layout() {
   return (
     <div className="min-h-screen bg-gray-100 flex">
       <EmployeeLocationTracker />
+      <SmsGatewayListener />
       {/* Mobile drawer overlay */}
       {isDrawerOpen && (
         <div 

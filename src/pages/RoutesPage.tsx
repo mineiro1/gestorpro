@@ -704,7 +704,15 @@ export default function RoutesPage() {
             let message = useMessage2 ? msg2 : msg1;
             message = message.replace(/{nome}/g, clientName).replace(/{telefone}/g, cleanPhone);
             
-            if (waSettings.useMetaApi) {
+            if (waSettings.useSmsForReports) {
+              // Envia para a fila de SMS (Gateway)
+              await supabase.from('sms_queue').insert({
+                admin_id: adminId,
+                phone_number: cleanPhone,
+                message: message
+              });
+              console.log('Mensagem de relatório adicionada à fila de SMS.');
+            } else if (waSettings.useMetaApi) {
               await sendMetaMessage(clientPhone, message, waSettings);
               // Não bloqueia a tela com alert
             } else if (waSettings.useEvolutionApi) {
