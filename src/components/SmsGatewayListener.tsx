@@ -83,8 +83,12 @@ export default function SmsGatewayListener() {
       }
     };
 
+    let isProcessingBacklog = false;
+
     // FUNÇÃO A: Varredura de Fila (Caso o app estivesse fechado ou tela bloqueada)
     const processBacklog = async () => {
+      if (isProcessingBacklog) return;
+      isProcessingBacklog = true;
       try {
         const { data: pendingSms } = await supabase
           .from('sms_queue')
@@ -100,11 +104,28 @@ export default function SmsGatewayListener() {
         }
       } catch (e) {
         console.error('Erro ao processar backlog de SMS:', e);
+      } finally {
+        isProcessingBacklog = false;
       }
     };
 
     // Aciona a varredura assim que o componente monta
     processBacklog();
+    
+    // Intervalo de segurança: Varre a fila a cada 15 segundos
+    // Isso garante que mesmo se o WebSocket cair por causa da tela desligada, ele vai processar.
+    const fallbackInterval = setInterval(() => {
+      processBacklog();
+    }, 15000);
+
+    // Quando a tela do celular acender de novo (app voltar pro primeiro plano), força a varredura
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        console.log('👀 App voltou à tela! Verificando fila de SMS...');
+        processBacklog();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     // FUNÇÃO B: Escuta em Tempo Real (Caso o app esteja aberto)
     const setupListener = async () => {
@@ -134,6 +155,8 @@ export default function SmsGatewayListener() {
         console.log('Desconectando listener de SMS...');
         supabase.removeChannel(channelRef.current);
       }
+      clearInterval(fallbackInterval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [userProfile?.adminId, userProfile?.uid, isAdmin]);
 
