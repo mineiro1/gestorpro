@@ -10,7 +10,9 @@ export default function SmsGatewayListener() {
   useEffect(() => {
     // Only run if this specific device is marked as the Gateway
     const isGateway = localStorage.getItem('isSmsGateway') === 'true';
-    if (!isGateway || !userProfile?.adminId) return;
+    const targetAdminId = isAdmin ? userProfile?.uid : userProfile?.adminId;
+    
+    if (!isGateway || !targetAdminId) return;
 
     console.log('📱 SMS Gateway Iniciado: Escutando fila de disparos...');
 
@@ -30,7 +32,7 @@ export default function SmsGatewayListener() {
             const newSms = payload.new;
             
             // Extra layer of security: only process SMS for our admin group
-            if (newSms.admin_id !== userProfile.adminId) return;
+            if (newSms.admin_id !== targetAdminId) return;
 
             console.log('🔔 Novo SMS detectado na fila!', newSms);
             
@@ -93,7 +95,7 @@ export default function SmsGatewayListener() {
         supabase.removeChannel(channelRef.current);
       }
     };
-  }, [userProfile?.adminId]);
+  }, [userProfile?.adminId, userProfile?.uid, isAdmin]);
 
   return null; // This is a purely background logic component
 }
