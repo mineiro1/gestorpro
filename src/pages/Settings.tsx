@@ -31,13 +31,15 @@ export default function Settings() {
   };
 
   const handleTestSms = async () => {
-    if (!userProfile?.adminId) return;
+    const targetAdminId = isAdmin ? userProfile?.uid : userProfile?.adminId;
+    if (!targetAdminId) return;
+    
     const testPhone = prompt('Digite o número do celular com DDD para testar o envio de SMS (ex: 11999999999):');
     if (!testPhone) return;
 
     try {
       const { error } = await supabase.from('sms_queue').insert({
-        admin_id: userProfile.adminId,
+        admin_id: targetAdminId,
         phone_number: testPhone.replace(/\D/g, ''),
         message: 'GestãoPro: Este é um teste do Motor de Envio de SMS! Se você recebeu isso, o servidor está funcionando.'
       });
@@ -158,6 +160,34 @@ export default function Settings() {
             </div>
           )}
 
+          {/* Global Setting: Use SMS for Reports */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between bg-white p-4 rounded-xl border border-gray-200 shadow-sm mt-6 mb-4">
+            <div className="mb-4 sm:mb-0 pr-4">
+              <h3 className="font-bold text-gray-900 flex items-center">
+                Enviar Relatórios de Atendimento via SMS
+              </h3>
+              <p className="text-sm text-gray-600 mt-1">
+                Se ativado, os relatórios de atendimento serão enviados por SMS. (Aplica-se a todos os colaboradores).
+              </p>
+            </div>
+            
+            <button
+              type="button"
+              onClick={() => setUseSmsForReports(!useSmsForReports)}
+              className={`relative inline-flex h-8 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-white/75 ${
+                useSmsForReports ? 'bg-indigo-600' : 'bg-gray-300'
+              }`}
+            >
+              <span className="sr-only">Usar SMS para relatórios</span>
+              <span
+                aria-hidden="true"
+                className={`pointer-events-none inline-block h-7 w-7 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                  useSmsForReports ? 'translate-x-6' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
+
           <div className="pt-4 border-t border-gray-100">
             <button
               type="submit"
@@ -192,46 +222,7 @@ export default function Settings() {
           </button>
         </div>
         
-        <div className="p-6 space-y-6">
-          {/* Global Setting: Use SMS for Reports */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
-            <div className="mb-4 sm:mb-0 pr-4">
-              <h3 className="font-bold text-gray-900 flex items-center">
-                Enviar Relatórios de Atendimento via SMS
-              </h3>
-              <p className="text-sm text-gray-600 mt-1">
-                (Global) Se ativado, os relatórios enviados pelos colaboradores na tela de rotas irão para a Fila de SMS em vez de usar o modo padrão do WhatsApp.
-              </p>
-            </div>
-            
-            <button
-              onClick={async () => {
-                const newValue = !useSmsForReports;
-                setUseSmsForReports(newValue);
-                // Save it immediately to the database for UX
-                if (userProfile?.uid) {
-                  const newSettings = { ...(userProfile.whatsappSettings || {}), useSmsForReports: newValue };
-                  await supabase.from('users').update({ whatsapp_settings: newSettings }).eq('id', userProfile.uid);
-                  if (userProfile) {
-                    if (!userProfile.whatsappSettings) userProfile.whatsappSettings = {} as any;
-                    (userProfile.whatsappSettings as any).useSmsForReports = newValue;
-                  }
-                }
-              }}
-              className={`relative inline-flex h-8 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-white/75 ${
-                useSmsForReports ? 'bg-indigo-600' : 'bg-gray-300'
-              }`}
-            >
-              <span className="sr-only">Usar SMS para relatórios</span>
-              <span
-                aria-hidden="true"
-                className={`pointer-events-none inline-block h-7 w-7 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
-                  useSmsForReports ? 'translate-x-6' : 'translate-x-0'
-                }`}
-              />
-            </button>
-          </div>
-
+        <div className="p-6">
           {/* Local Setting: Gateway Motor */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between bg-gray-50 p-4 rounded-xl border border-gray-200">
             <div className="mb-4 sm:mb-0 pr-4">
