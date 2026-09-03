@@ -16,10 +16,100 @@ export default function SmsGatewayListener() {
 
     console.log('📱 SMS Gateway Iniciado: Escutando fila de disparos...');
 
-    // Setup Supabase Realtime Listener for new SMS
+    const processSms = async (newSms: any) => {
+      // Extra layer of security: only process SMS for our admin group
+      if (newSms.admin_id !== targetAdminId) return;
+
+      console.log('🔔 Processando SMS:', newSms);
+      
+      try {
+        // 1. Double check if it is still pending (avoids race condition if clicked twice)
+        const { data: checkData } = await supabase.from('sms_queue').select('status').eq('id', newSms.id).single();
+        if (checkData?.status !== 'pending') return;
+
+        // 2. Mark as sending to prevent duplicate processing
+        await supabase
+          .from('sms_queue')
+          .update({ status: 'sending' })
+          .eq('id', newSms.id);
+
+        if (Capacitor.isNativePlatform()) {
+          if ((window as any).sms) {
+             await new Promise((resolve, reject) => {
+               // A) Timeout protection: Se o chip travar por 10 seg, aborta e não trava o app
+               const timeout = setTimeout(() => reject(new Error('Timeout da operadora ao enviar SMS')), 10000);
+               
+               const options = {
+                  replaceLineBreaks: false, 
+                  android: { intent: '' } // SILENT background send
+               };
+               
+               (window as any).sms.send(newSms.phone_number, newSms.message, options, () => {
+                 clearTimeout(timeout);
+                 resolve(true);
+               }, (err: any) => {
+                 clearTimeout(timeout);
+                 reject(err);
+               });
+             });
+             
+             // B) Rate Limiting Anti-Spam: Espera 2 segs antes de pegar a próxima da fila
+             await new Promise(r => setTimeout(r, 2000));
+
+          } else {
+             console.warn('Plugin de SMS não encontrado. Simulando envio...');
+             await new Promise(r => setTimeout(r, 1000)); 
+          }
+        } else {
+          console.log(`🌐 Ambiente Web: Simulando envio de SMS para ${newSms.phone_number}`);
+          await new Promise(r => setTimeout(r, 1000));
+        }
+
+        // 3. Update as successfully sent
+        await supabase
+          .from('sms_queue')
+          .update({ status: 'sent' })
+          .eq('id', newSms.id);
+          
+        console.log(`✅ SMS enviado com sucesso para ${newSms.phone_number}`);
+
+      } catch (error: any) {
+        console.error('❌ Falha ao enviar SMS:', error);
+        // Mark as error so we know it failed
+        await supabase
+          .from('sms_queue')
+          .update({ status: 'error', error_message: error.message || 'Erro desconhecido' })
+          .eq('id', newSms.id);
+      }
+    };
+
+    // FUNÇÃO A: Varredura de Fila (Caso o app estivesse fechado ou tela bloqueada)
+    const processBacklog = async () => {
+      try {
+        const { data: pendingSms } = await supabase
+          .from('sms_queue')
+          .select('*')
+          .eq('admin_id', targetAdminId)
+          .eq('status', 'pending');
+          
+        if (pendingSms && pendingSms.length > 0) {
+          console.log(`📦 Encontrou ${pendingSms.length} SMS presos na fila. Processando...`);
+          for (const sms of pendingSms) {
+             await processSms(sms);
+          }
+        }
+      } catch (e) {
+        console.error('Erro ao processar backlog de SMS:', e);
+      }
+    };
+
+    // Aciona a varredura assim que o componente monta
+    processBacklog();
+
+    // FUNÇÃO B: Escuta em Tempo Real (Caso o app esteja aberto)
     const setupListener = async () => {
       channelRef.current = supabase
-        .channel('sms_queue_listener')
+        .channel('sms_queue_listener_' + targetAdminId)
         .on(
           'postgres_changes',
           {
@@ -29,62 +119,12 @@ export default function SmsGatewayListener() {
             filter: `status=eq.pending`
           },
           async (payload) => {
-            const newSms = payload.new;
-            
-            // Extra layer of security: only process SMS for our admin group
-            if (newSms.admin_id !== targetAdminId) return;
-
-            console.log('🔔 Novo SMS detectado na fila!', newSms);
-            
-            try {
-              // Mark as sending to prevent other listeners (if any) from picking it up
-              await supabase
-                .from('sms_queue')
-                .update({ status: 'sending' })
-                .eq('id', newSms.id);
-
-              if (Capacitor.isNativePlatform()) {
-                // Here we call the native SMS plugin
-                // Note: The user needs to install a silent SMS plugin (e.g. cordova-sms-plugin)
-                // and grant android.permission.SEND_SMS in AndroidManifest.xml
-                
-                if ((window as any).sms) {
-                   await new Promise((resolve, reject) => {
-                     const options = {
-                        replaceLineBreaks: false, 
-                        android: { intent: '' } // intent: '' means SILENT background send
-                     };
-                     (window as any).sms.send(newSms.phone_number, newSms.message, options, resolve, reject);
-                   });
-                } else {
-                   console.warn('Plugin de SMS não encontrado no objeto window. Simulando envio no console...');
-                   // Simulate network delay for testing
-                   await new Promise(r => setTimeout(r, 1000)); 
-                }
-              } else {
-                console.log(`🌐 Ambiente Web: Simulando envio de SMS para ${newSms.phone_number}`);
-                await new Promise(r => setTimeout(r, 1000));
-              }
-
-              // Update as successfully sent
-              await supabase
-                .from('sms_queue')
-                .update({ status: 'sent' })
-                .eq('id', newSms.id);
-                
-              console.log(`✅ SMS enviado com sucesso para ${newSms.phone_number}`);
-
-            } catch (error: any) {
-              console.error('❌ Falha ao enviar SMS:', error);
-              // Mark as error
-              await supabase
-                .from('sms_queue')
-                .update({ status: 'error', error_message: error.message || 'Erro desconhecido' })
-                .eq('id', newSms.id);
-            }
+            await processSms(payload.new);
           }
         )
-        .subscribe();
+        .subscribe((status) => {
+           console.log('📡 Status do Servidor de SMS:', status);
+        });
     };
 
     setupListener();
