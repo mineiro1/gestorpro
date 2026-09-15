@@ -72,8 +72,6 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
             schema: 'public', 
             table: 'chat_messages'
           }, (payload) => {
-            // Can't do await directly in the realtime callback nicely, 
-            // so we wrap it in an IIFE (Immediately Invoked Function Expression)
             (async () => {
               const { data } = await supabase.from('chat_sessions').select('client_id').eq('id', payload.new.session_id).single();
               if (data && data.client_id === client.id) {
@@ -81,6 +79,10 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
                     if (prev.find(m => m.id === payload.new.id)) return prev;
                     return [...prev, payload.new];
                  });
+                 // Force a small delay to ensure ref scrolls after render
+                 setTimeout(() => {
+                   messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+                 }, 100);
               }
             })();
           })
