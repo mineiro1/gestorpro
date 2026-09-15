@@ -1,0 +1,115 @@
+import React, { useState } from 'react';
+import { useAuth } from '../contexts/AuthContext';
+import { CreditCard, AlertTriangle, LogOut, MessageCircle } from 'lucide-react';
+import { supabase } from '../lib/supabase';
+
+export default function SubscriptionWall() {
+  const { userProfile } = useAuth();
+  const [loading, setLoading] = useState(false);
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+  };
+
+  const handlePay = async () => {
+    setLoading(true);
+    try {
+      let price = 99.90;
+      try {
+        const { data } = await supabase.from('settings').select('*').eq('id', 'platform').single();
+        if (data && data.monthlyprice) {
+          price = data.monthlyprice;
+        }
+      } catch (e) {
+        console.error('Failed to get price', e);
+      }
+
+      const response = await fetch('/api/create-preference', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          title: 'Assinatura Mensal - GestãoPro',
+          price: price,
+          quantity: 1,
+          adminId: userProfile?.role === 'admin' ? userProfile?.uid : userProfile?.adminId,
+          email: userProfile?.email || 'admin@gestaopro.com',
+          origin: window.location.origin
+        })
+      });
+
+      if (!response.ok) {
+        let errMsg = 'Falha ao gerar link de pagamento';
+        try {
+          const text = await response.text();
+          try {
+            const errData = JSON.parse(text);
+            errMsg = errData.error || errData.message || errMsg;
+          } catch(e) {
+            errMsg = `Erro no servidor (${response.status}): ${text.substring(0, 50)}`;
+          }
+        } catch (e) {
+          // ignore
+        }
+        throw new Error(errMsg);
+      }
+
+      const data = await response.json();
+      if (data.init_point) {
+        window.location.href = data.init_point;
+      }
+    } catch (err: any) {
+      console.error(err);
+      alert('Houve um problema ao processar o pagamento: ' + err.message + '. Verifique com o SuperAdmin.');
+    } finally {
+        setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-100 flex flex-col items-center justify-center p-4">
+      <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8 text-center">
+        <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+          <AlertTriangle className="text-red-500" size={32} />
+        </div>
+        
+        <h1 className="text-2xl font-bold text-gray-800 mb-2">Assinatura Expirada</h1>
+        <p className="text-gray-600 mb-6">
+          {userProfile?.role === 'admin' 
+            ? 'O seu período de utilização (teste grátis ou assinatura) terminou. Renove agora para continuar utilizando o sistema. clique no botao entre em contato e tenha acesso novamente.'
+            : 'A assinatura da sua empresa encontra-se inativa. Por favor, contate o seu administrador.'}
+        </p>
+
+        {userProfile?.role === 'admin' && (
+          <div className="flex flex-col gap-3 mb-4">
+            <button
+              onClick={handlePay}
+              disabled={loading}
+              className="w-full flex justify-center items-center bg-primary text-white py-3 rounded-lg font-semibold hover:bg-primary/90 transition-colors disabled:opacity-50"
+            >
+              <CreditCard className="mr-2" size={20} />
+              {loading ? 'Processando...' : 'Pagar Assinatura'}
+            </button>
+            <button
+              onClick={() => window.open('https://wa.me/5567992499469', '_blank')}
+              disabled={loading}
+              className="w-full flex justify-center items-center bg-gray-100 text-gray-700 border border-gray-200 py-3 rounded-lg font-semibold hover:bg-gray-200 transition-colors disabled:opacity-50"
+            >
+              <MessageCircle className="mr-2" size={20} />
+              Contato (Suporte)
+            </button>
+          </div>
+        )}
+
+        <button
+          onClick={handleLogout}
+          className="w-full flex justify-center items-center bg-gray-200 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-300 transition-colors"
+        >
+          <LogOut className="mr-2" size={20} />
+          Sair
+        </button>
+      </div>
+    </div>
+  );
+}

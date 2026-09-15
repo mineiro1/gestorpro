@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="O aplicativo definitivo para piscineiros e empresas de manutenção de piscinas. Organize rotas de limpeza, relatórios automáticos no WhatsApp, agenda e cobranças. Funciona no Celular e PC." />
+    <meta name="keywords" content="aplicativo para piscineiro, sistema para piscineiro, gestão de piscinas, app limpeza de piscina, manutenção de piscinas, rotas piscineiro" />
+    <meta property="og:title" content="GestãoPro - O Aplicativo Definitivo para Piscineiros" />
+    <meta property="og:description" content="Automatize sua empresa de manutenção de piscinas. Controle de rotas, envio de PDF no WhatsApp e Portal do Cliente." />
+    <meta property="og:type" content="website" />
+    <link rel="icon" type="image/png" href="/logo.png" />
+    <link rel="apple-touch-icon" href="/logo.png" />
+    <link rel="manifest" href="/manifest.json" />
+    <title>GestãoPro - Aplicativo para Piscineiros</title>
+    <script>
+      // Fallback auto-recovery if JS bundle fails to load (PWA cache issue)
+      window.addEventListener('error', function(e) {
+        if (e.target.tagName === 'SCRIPT' && e.target.src.includes('/assets/')) {
+          console.error("Failed to load script, likely a stale cache. Forcing reload...");
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(function(registrations) {
+              for(let registration of registrations) {
+                registration.unregister();
+              }
+            });
+          }
+          if (!sessionStorage.getItem('reloaded_once')) {
+            sessionStorage.setItem('reloaded_once', 'true');
+            window.location.reload(true);
+          }
+        }
+      }, true);
+
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').then((registration) => {
+            console.log('ServiceWorker registration successful with scope: ', registration.scope);
+          }, (err) => {
+            console.log('ServiceWorker registration failed: ', err);
+          });
+        });
+
+        // Notify SW to process queued offline requests when network is back
+        window.addEventListener('online', () => {
+          if (navigator.serviceWorker.controller) {
+            navigator.serviceWorker.controller.postMessage({ type: 'SYNC_ONLINE' });
+          }
+        });
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

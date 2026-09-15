@@ -1,0 +1,575 @@
+import express from "express";
+import { createServer as createViteServer } from "vite";
+import path from "path";
+import cors from "cors";
+import { MercadoPagoConfig, Preference, Payment } from "mercadopago";
+import * as dotenv from 'dotenv';
+import fs from 'fs';
+import { createClient } from '@supabase/supabase-js';
+
+dotenv.config();
+
+const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+
+const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+  auth: {
+    autoRefreshToken: false,
+    persistSession: false
+  }
+});
+
+async function startServer() {
+  const app = express();
+  const PORT = 3000;
+
+  app.use(cors());
+  app.use(express.json());
+
+  app.use((req, res, next) => {
+    console.log(`[${req.method}] ${req.url}`);
+    next();
+  });
+
+  // API Routes
+  app.get("/api/test-db", async (req, res) => {
+    try {
+      // test if we can read users without auth
+      const { data, error } = await supabaseAdmin.from("users").select("id").limit(1);
+      if (error) {
+         return res.json({ status: "error", message: error.message, code: error.code, usingServiceKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY });
+      }
+      return res.json({ status: "success", rows: data.length, usingServiceKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY });
+    } catch(e) {
+      return res.json({ status: "exception", message: e.message });
+    }
+  });
+
+  app.post("/api/create-preference", async (req, res) => {
+    try {
+      const { title, price, quantity, adminId, email, origin } = req.body;
+
+      let mpToken = process.env.MP_ACCESS_TOKEN;
+      if (!mpToken || mpToken.length < 40) {
+        mpToken = "APP_USR-5520671839390863-031622-4f2fede32936291cc0567aebae0a319e-1434591190";
+      }
+      
+      if (!mpToken) {
+        console.error("No MP access token");
+        return res.status(500).json({ error: "Mercado Pago access token not configured." });
+      }
+
+      const client = new MercadoPagoConfig({ accessToken: mpToken });
+      const preference = new Preference(client);
+
+      const response = await preference.create({
+        body: {
+          items: [
+            {
+              id: "subscription_monthly",
+              title: title,
+              quantity: quantity,
+              unit_price: Number(price),
+              currency_id: "BRL"
+            }
+          ],
+          payer: {
+            email: email || "admin@gestaopro.com",
+            name: "Cliente",
+            surname: "GestãoPro",
+          },
+          external_reference: adminId, // We use this to identify the user on webhook
+          back_urls: {
+            success: `${(process.env.PUBLIC_URL || origin || req.headers.origin || 'https://www.rspiscinas.app.br')}/`,
+            failure: `${(process.env.PUBLIC_URL || origin || req.headers.origin || 'https://www.rspiscinas.app.br')}/`,
+            pending: `${(process.env.PUBLIC_URL || origin || req.headers.origin || 'https://www.rspiscinas.app.br')}/`
+          },
+          auto_return: "approved",
+          notification_url: `${(process.env.PUBLIC_URL || origin || req.headers.origin || 'https://www.rspiscinas.app.br')}/api/mp-webhook`
+        }
+      });
+
+      console.log(`Success: ${response.id}`);
+      res.json({ id: response.id, init_point: response.init_point });
+    } catch (error: any) {
+      console.error(error);
+      console.log(`Error: ${error?.message || JSON.stringify(error)}`);
+      res.status(500).json({ error: error?.message || "Failed to create preference" });
+    }
+  });
+
+
+async function processPayment(paymentId, adminId) {
+  try {
+    console.log('Processing payment:', paymentId, 'for admin:', adminId);
+    // Check if already processed
+    const { data: existing, error: selError } = await supabaseAdmin.from('settings').select('id').eq('id', 'payment_' + paymentId).single();
+    if (selError && selError.code !== 'PGRST116') {
+        console.error('Error checking existing payment (Possible RLS issue):', selError);
+        throw new Error("Failed to check existing payment: " + selError.message);
+    }
+    
+    if (existing) {
+      console.log('Payment already processed:', paymentId);
+      return;
+    }
+    
+    // Get user
+    const { data: userData, error: userError } = await supabaseAdmin.from("users").select("subscription_expires_at").eq("id", adminId).single();
+    if (userError) {
+       console.error('Error fetching user (Possible RLS issue):', userError);
+       throw new Error("Failed to fetch user: " + userError.message);
+    }
+
+    let currentExpiry = new Date();
+    if (userData && userData.subscription_expires_at) {
+       const userExpiry = new Date(userData.subscription_expires_at);
+       if (userExpiry > currentExpiry) {
+           currentExpiry = userExpiry;
+       }
+    }
+    currentExpiry.setDate(currentExpiry.getDate() + 30);
+    
+    // Update user
+    const { data: updateData, error: updateError } = await supabaseAdmin.from("users").update({
+      subscription_status: 'active',
+      subscription_expires_at: currentExpiry.toISOString(),
+    }).eq('id', adminId).select();
+    
+    if (!updateError && (!updateData || updateData.length === 0)) {
+        throw new Error("Update silent failure: Check if SUPABASE_SERVICE_ROLE_KEY is valid. RLS might have blocked the update.");
+    }
+
+    if (updateError) {
+        console.error('Error updating user (Possible RLS issue):', updateError);
+        throw new Error("Failed to update user: " + updateError.message);
+    }
+    
+    // Mark as processed
+    const { error: insError } = await supabaseAdmin.from('settings').insert({ id: 'payment_' + paymentId });
+    if (insError) {
+        console.error('Error inserting settings (Possible RLS issue):', insError);
+        throw new Error("Failed to insert payment record: " + insError.message);
+    }
+    
+    console.log('Successfully processed payment:', paymentId);
+  } catch (error) {
+    console.error('Critical Error processing payment:', error);
+    throw error;
+  }
+}
+
+
+  
+  app.post("/api/chat/send", async (req, res) => {
+    try {
+      const { text, clientPhone, waSettings } = req.body;
+      if (!text || !clientPhone) return res.status(400).json({error: "Missing fields"});
+
+      // Now send via Evolution API
+      if (waSettings?.useEvolutionApi && waSettings?.evolutionApiUrl && waSettings?.evolutionApiKey && waSettings?.evolutionInstanceName) {
+        const cleanPhone = clientPhone.replace(/\D/g, '');
+        const response = await fetch(`${waSettings.evolutionApiUrl}/message/sendText/${waSettings.evolutionInstanceName}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': waSettings.evolutionApiKey
+          },
+          body: JSON.stringify({
+            number: `55${cleanPhone}`,
+            text: text,
+            options: { delay: 1200, presence: 'composing' },
+            textMessage: { text: text }
+          })
+        });
+        if (!response.ok) {
+           const errText = await response.text();
+           console.error("Evolution Send Error:", errText);
+        }
+      } else if (waSettings?.useMetaApi) {
+        if (!waSettings.metaToken) throw new Error("Token Meta obrigatório");
+        
+        const cleanPhone = clientPhone.replace(/\D/g, '');
+        const number = cleanPhone.startsWith('55') ? cleanPhone : `55${cleanPhone}`;
+        
+        let baseUrl = (waSettings.metaServerUrl || 'https://graph.facebook.com/v19.0').trim().replace(/\/$/, '');
+        if (baseUrl && !baseUrl.startsWith('http')) {
+          baseUrl = 'https://' + baseUrl;
+        }
+        const isWame = baseUrl && !baseUrl.includes('graph.facebook.com');
+        
+        let url, headers, body;
+        if (isWame) {
+           url = `${baseUrl}/${waSettings.metaToken}/message/text`;
+           headers = { 'Content-Type': 'application/json' };
+           body = JSON.stringify({ to: number, text: text });
+        } else {
+           const phoneId = waSettings.metaPhoneNumberId ? `/${waSettings.metaPhoneNumberId}` : '';
+           url = `${baseUrl}${phoneId}/messages`;
+           headers = {
+              'Authorization': `Bearer ${waSettings.metaToken}`,
+              'Content-Type': 'application/json'
+           };
+           body = JSON.stringify({
+              messaging_product: "whatsapp",
+              recipient_type: "individual",
+              to: number,
+              type: "text",
+              text: { preview_url: false, body: text }
+           });
+        }
+        
+        const response = await fetch(url, { method: 'POST', headers, body });
+        if (!response.ok) {
+           const errText = await response.text();
+           console.error("Meta/Wame Send Error:", errText);
+           return res.status(500).json({ error: "Erro na API Meta/WAME", details: errText });
+        }
+      }
+      
+      res.json({ success: true });
+    } catch(e) {
+      console.error(e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+
+  // Webhook for WAME / Meta API
+  app.get("/api/webhook/wame", (req, res) => {
+    const mode = req.query["hub.mode"];
+    const challenge = req.query["hub.challenge"];
+    if (mode === "subscribe" && challenge) {
+      return res.status(200).send(challenge);
+    }
+    return res.status(200).send("OK");
+  });
+
+  app.post("/api/webhook/wame", async (req, res) => {
+    try {
+            console.log("Wame/Meta Webhook Received:", JSON.stringify(req.body));
+      // Save debug log to DB just so we can see it!
+      try {
+         await supabaseAdmin.from('chat_messages').insert({
+            session_id: 'e867ca9f-d11f-4bb5-8bc6-96e1455fd260', // fake session ID just to see it in db
+            sender_type: 'client',
+            content: "WEBHOOK_PAYLOAD: " + JSON.stringify(req.body).substring(0, 500)
+         });
+      } catch(e) {}
+      const body = req.body;
+      
+      let phone = "";
+      let content = "";
+      let mediaUrl = "";
+      
+      // Parse Meta API format
+      if ((body.object === "whatsapp_business_account" || body.object === "wame") && body.entry && body.entry[0].changes) {
+         const value = body.entry[0].changes[0].value;
+         if (value.messages && value.messages.length > 0) {
+            const msg = value.messages[0];
+            phone = msg.from; // e.g. "5567991907236"
+            if (msg.type === "text" && msg.text) {
+               content = msg.text.body;
+            } else if (msg.type === "audio") {
+               content = "🎵 Mensagem de Áudio";
+            } else if (msg.type === "image") {
+               content = "📷 Imagem";
+            }
+         } else {
+            // Probably a status update (delivered, read)
+            return res.status(200).send("EVENT_RECEIVED");
+         }
+      } 
+      // Parse alternative Wame/Z-API flat format just in case
+      else if (body.phone && body.message) {
+          phone = body.phone;
+          content = body.message;
+      } else if (body.contact && body.message) {
+          phone = body.contact;
+          content = body.message;
+      } else if (body.from && body.body) { // Another common format
+          phone = body.from;
+          content = body.body;
+      }
+      
+      if (!phone || !content) {
+         return res.status(200).send("EVENT_RECEIVED");
+      }
+      
+      phone = phone.replace(/\D/g, '');
+      
+      const { data: clients, error: clientsErr } = await supabaseAdmin.from('clients').select('id, phone, local_phone, admin_id, employee_id');
+      if (clientsErr) console.error("Webhook clients error:", clientsErr);
+      
+      const matchedClient = clients?.find(c => {
+         const cp = (c.phone || '').replace(/\D/g, '');
+         const lp = (c.local_phone || '').replace(/\D/g, '');
+         if (!cp && !lp) return false;
+         
+         // Helper function to safely get the last 8 digits of a number for robust Brazilian matching
+         // This bypasses issues with DDI (55), DDD, and the presence/absence of the 9th digit.
+         const getCore = (num) => num.length >= 8 ? num.slice(-8) : num;
+         
+         const webhookCore = getCore(phone);
+         
+         let matchPhone = false;
+         if (cp.length > 5) {
+            matchPhone = cp.includes(phone) || phone.includes(cp) || getCore(cp) === webhookCore;
+         }
+         
+         let matchLocal = false;
+         if (lp.length > 5) {
+            matchLocal = lp.includes(phone) || phone.includes(lp) || getCore(lp) === webhookCore;
+         }
+         
+         return matchPhone || matchLocal;
+      });
+      
+      if (!matchedClient) return res.status(200).send("EVENT_RECEIVED");
+
+      const { data: sessions, error: sessionsErr } = await supabaseAdmin
+        .from('chat_sessions')
+        .select('*')
+        .eq('client_id', matchedClient.id)
+        .eq('status', 'open')
+        .order('created_at', { ascending: false });
+        
+      let activeSession = null;
+      
+      if (!sessions || sessions.length === 0) {
+         // Create a new session so the message is not lost!
+         const { data: newSession, error: createErr } = await supabaseAdmin.from('chat_sessions').insert({
+             client_id: matchedClient.id,
+             admin_id: matchedClient.admin_id,
+             employee_id: matchedClient.employee_id || matchedClient.admin_id,
+             status: 'open'
+         }).select().single();
+         if (createErr || !newSession) return res.status(200).send("EVENT_RECEIVED");
+         activeSession = newSession;
+      } else {
+         activeSession = sessions[0];
+      }
+      // Time lock removed for testing
+      // const createdTime = new Date(activeSession.created_at).getTime();
+      // const now = new Date().getTime();
+      // if (now - createdTime > 30 * 60 * 1000) {
+      //    await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
+      //    return res.status(200).send("EVENT_RECEIVED");
+      // }
+      
+      await supabaseAdmin.from('chat_messages').insert({
+         session_id: activeSession.id,
+         sender_type: 'client',
+         content: content,
+         media_url: mediaUrl
+      });
+      
+      return res.status(200).send("EVENT_RECEIVED");
+    } catch(e) {
+      console.error("Wame Webhook Error:", e);
+      return res.status(500).send("Error");
+    }
+  });
+
+  // Webhook for incoming messages
+  app.post("/api/webhook/evolution", async (req, res) => {
+    try {
+      console.log("Evolution Webhook Received:", JSON.stringify(req.body));
+      const body = req.body;
+      
+      // Evolution API format usually comes in body.data for messages
+      // This varies by version, let's handle the typical structure
+      const msgData = body.data || body;
+      
+      if (!msgData || !msgData.key || !msgData.message) {
+         return res.status(200).send("OK");
+      }
+
+      // Ignore outgoing messages
+      if (msgData.key.fromMe) {
+         return res.status(200).send("OK");
+      }
+
+      let remoteJid = msgData.key.remoteJid || "";
+      if (!remoteJid) return res.status(200).send("OK");
+      
+      // remoteJid is usually 5511999999999@s.whatsapp.net
+      let phone = remoteJid.split('@')[0].replace('55', ''); // naive clean
+      
+      // Extract text content
+      let content = "";
+      if (msgData.message.conversation) content = msgData.message.conversation;
+      else if (msgData.message.extendedTextMessage) content = msgData.message.extendedTextMessage.text;
+      
+      // Handle audio/media (Simplified, normally you need to download from Evolution)
+      let mediaUrl = "";
+      if (msgData.message.audioMessage) {
+         content = "🎵 Mensagem de Áudio";
+         // We would download the audio here if we had full evolution setup
+      } else if (msgData.message.imageMessage) {
+         content = "📷 Imagem";
+      }
+
+      if (!content && !mediaUrl) return res.status(200).send("OK");
+
+      // Find an OPEN session for this phone number
+      // Since phone can be formatted differently, we query clients where phone like %phone%
+      // For safety, we query the chat_sessions matching the client.
+      
+      // A more robust query would search by phone or local_phone
+      const { data: clients } = await supabaseAdmin.from('clients').select('id, phone, local_phone, admin_id, employee_id');
+      if (!clients) return res.status(200).send("OK");
+      
+      // Find matching client
+      const matchedClient = clients.find(c => {
+         const cp = (c.phone || '').replace(/\D/g, '');
+         const lp = (c.local_phone || '').replace(/\D/g, '');
+         return cp.includes(phone) || lp.includes(phone) || phone.includes(cp) || phone.includes(lp);
+      });
+      
+      if (!matchedClient) return res.status(200).send("OK");
+
+      // Find open session
+      const { data: sessions } = await supabaseAdmin
+        .from('chat_sessions')
+        .select('*')
+        .eq('client_id', matchedClient.id)
+        .eq('status', 'open')
+        .order('created_at', { ascending: false });
+        
+      let activeSession = null;
+      if (!sessions || sessions.length === 0) {
+         const { data: newSession, error: createErr } = await supabaseAdmin.from('chat_sessions').insert({
+             client_id: matchedClient.id,
+             admin_id: matchedClient.admin_id,
+             employee_id: matchedClient.employee_id || matchedClient.admin_id,
+             status: 'open'
+         }).select().single();
+         if (createErr || !newSession) return res.status(200).send("OK");
+         activeSession = newSession;
+      } else {
+         activeSession = sessions[0];
+      }
+      
+      // Time lock removed for testing
+      // const createdTime = new Date(activeSession.created_at).getTime();
+      // const now = new Date().getTime();
+      // if (now - createdTime > 30 * 60 * 1000) {
+      //    await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
+      //    return res.status(200).send("OK");
+      // }
+
+      // Save message
+      await supabaseAdmin.from('chat_messages').insert({
+         session_id: activeSession.id,
+         sender_type: 'client',
+         content: content,
+         media_url: mediaUrl
+      });
+      
+      return res.status(200).send("OK");
+    } catch(e) {
+      console.error("Webhook Error:", e);
+      return res.status(500).send("Error");
+    }
+  });
+
+app.all("/api/sync-payment", async (req, res) => {
+    const payment_id = req.body?.payment_id || req.query?.payment_id || req.query?.id;
+    if (!payment_id) return res.status(400).json({ error: "Missing payment_id" });
+    
+    let mpToken = process.env.MP_ACCESS_TOKEN;
+    if (!mpToken || mpToken.length < 40) {
+      mpToken = "APP_USR-5520671839390863-031622-4f2fede32936291cc0567aebae0a319e-1434591190";
+    }
+    
+    try {
+      const client = new MercadoPagoConfig({ accessToken: mpToken });
+      const paymentDetails = new Payment(client);
+      const paymentInfo = await paymentDetails.get({ id: String(payment_id) });
+      
+      console.log("Sync Info:", paymentInfo.status, paymentInfo.external_reference);
+      if (paymentInfo.status === "approved" && paymentInfo.external_reference) {
+        await processPayment(paymentInfo.id, paymentInfo.external_reference);
+        return res.json({ success: true });
+      } else {
+        return res.status(400).json({ error: "Payment not approved or missing external_reference" });
+      }
+    } catch (e: any) {
+      console.error(e);
+      return res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/mp-webhook", async (req, res) => {
+    console.log("Received MP Webhook:", req.query, req.body);
+    let dataId = req.query["data.id"] || req.query.id || (req.body && req.body.data && req.body.data.id) || (req.body && req.body.id);
+    let type = req.query.type || req.query.topic || (req.body && req.body.type) || (req.body && req.body.topic) || (req.body && req.body.action);
+    
+    console.log("Extracted Webhook Data - type:", type, "dataId:", dataId);
+
+    if ((type === "payment" || type === "payment.created" || type === "payment.updated") && dataId) {
+      let mpToken = process.env.MP_ACCESS_TOKEN;
+      if (!mpToken || mpToken.length < 40) {
+        mpToken = "APP_USR-5520671839390863-031622-4f2fede32936291cc0567aebae0a319e-1434591190";
+      }
+
+      if (!mpToken || !supabaseUrl) {
+        console.error("Missing MP token or Supabase is not initialized.");
+        return res.status(200).send("OK. But not processed due to missing config.");
+      }
+
+      try {
+        const client = new MercadoPagoConfig({ accessToken: mpToken });
+        const paymentDetails = new Payment(client);
+        const paymentInfo = await paymentDetails.get({ id: dataId as string });
+        
+        console.log("Payment Info:", paymentInfo.status, paymentInfo.external_reference);
+
+        if (paymentInfo.status === "approved" && paymentInfo.external_reference) {
+          const adminId = paymentInfo.external_reference;
+          
+          await processPayment(paymentInfo.id, adminId);
+        }
+      } catch (error) {
+        console.error("Webhook processing error:", error);
+      }
+    }
+    
+    res.status(200).send("OK");
+  });
+
+  // Vite middleware for development
+  if (process.env.NODE_ENV !== "production") {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    
+    // Prevent silent SyntaxErrors: Return 404 for missing assets instead of index.html
+    app.get('/assets/*', (req, res) => {
+      res.status(404).send('Asset not found');
+    });
+
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  app.get('/api/test-env', (req, res) => {
+    res.json({
+        hasServiceKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+        hasAnonKey: !!process.env.VITE_SUPABASE_ANON_KEY
+    });
+});
+
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
+
+startServer();

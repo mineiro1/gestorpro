@@ -1,0 +1,1166 @@
+import React, { useEffect, useState } from 'react';
+import { useAuth } from '../contexts/AuthContext';
+import { supabase } from '../lib/supabase';
+import { openWhatsApp, sendMetaMessage, sendEvolutionMessage } from '../lib/whatsapp';
+import { MessageCircle, AlertCircle, Clock, History, Settings, X, Play, MessageSquare, Calendar, CheckCircle, XCircle, DollarSign } from 'lucide-react';
+
+interface ClientBilling {
+  id: string;
+  name: string;
+  phone: string;
+  monthlyFee: number;
+  dueDate: string;
+  status: 'delayed' | 'upcoming' | 'today';
+  extraAmount?: number;
+  extraReason?: string;
+  rawClient?: any;
+}
+
+export default function Billing() {
+  const { userProfile, isAdmin, isManager } = useAuth();
+  const [delayedClients, setDelayedClients] = useState<ClientBilling[]>([]);
+  const [todayClients, setTodayClients] = useState<ClientBilling[]>([]);
+  const [upcomingClients, setUpcomingClients] = useState<ClientBilling[]>([]);
+  const [allClients, setAllClients] = useState<ClientBilling[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // Payment History State
+  const [selectedClientId, setSelectedClientId] = useState<string>('');
+  const [clientPayments, setClientPayments] = useState<any[]>([]);
+  const [loadingPayments, setLoadingPayments] = useState(false);
+  const [activeTab, setActiveTab] = useState<'all' | 'delayed' | 'today' | 'upcoming'>('all');
+
+  // Payment Settings
+  const [paymentModalOpen, setPaymentModalOpen] = useState(false);
+  const [clientToPay, setClientToPay] = useState<any>(null);
+  const [isSubmittingPayment, setIsSubmittingPayment] = useState(false);
+  const [fetchTrigger, setRefreshTrigger] = useState(0);
+
+  // WhatsApp Settings State
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [sendingBatch, setSendingBatch] = useState(false);
+  const [sendingProgress, setSendingProgress] = useState({ current: 0, total: 0 });
+  const [sentClients, setSentClients] = useState<Record<string, 'success'|'error'>>({});
+  const [billedClients, setBilledClients] = useState<Record<string, string>>(() => {
+    try {
+      const stored = localStorage.getItem('gestaopro_billed_clients');
+      return stored ? JSON.parse(stored) : {};
+    } catch {
+      return {};
+    }
+  });
+  const [waSettings, setWaSettings] = useState({
+    reminderDays: 3,
+    reminderMessage: 'Olá {nome}, tudo bem? Passando para lembrar que sua mensalidade no valor de R$ {valor} vence no dia {vencimento}.',
+    delayedMessage: 'Olá {nome}, tudo bem? Consta em nosso sistema que a sua mensalidade do dia {vencimento} no valor de R$ {valor} está pendente. Poderia verificá-la, por favor?',
+    reportMessage1: 'Olá {nome},\n\nO atendimento da sua piscina foi finalizado! Você pode acessar o nosso painel para acompanhar todas as informações do tratamento.\n\nAcesse: https://www.zapmass.app.br/client-panel\nLogin: {telefone}\nSenha: {telefone}',
+    reportMessage2: 'Olá {nome},\n\nO atendimento da sua piscina foi finalizado! Verifique as informações completas no nosso painel de clientes.\n\nAcesse: https://www.zapmass.app.br/client-panel',
+    autoScheduleTime: '09:00',
+    useEvolutionApi: false,
+    evolutionApiUrl: '',
+    evolutionApiKey: '',
+    evolutionInstanceName: '',
+    useMetaApi: false,
+    metaToken: '',
+    metaPhoneNumberId: '',
+    metaServerUrl: ''
+  });
+
+  useEffect(() => {
+    if (userProfile?.whatsappSettings) {
+      setWaSettings({
+        reminderDays: userProfile.whatsappSettings.reminderDays ?? 3,
+        reminderMessage: userProfile.whatsappSettings.reminderMessage || 'Olá {nome}, tudo bem? Passando para lembrar que sua mensalidade no valor de R$ {valor} vence no dia {vencimento}.',
+        delayedMessage: userProfile.whatsappSettings.delayedMessage || 'Olá {nome}, tudo bem? Consta em nosso sistema que a sua mensalidade do dia {vencimento} no valor de R$ {valor} está pendente. Poderia verificá-la, por favor?',
+        reportMessage1: userProfile.whatsappSettings.reportMessage1 || 'Olá {nome},\n\nO atendimento da sua piscina foi finalizado! Você pode acessar o nosso painel para acompanhar todas as informações do tratamento.\n\nAcesse: https://www.zapmass.app.br/client-panel\nLogin: {telefone}\nSenha: {telefone}',
+        reportMessage2: userProfile.whatsappSettings.reportMessage2 || 'Olá {nome},\n\nO atendimento da sua piscina foi finalizado! Verifique as informações completas no nosso painel de clientes.\n\nAcesse: https://www.zapmass.app.br/client-panel',
+        autoScheduleTime: userProfile.whatsappSettings.autoScheduleTime || '09:00',
+        useEvolutionApi: userProfile.whatsappSettings.useEvolutionApi || false,
+        evolutionApiUrl: userProfile.whatsappSettings.evolutionApiUrl || '',
+        evolutionApiKey: userProfile.whatsappSettings.evolutionApiKey || '',
+        evolutionInstanceName: userProfile.whatsappSettings.evolutionInstanceName || '',
+        useMetaApi: userProfile.whatsappSettings.useMetaApi || false,
+        metaToken: userProfile.whatsappSettings.metaToken || '',
+        metaPhoneNumberId: userProfile.whatsappSettings.metaPhoneNumberId || '',
+        metaServerUrl: userProfile.whatsappSettings.metaServerUrl || ''
+      });
+    }
+  }, [userProfile]);
+
+  const saveSettings = async () => {
+    if (!userProfile?.uid) return;
+    setSavingSettings(true);
+    try {
+      const currentSettings = userProfile.whatsappSettings || {};
+      const { error } = await supabase.from('users').update({
+        whatsapp_settings: {
+          ...currentSettings,
+          ...waSettings
+        }
+      }).eq('id', userProfile.uid);
+      if (error) throw error;
+      if (userProfile) {
+        userProfile.whatsappSettings = {
+          ...currentSettings,
+          ...waSettings
+        };
+      }
+      // Give feedback that it saved
+      setSettingsModalOpen(false);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  const processMessageTemplate = (template: string, client: ClientBilling) => {
+    const formattedDate = new Date(client.dueDate + 'T12:00:00').toLocaleDateString('pt-BR');
+    const totalAmount = Number(client.monthlyFee || 0) + Number(client.extraAmount || 0);
+
+    let message = template
+      .replace(/{nome}/g, client.name)
+      .replace(/{valor}/g, totalAmount.toFixed(2).replace('.', ','))
+      .replace(/{vencimento}/g, formattedDate);
+
+    if (client.extraAmount && client.extraAmount > 0) {
+      message += `\n\n*Acréscimo (já incluso no valor total):* R$ ${client.extraAmount.toFixed(2).replace('.', ',')}\n*Motivo:* ${client.extraReason || 'Não especificado'}`;
+    }
+
+    return message;
+  };
+
+  
+  
+  useEffect(() => {
+    if (!userProfile?.uid) return;
+
+    const calculateNextDueDateHelper = (currentDateStr: string, baseDueDay: number) => {
+      const [yearStr, monthStr] = currentDateStr.split('-');
+      let year = parseInt(yearStr, 10);
+      let month = parseInt(monthStr, 10);
+
+      month += 1;
+      if (month > 12) {
+        month = 1;
+        year += 1;
+      }
+
+      const lastDayOfNewMonth = new Date(year, month, 0).getDate();
+      const nextDay = Math.min(baseDueDay, lastDayOfNewMonth);
+
+      const formattedMonth = month.toString().padStart(2, '0');
+      const formattedDay = nextDay.toString().padStart(2, '0');
+
+      return `${year}-${formattedMonth}-${formattedDay}`;
+    };
+
+    const fetchBillingData = async () => {
+      try {
+        const adminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
+        
+        let queryBuilder = supabase.from('clients').select('*').eq('admin_id', adminId);
+        if (userProfile.role === 'employee') {
+          queryBuilder = queryBuilder.eq('employee_id', userProfile.uid);
+        }
+        
+        const { data: clientsData, error } = await queryBuilder;
+        if(error) throw error;
+        
+        const delayed: ClientBilling[] = [];
+        const todayDues: ClientBilling[] = [];
+        const upcoming: ClientBilling[] = [];
+        const all: ClientBilling[] = [];
+
+        // Today at midnight for accurate date comparison
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        clientsData?.forEach(data => {
+          const clientId = data.id;
+
+          if (!data.due_date) return;
+
+          all.push({
+            id: clientId,
+            name: data.name,
+            phone: data.phone,
+            monthlyFee: data.monthly_price || data.monthlyFee || 0,
+            dueDate: data.due_date,
+            status: 'upcoming',
+            extraAmount: data.extra_amount,
+            extraReason: data.extra_reason,
+            rawClient: data
+          });
+
+          // Generate multiple missing installments logic
+          const baseDay = data.base_due_day || parseInt(data.due_date.split('-')[2], 10) || 1;
+          let currentDueDateStr = data.due_date;
+          let iterations = 0;
+          const maxIterations = 24; // limit to prevent infinite loops (2 years max)
+
+          // Only the CURRENT / FIRST due iteration should get the extraAmount, 
+          // because it resets after payment. If it's already delayed, they owe it now.
+          let isFirstIteration = true;
+
+          while (iterations < maxIterations) {
+            const [year, month, day] = currentDueDateStr.split('-').map(Number);
+            const due = new Date(year, month - 1, day);
+            due.setHours(0, 0, 0, 0);
+
+            const diffTime = due.getTime() - today.getTime();
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+            const clientBillingId = `${clientId}-${currentDueDateStr}`;
+            const clientBilling: ClientBilling = {
+              id: clientBillingId,
+              name: data.name,
+              phone: data.phone,
+              monthlyFee: data.monthly_price || data.monthlyFee || 0,
+              dueDate: currentDueDateStr,
+              status: 'upcoming',
+              extraAmount: isFirstIteration ? data.extra_amount : undefined,
+              extraReason: isFirstIteration ? data.extra_reason : undefined,
+              rawClient: data
+            };
+            isFirstIteration = false;
+
+            if (diffDays < 0) {
+              clientBilling.status = 'delayed';
+              delayed.push(clientBilling);
+              // Calculate next month to see if that is ALSO missed/upcoming
+              currentDueDateStr = calculateNextDueDateHelper(currentDueDateStr, baseDay);
+            } else if (diffDays === 0) {
+              clientBilling.status = 'today';
+              todayDues.push(clientBilling);
+              break;
+            } else if (diffDays > 0 && diffDays <= (waSettings.reminderDays ?? 3)) {
+              clientBilling.status = 'upcoming';
+              upcoming.push(clientBilling);
+              break; // No need to check the month after the upcoming one, as it will be > reminderDays
+            } else {
+              // Current due date is beyond the reminder window, stop checking
+              break;
+            }
+
+            iterations++;
+          }
+        });
+
+        // Sort by due date
+        delayed.sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
+        todayDues.sort((a, b) => a.name.localeCompare(b.name));
+        upcoming.sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
+        all.sort((a, b) => a.name.localeCompare(b.name));
+
+        setDelayedClients(delayed);
+        setTodayClients(todayDues);
+        setUpcomingClients(upcoming);
+        setAllClients(all);
+      } catch (error) {
+        console.error(error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchBillingData();
+  }, [userProfile, waSettings.reminderDays, fetchTrigger]);
+
+  useEffect(() => {
+    if (!selectedClientId || !userProfile?.uid) {
+      setClientPayments([]);
+      return;
+    }
+
+    const fetchPayments = async () => {
+      setLoadingPayments(true);
+      try {
+        const adminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
+        const { data: paymentsData, error } = await supabase
+          .from('payments')
+          .select('*')
+          .eq('admin_id', adminId)
+          .eq('client_id', selectedClientId);
+        
+        if (error) throw error;
+
+        // Sort by date descending (newest first)
+        paymentsData?.sort((a: any, b: any) => {
+          const dateA = a.paid_date || a.created_at ? new Date(a.paid_date || a.created_at).getTime() : 0;
+          const dateB = b.paid_date || b.created_at ? new Date(b.paid_date || b.created_at).getTime() : 0;
+          return dateB - dateA;
+        });
+
+        setClientPayments(paymentsData || []);
+      } catch (error) {
+        console.error(error);
+      } finally {
+        setLoadingPayments(false);
+      }
+    };
+
+    fetchPayments();
+  }, [selectedClientId, userProfile]);
+
+  const handleSendWhatsApp = async (client: ClientBilling) => {
+    let currentSettings = waSettings;
+    if (userProfile?.uid) {
+      const adminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
+      const { data } = await supabase.from('users').select('whatsapp_settings').eq('id', adminId).single();
+      if (data && data.whatsapp_settings) {
+        currentSettings = { ...waSettings, ...data.whatsapp_settings };
+      }
+    }
+
+    if (!client.phone) {
+      alert(`O cliente ${client.name} não possui telefone cadastrado.`);
+      return;
+    }
+
+    const todayStr = new Date().toLocaleDateString('pt-BR');
+    const newBilled = { ...billedClients, [client.id]: todayStr };
+    setBilledClients(newBilled);
+    localStorage.setItem('gestaopro_billed_clients', JSON.stringify(newBilled));
+
+    const cleanPhone = client.phone.replace(/\D/g, '');
+    const isDelayed = client.status === 'delayed';
+    
+    const message = isDelayed
+      ? processMessageTemplate(waSettings.delayedMessage, client)
+      : processMessageTemplate(waSettings.reminderMessage, client);
+
+    if (currentSettings.useMetaApi) {
+      try {
+        await sendMetaMessage(client.phone, message, currentSettings);
+        setSentClients(prev => ({ ...prev, [client.id]: 'success' }));
+        alert(`Mensagem enviada com sucesso para ${client.name} (via WhatsApp Oficial Meta)!`);
+      } catch (error: any) {
+        setSentClients(prev => ({ ...prev, [client.id]: 'error' }));
+        console.error(error);
+        alert(`Falha ao enviar via API Oficial para ${client.name}:\n\n${error.message}\n\nLembre-se: Para enviar textos livres, o cliente precisa ter te enviado uma mensagem nas últimas 24 horas.`);
+      }
+    } else if (currentSettings.useEvolutionApi) {
+      try {
+        await sendEvolutionMessage(client.phone, message, currentSettings);
+        setSentClients(prev => ({ ...prev, [client.id]: 'success' }));
+        alert(`Mensagem enviada com sucesso para ${client.name}!`);
+      } catch (error: any) {
+        setSentClients(prev => ({ ...prev, [client.id]: 'error' }));
+        console.error(error);
+        alert(`Falha ao enviar mensagem para ${client.name}: ${error.message}`);
+      }
+    } else {
+      import('../lib/whatsapp').then(({ openWhatsApp }) => {
+        openWhatsApp(`55${cleanPhone}`, message);
+      });
+    }
+  };
+
+  const processQueue = async (clients: ClientBilling[], silent = false) => {
+    let currentSettings = waSettings;
+    if (userProfile?.uid) {
+      const adminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
+      const { data } = await supabase.from('users').select('whatsapp_settings').eq('id', adminId).single();
+      if (data && data.whatsapp_settings) {
+        currentSettings = { ...waSettings, ...data.whatsapp_settings };
+      }
+    }
+
+    if (currentSettings.useMetaApi || currentSettings.useEvolutionApi) {
+      if (currentSettings.useEvolutionApi && (!currentSettings.evolutionApiUrl || !currentSettings.evolutionApiKey || !currentSettings.evolutionInstanceName)) {
+        if(!silent) alert("Credenciais da Evolution API incompletas nas configurações.");
+        return;
+      }
+      if (currentSettings.useMetaApi && !currentSettings.metaToken) {
+        if(!silent) alert("Credenciais da API Oficial (Meta) incompletas nas configurações. O Token/Key é obrigatório.");
+        return;
+      }
+
+      const apiName = currentSettings.useMetaApi ? "API Oficial do WhatsApp (Meta)" : "Evolution API";
+      if (!silent && !confirm(`Deseja enviar ${clients.length} mensagens automaticamente via ${apiName}?`)) return;
+      
+      setSendingBatch(true);
+      setSendingProgress({ current: 0, total: clients.length });
+      let successCount = 0;
+      let errorCount = 0;
+      let lastError = '';
+      
+      const todayStr = new Date().toLocaleDateString('pt-BR');
+
+      for (let i = 0; i < clients.length; i++) {
+        const client = clients[i];
+        setSendingProgress({ current: i + 1, total: clients.length });
+        
+        // Skip if already billed today
+        if (billedClients[client.id] === todayStr) {
+          successCount++; // count as success to skip
+          continue;
+        }
+        
+        if (!client.phone) {
+          errorCount++;
+          lastError = 'Telefone ausente';
+          setSentClients(prev => ({ ...prev, [client.id]: 'error' }));
+          continue;
+        }
+
+        const isDelayed = client.status === 'delayed';
+        const message = isDelayed
+          ? processMessageTemplate(waSettings.delayedMessage, client)
+          : processMessageTemplate(waSettings.reminderMessage, client);
+          
+        try {
+          if (currentSettings.useMetaApi) {
+            await sendMetaMessage(client.phone, message, currentSettings);
+          } else {
+            await sendEvolutionMessage(client.phone, message, currentSettings);
+          }
+          successCount++;
+          setSentClients(prev => ({ ...prev, [client.id]: 'success' }));
+        } catch (e: any) {
+          console.error("Erro ao enviar para", client.name, e);
+          errorCount++;
+          lastError = e?.message || 'Erro desconhecido';
+          setSentClients(prev => ({ ...prev, [client.id]: 'error' }));
+        }
+        
+        // Sleep to avoid rate limiting / block
+        if (i < clients.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      }
+      
+      setSendingBatch(false);
+      setSendingProgress({ current: 0, total: 0 });
+      let alertMsg = `Envio via ${apiName} concluído!\nSucesso: ${successCount}\nErros: ${errorCount}`;
+      if (errorCount > 0) {
+        alertMsg += `\n\nÚltimo erro: ${lastError}`;
+      }
+      if(!silent) alert(alertMsg);
+    } else {
+      if(!silent) alert("Como o WhatsApp Web bloqueia a abertura não autorizada de várias abas, você abrirá a primeira mensagem agora. Após o envio, retorne e clique diretamente no botão 'Lembrar' ou 'Cobrar' do próximo cliente.");
+      if(clients.length > 0) {
+        handleSendWhatsApp(clients[0]);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (!waSettings.useEvolutionApi && !waSettings.useMetaApi) return;
+
+    const interval = setInterval(() => {
+      const now = new Date();
+      const currentHourMin = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+      if (currentHourMin === waSettings.autoScheduleTime) {
+        const lastSentDate = localStorage.getItem('lastAutoSendDate');
+        const todayStr = now.toLocaleDateString('pt-BR');
+
+        if (lastSentDate !== todayStr && !sendingBatch) {
+          // Process current queue silently
+          const list = [...delayedClients, ...todayClients, ...upcomingClients]
+            .sort((a,b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
+          
+          if (list.length > 0) {
+            localStorage.setItem('lastAutoSendDate', todayStr);
+            console.log("Auto-schedule init...");
+            processQueue(list, true);
+          }
+        }
+      }
+    }, 60000); // Check every minute // Remove the alert on automatic
+
+    return () => clearInterval(interval);
+  }, [waSettings, delayedClients, todayClients, upcomingClients, sendingBatch]);
+
+
+  if (loading) {
+    return <div className="flex justify-center items-center h-64">Carregando notificações...</div>;
+  }
+
+  const getBillingList = () => {
+    switch (activeTab) {
+      case 'delayed': return delayedClients;
+      case 'today': return todayClients;
+      case 'upcoming': return upcomingClients;
+      default: return [...delayedClients, ...todayClients, ...upcomingClients].sort((a,b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
+    }
+  };
+
+  const currentList = getBillingList();
+
+  const getStatusBadge = (status: string, dueDateStr: string) => {
+    const formattedDate = new Date(dueDateStr + 'T12:00:00').toLocaleDateString('pt-BR');
+    if (status === 'delayed') {
+      return (
+        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-800">
+          <AlertCircle size={14} className="mr-1" />
+          Atrasado ({formattedDate})
+        </span>
+      );
+    }
+    if (status === 'today') {
+      return (
+        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-800">
+          <Calendar size={14} className="mr-1" />
+          Vence Hoje
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-yellow-100 text-yellow-800">
+        <Clock size={14} className="mr-1" />
+        Vence em {formattedDate}
+      </span>
+    );
+  };
+
+  const handlePaymentClick = (client: ClientBilling) => {
+    setClientToPay(client);
+    setPaymentModalOpen(true);
+  };
+
+  const calculateNextDueDateHelper = (currentDateStr: string, baseDueDay: number) => {
+    const [yearStr, monthStr] = currentDateStr.split('-');
+    let year = parseInt(yearStr, 10);
+    let month = parseInt(monthStr, 10);
+    month += 1;
+    if (month > 12) {
+      month = 1;
+      year += 1;
+    }
+    const lastDayOfNewMonth = new Date(year, month, 0).getDate();
+    const nextDay = Math.min(baseDueDay, lastDayOfNewMonth);
+    const formattedMonth = month.toString().padStart(2, '0');
+    const formattedDay = nextDay.toString().padStart(2, '0');
+    return `${year}-${formattedMonth}-${formattedDay}`;
+  };
+
+  const confirmPayment = async () => {
+    if (!clientToPay || !clientToPay.rawClient || !userProfile || isSubmittingPayment) return;
+    setIsSubmittingPayment(true);
+
+    try {
+      const data = clientToPay.rawClient;
+      const currentDate = new Date();
+      const previousDueDate = data.due_date || null;
+
+      let refMonth = currentDate.getMonth() + 1;
+      let refYear = currentDate.getFullYear();
+      if (data.due_date) {
+        const due = new Date(data.due_date + 'T12:00:00');
+        refMonth = due.getMonth() + 1;
+        refYear = due.getFullYear();
+      }
+
+      const extraAmt = Number(clientToPay.extraAmount || 0);
+      const extraRsn = clientToPay.extraReason || null;
+      const totalAmountPaid = Number(clientToPay.monthlyFee || 0) + extraAmt;
+
+      const currentAdminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
+      const { error: insertError } = await supabase.from('payments').insert({
+        admin_id: currentAdminId,
+        client_id: data.id,
+        amount: totalAmountPaid,
+        base_amount: clientToPay.monthlyFee,
+        extra_amount: extraAmt,
+        extra_reason: extraRsn,
+        month: currentDate.getMonth() + 1,
+        year: currentDate.getFullYear(),
+        ref_month: refMonth,
+        ref_year: refYear,
+        previous_due_date: previousDueDate,
+        status: 'pago',
+        paid_date: new Date().toISOString().split('T')[0],
+        due_date: clientToPay.dueDate || new Date().toISOString().split('T')[0]
+      });
+      
+      if(insertError) throw new Error(insertError.message);
+
+      if (data.due_date) {
+        try {
+          const baseDay = data.base_due_day || parseInt(data.due_date.split('-')[2], 10) || 1;
+          const nextDueDate = calculateNextDueDateHelper(data.due_date, baseDay);
+          
+          await supabase.from('clients').update({
+            due_date: nextDueDate,
+            base_due_day: baseDay,
+            extra_amount: 0,
+            extra_reason: ''
+          }).eq('id', data.id);
+        } catch (err) {
+          console.error("Erro ao atualizar data de vencimento:", err);
+        }
+      }
+
+      setPaymentModalOpen(false);
+      setClientToPay(null);
+      setRefreshTrigger(prev => prev + 1); // trigger refresh
+    } catch (err) {
+      console.error(err);
+      alert("Erro ao registrar pagamento.");
+    } finally {
+      setIsSubmittingPayment(false);
+    }
+  };
+
+  return (
+    <div className="max-w-7xl mx-auto">
+      <div className="mb-8 flex flex-col sm:flex-row justify-between items-start sm:items-center">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-800">Central de Cobranças e Notificações</h1>
+          <p className="text-gray-600 mt-1">Gerencie os vencimentos e envie lembretes via WhatsApp.</p>
+        </div>
+        <div className="flex gap-3 mt-4 sm:mt-0">
+          {isAdmin && (
+            <button
+              onClick={() => setSettingsModalOpen(true)}
+              className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-200 transition-colors flex items-center font-medium"
+            >
+              <Settings size={20} className="mr-2" />
+              Configurar Mensagens
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Tabs Menu */}
+      <div className="flex overflow-x-auto space-x-2 mb-6 pb-2 hide-scrollbar">
+        <button
+          onClick={() => setActiveTab('all')}
+          className={`px-5 py-2.5 rounded-xl font-semibold whitespace-nowrap transition-colors flex items-center ${activeTab === 'all' ? 'bg-gray-800 text-white' : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'}`}
+        >
+          Todos Pendentes
+          <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${activeTab === 'all' ? 'bg-gray-600 text-white' : 'bg-gray-100'}`}>
+            {delayedClients.length + todayClients.length + upcomingClients.length}
+          </span>
+        </button>
+        <button
+          onClick={() => setActiveTab('delayed')}
+          className={`px-5 py-2.5 rounded-xl font-semibold whitespace-nowrap transition-colors flex items-center ${activeTab === 'delayed' ? 'bg-red-50 border-2 border-red-200 text-red-700' : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'}`}
+        >
+          <AlertCircle size={18} className="mr-2" />
+          Atrasados
+          <span className={`ml-2 px-2 py-0.5 rounded-full text-xs font-bold ${activeTab === 'delayed' ? 'bg-red-200 text-red-800' : 'bg-gray-100'}`}>
+            {delayedClients.length}
+          </span>
+        </button>
+        <button
+          onClick={() => setActiveTab('today')}
+          className={`px-5 py-2.5 rounded-xl font-semibold whitespace-nowrap transition-colors flex items-center ${activeTab === 'today' ? 'bg-blue-50 border-2 border-blue-200 text-blue-700' : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'}`}
+        >
+          <Calendar size={18} className="mr-2" />
+          Hoje
+          <span className={`ml-2 px-2 py-0.5 rounded-full text-xs font-bold ${activeTab === 'today' ? 'bg-blue-200 text-blue-800' : 'bg-gray-100'}`}>
+            {todayClients.length}
+          </span>
+        </button>
+        <button
+          onClick={() => setActiveTab('upcoming')}
+          className={`px-5 py-2.5 rounded-xl font-semibold whitespace-nowrap transition-colors flex items-center ${activeTab === 'upcoming' ? 'bg-yellow-50 border-2 border-yellow-200 text-yellow-700' : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'}`}
+        >
+          <Clock size={18} className="mr-2" />
+          Em Breve
+          <span className={`ml-2 px-2 py-0.5 rounded-full text-xs font-bold ${activeTab === 'upcoming' ? 'bg-yellow-200 text-yellow-800' : 'bg-gray-100'}`}>
+            {upcomingClients.length}
+          </span>
+        </button>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+        {/* Bulk Action Header */}
+        {(isAdmin || isManager) && ((activeTab === 'delayed' && delayedClients.length > 0) || 
+         (activeTab === 'today' && todayClients.length > 0) || 
+         (activeTab === 'upcoming' && upcomingClients.length > 0)) ? (
+          <div className="bg-gray-50 px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+            <span className="text-sm font-medium text-gray-600">Ações em Lote:</span>
+            <button 
+              onClick={() => processQueue(getBillingList())} 
+              disabled={sendingBatch}
+              className={`flex items-center px-4 py-2 rounded-lg font-medium text-sm transition-colors text-white ${
+                sendingBatch ? 'bg-gray-400 cursor-not-allowed' :
+                activeTab === 'delayed' ? 'bg-red-600 hover:bg-red-700' : 
+                activeTab === 'today' ? 'bg-blue-600 hover:bg-blue-700' : 
+                'bg-yellow-500 hover:bg-yellow-600'
+              }`}
+            >
+              <Play size={16} className="mr-2" />
+              {sendingBatch ? `Enviando... (${sendingProgress.current}/${sendingProgress.total})` : `Notificar Fila Inteira (${currentList.length})`}
+            </button>
+          </div>
+        ) : null}
+
+        <div className="p-0">
+          {currentList.length === 0 ? (
+            <div className="text-center py-16 px-4">
+              <div className="bg-gray-50 rounded-full w-20 h-20 flex items-center justify-center mx-auto mb-4">
+                <AlertCircle size={32} className="text-gray-400" />
+              </div>
+              <p className="text-gray-500 font-medium">Nenhum cliente para esta categoria.</p>
+            </div>
+          ) : (
+            <ul className="divide-y divide-gray-100">
+              {currentList.map(client => (
+                <li key={client.id} className="p-6 hover:bg-gray-50 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-3 mb-1">
+                      <h3 className="font-bold text-gray-900 text-lg">{client.name}</h3>
+                      {getStatusBadge(client.status, client.dueDate)}
+                      {sentClients[client.id] === 'success' && (
+                        <span className="flex items-center text-xs font-semibold text-green-600 bg-green-50 px-2 py-1 rounded-full">
+                          <CheckCircle size={14} className="mr-1" /> Enviado
+                        </span>
+                      )}
+                      {sentClients[client.id] === 'error' && (
+                        <span className="flex items-center text-xs font-semibold text-red-600 bg-red-50 px-2 py-1 rounded-full">
+                          <XCircle size={14} className="mr-1" /> Falha
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-6 text-sm text-gray-500">
+                      <span className="font-semibold text-gray-700 font-mono text-base tracking-tight">
+                        R$ {(client.monthlyFee + (client.extraAmount || 0)).toFixed(2)}
+                      </span>
+                      {client.extraAmount && client.extraAmount > 0 && (
+                        <span className="text-xs text-pink-600 bg-pink-50 px-2 py-0.5 rounded-full font-medium">
+                          + R$ {client.extraAmount.toFixed(2)} Extra
+                        </span>
+                      )}
+                      <span>{client.phone}</span>
+                    </div>
+                  </div>
+                  <div className="shrink-0 flex items-center gap-2">
+                    {(isAdmin || isManager) && (
+                      <>
+                        <button
+                          onClick={() => handlePaymentClick(client)}
+                          className="flex items-center px-4 py-2 rounded-lg transition-colors font-semibold shadow-sm border bg-green-50 text-green-700 border-green-200 hover:bg-green-100"
+                          title="Registrar Pagamento"
+                        >
+                          <DollarSign size={18} />
+                        </button>
+                                                {(() => {
+                          const today = new Date().toLocaleDateString('pt-BR');
+                          const alreadyBilled = billedClients[client.id] === today;
+                          
+                          return (
+                            <button
+                              onClick={() => handleSendWhatsApp(client)}
+                              disabled={alreadyBilled}
+                              className={`flex items-center px-4 py-2 rounded-lg transition-colors font-semibold shadow-sm border ${
+                                alreadyBilled 
+                                  ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                                  : client.status === 'delayed' 
+                                    ? 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100 cursor-pointer' 
+                                    : 'bg-[#25D366] text-white border-transparent hover:bg-[#20b858] cursor-pointer'
+                              }`}
+                            >
+                              <MessageCircle size={18} className="mr-2" />
+                              {alreadyBilled ? 'Enviado Hoje' : (client.status === 'delayed' ? 'Cobrar' : 'Lembrete')}
+                            </button>
+                          );
+                        })()}
+                      </>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+
+      {/* Histórico de Pagamentos */}
+      <div className="mt-8 bg-white rounded-xl shadow-sm overflow-hidden border border-gray-100">
+        <div className="bg-gray-50 px-6 py-4 border-b border-gray-100 flex items-center">
+          <History size={20} className="text-gray-500 mr-2" />
+          <div>
+            <h2 className="text-lg font-bold text-gray-800">Histórico de Pagamentos</h2>
+            <p className="text-sm text-gray-500">Selecione um cliente para ver o histórico completo.</p>
+          </div>
+        </div>
+        
+        <div className="p-6">
+          <div className="mb-6 max-w-md">
+            <label className="block text-sm font-medium text-gray-700 mb-2">Selecione o Cliente</label>
+            <select
+              value={selectedClientId}
+              onChange={(e) => setSelectedClientId(e.target.value)}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-colors"
+            >
+              <option value="">-- Selecione um cliente --</option>
+              {allClients.map(client => (
+                <option key={client.id} value={client.id}>{client.name}</option>
+              ))}
+            </select>
+          </div>
+
+          {selectedClientId && (
+            <div>
+              {loadingPayments ? (
+                <div className="text-gray-500 py-4 flex items-center">
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary mr-2"></div>
+                  Carregando histórico...
+                </div>
+              ) : clientPayments.length === 0 ? (
+                <div className="text-gray-500 py-4 bg-gray-50 rounded-lg text-center border border-dashed border-gray-200">
+                  Nenhum pagamento registrado para este cliente.
+                </div>
+              ) : (
+                <div className="overflow-x-auto border border-gray-100 rounded-lg">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-gray-50 border-b border-gray-200">
+                        <th className="p-4 font-semibold text-gray-600">Data do Pagamento</th>
+                        <th className="p-4 font-semibold text-gray-600">Referência (Mês/Ano)</th>
+                        <th className="p-4 font-semibold text-gray-600">Valor</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {clientPayments.map(payment => {
+                        const dateStr = payment.paid_date || payment.created_at;
+                        let displayDateStr = 'N/A';
+                        if (dateStr) {
+                          const isJustDate = dateStr.length === 10; // e.g. YYYY-MM-DD
+                          const d = isJustDate ? new Date(`${dateStr}T12:00:00`) : new Date(dateStr);
+                          displayDateStr = d.toLocaleDateString('pt-BR', {
+                            day: '2-digit', month: '2-digit', year: 'numeric', 
+                            hour: isJustDate ? undefined : '2-digit', 
+                            minute: isJustDate ? undefined : '2-digit'
+                          });
+                        }
+                        
+                        return (
+                        <tr key={payment.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
+                          <td className="p-4 text-gray-800">
+                            {displayDateStr}
+                          </td>
+                          <td className="p-4 text-gray-600">
+                            {(payment.ref_month || payment.month).toString().padStart(2, '0')}/{(payment.ref_year || payment.year)}
+                          </td>
+                          <td className="p-4 text-green-600 font-semibold">
+                            R$ {payment.amount?.toFixed(2)}
+                          </td>
+                        </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {settingsModalOpen && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl w-full max-w-lg max-h-[90vh] flex flex-col shadow-2xl">
+            <div className="flex justify-between items-center p-6 border-b border-gray-100 shrink-0">
+              <h3 className="text-xl font-bold text-gray-900">Configurações de WhatsApp</h3>
+              <button onClick={() => setSettingsModalOpen(false)} className="text-gray-500 hover:text-gray-700">
+                <X size={24} />
+              </button>
+            </div>
+            
+            <div className="p-6 overflow-y-auto flex-1 space-y-4">
+              <div className="bg-blue-50 border border-blue-100 p-4 rounded-lg text-sm text-blue-800 mb-4">
+                <strong>Nota sobre Automação:</strong> O WhatsApp Web bloqueia o envio 100% automático para evitar spam. O sistema irá preencher rapidamente a mensagem em seu WhatsApp, operando de forma "semi-automática".
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Avisar quantos dias antes do vencimento?</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="30"
+                  value={waSettings.reminderDays}
+                  onChange={e => setWaSettings({...waSettings, reminderDays: parseInt(e.target.value) || 3})}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Horário de Verificação</label>
+                <input
+                  type="time"
+                  value={waSettings.autoScheduleTime}
+                  onChange={e => setWaSettings({...waSettings, autoScheduleTime: e.target.value})}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Mensagem - Pré venciamento <br/>
+                  <span className="text-xs font-normal text-gray-500">Variáveis: {'{nome}'}, {'{valor}'}, {'{vencimento}'}</span>
+                </label>
+                <textarea
+                  rows={3}
+                  value={waSettings.reminderMessage}
+                  onChange={e => setWaSettings({...waSettings, reminderMessage: e.target.value})}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Mensagem - Atrasados <br/>
+                  <span className="text-xs font-normal text-gray-500">Variáveis: {'{nome}'}, {'{valor}'}, {'{vencimento}'}</span>
+                </label>
+                <textarea
+                  rows={3}
+                  value={waSettings.delayedMessage}
+                  onChange={e => setWaSettings({...waSettings, delayedMessage: e.target.value})}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="flex justify-between items-center mb-1">
+                  <span className="block text-sm font-medium text-gray-700">Mensagem de Relatório (1º Envio / Padrão)</span>
+                  <span className="text-xs font-normal text-gray-500">Variáveis: {'{nome}'}, {'{telefone}'}</span>
+                </label>
+                <p className="text-xs text-gray-500 mb-2">Enviada quando o cliente não recebeu relatório nos últimos 30 dias.</p>
+                <textarea
+                  rows={4}
+                  value={waSettings.reportMessage1}
+                  onChange={e => setWaSettings({...waSettings, reportMessage1: e.target.value})}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="flex justify-between items-center mb-1">
+                  <span className="block text-sm font-medium text-gray-700">Mensagem de Relatório Curta (Recorrente)</span>
+                  <span className="text-xs font-normal text-gray-500">Variáveis: {'{nome}'}, {'{telefone}'}</span>
+                </label>
+                <p className="text-xs text-gray-500 mb-2">Enviada se o cliente já recebeu o relatório principal (1) nos últimos 30 dias.</p>
+                <textarea
+                  rows={3}
+                  value={waSettings.reportMessage2}
+                  onChange={e => setWaSettings({...waSettings, reportMessage2: e.target.value})}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none text-sm"
+                />
+              </div>
+
+              {/* API Integration Settings */}
+              <div className="pt-4 mt-6 border-t border-gray-100">
+                <div className="mb-4">
+                  <h4 className="font-bold text-gray-800">Modo de Envio de Mensagens</h4>
+                  <p className="text-xs text-gray-500 mb-4">Escolha a tecnologia para enviar as mensagens.</p>
+                  
+                  <div className="flex flex-col space-y-3">
+                    <label className="flex items-start space-x-3 cursor-pointer p-3 rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors">
+                      <input 
+                        type="radio" 
+                        name="whatsappProvider"
+                        value="web"
+                        className="mt-1"
+                        checked={!waSettings.useEvolutionApi && !waSettings.useMetaApi}
+                        onChange={() => setWaSettings({...waSettings, useEvolutionApi: false, useMetaApi: false})}
+                      />
+                      <div>
+                        <span className="block font-semibold text-sm text-gray-800">WhatsApp Web (Padrão)</span>
+                        <span className="block text-xs text-gray-500">Abre o WhatsApp no navegador. Gratuito, mas envio manual 1 por 1.</span>
+                      </div>
+                    </label>
+
+                    <label className="flex items-start space-x-3 cursor-pointer p-3 rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors">
+                      <input 
+                        type="radio" 
+                        name="whatsappProvider"
+                        value="evolution"
+                        className="mt-1"
+                        checked={waSettings.useEvolutionApi && !waSettings.useMetaApi}
+                        onChange={() => setWaSettings({...waSettings, useEvolutionApi: true, useMetaApi: false})}
+                      />
+                      <div>
+                        <span className="block font-semibold text-sm text-gray-800">Evolution API (Alternativo)</span>
+                        <span className="block text-xs text-gray-500">Envio em background conectado ao seu celular via QR Code.</span>
+                      </div>
+                    </label>
+
+                    <label className="flex items-start space-x-3 cursor-pointer p-3 rounded-lg border border-blue-200 bg-blue-50/50 hover:bg-blue-50 transition-colors">
+                      <input 
+                        type="radio" 
+                        name="whatsappProvider"
+                        value="meta"
+                        className="mt-1"
+                        checked={waSettings.useMetaApi}
+                        onChange={() => setWaSettings({...waSettings, useEvolutionApi: false, useMetaApi: true})}
+                      />
+                      <div>
+                        <span className="block font-semibold text-sm text-blue-900">API WAME / Meta Cloud API</span>
+                        <span className="block text-xs text-gray-600">Conexão via Facebook Developers ou WAME API (Oficial e Não-Oficial via QR Code).</span>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                {waSettings.useEvolutionApi && !waSettings.useMetaApi && (
+                  <div className="space-y-4 bg-gray-50 p-4 rounded-lg border border-gray-200 animate-fade-in">
+                    <h5 className="text-sm font-bold text-gray-700">Credenciais Evolution API</h5>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">URL da API (HTTPS OBRIGATÓRIO)</label>
+                      <input
+                        type="url"
+                        placeholder="https://sua-api.com"
+                        value={waSettings.evolutionApiUrl}
+                        onChange={e => setWaSettings({...waSettings, evolutionApiUrl: e.target.value})}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-primary focus:border-primary outline-none text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">Global API Key</label>
+                      <input
+                        type="password"
+                        placeholder="Sua chave secreta"
+                        value={waSettings.evolutionApiKey}
+                        onChange={e => setWaSettings({...waSettings, evolutionApiKey: e.target.value})}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-primary focus:border-primary outline-none text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">Nome da Instância</label>
+                      <input
+                        type="text"
+                        placeholder="ex: WhatsAppPrincipal"
+                        value={waSettings.evolutionInstanceName}
+                        onChange={e => setWaSettings({...waSettings, evolutionInstanceName: e.target.value})}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-primary focus:border-primary outline-none text-sm"
+                      />
+                    </div>
+                    
+                    <div className="col-span-1 md:col-span-3 mt-4 bg-blue-50 border border-blue-100 p-4 rounded-lg">
+                      <h4 className="font-bold text-blue-800 flex items-center mb-2">
+                        <MessageSquare size={16} className="mr-2" />
+                        Configuração de Webhook (Para Receber Mensagens no Chat)
+                      </h4>
+                      <p className="text-sm text-blue-700 mb-2">
+                        Para que as respostas dos seus clientes apareçam na janela de Chat do sistema, você precisa configurar um Webhook dentro da sua Evolution API.
+                      </p>
+                      <div className="bg-white p-3 rounded border border-blue-200">
+                        <p className="text-xs font-semibold text-gray-500 mb-1">URL DO WEBHOOK:</p>
+                        <code className="text-sm text-gray-800 break-all select-all">
+                          {window.location.origin}/api/webhook/evolution
+                        </code>
+                        <p className="text-xs text-gray-500 mt-2"><b>Eventos necessários:</b> messages-upsert</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {waSettings.useMetaApi && (
+                  <div className="space-y-4 bg-blue-50/50 p-4 rounded-lg border border-blue-100 animate-fade-in">
+                    <h5 className="text-sm font-bold text-blue-900">Credenciais WAME / Meta API</h5>
+                    <p className="text-xs text-blue-700 mb-4 font-medium">Aviso: Textos livres só chegam se o cliente acionou você nas últimas 24h. Use templates aprovados para o 1º contato.</p>
+                    
+                    <div className="bg-white p-3 rounded border border-blue-200 mb-4">
+                      <p className="text-xs font-semibold text-gray-500 mb-1">URL DO WEBHOOK (WAME/META):</p>
+                      <code className="text-sm text-gray-800 break-all select-all">
+                        {window.location.origin}/api/webhook/wame
+                      </code>
+                      <p className="text-xs text-gray-500 mt-2"><b>Eventos necessários:</b> messages</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">Server URL (Opcional - deixe vazio para oficial)</label>
+                      <input
+                        type="text"
+                        placeholder="https://graph.facebook.com/v19.0 ou https://us.api-wa.me"
+                        value={waSettings.metaServerUrl || ''}
+                        onChange={e => setWaSettings({...waSettings, metaServerUrl: e.target.value})}
+                        className="w-full px-3 py-2 border border-blue-200 rounded-md focus:ring-blue-500 focus:border-blue-500 outline-none text-sm bg-white mb-3"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">Access Token (ou Key)</label>
+                      <input
+                        type="password"
+                        placeholder="EAAIXXX..."
+                        value={waSettings.metaToken}
+                        onChange={e => setWaSettings({...waSettings, metaToken: e.target.value})}
+                        className="w-full px-3 py-2 border border-blue-200 rounded-md focus:ring-blue-500 focus:border-blue-500 outline-none text-sm bg-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">ID do Número de Telefone (Phone Number ID)</label>
+                      <input
+                        type="text"
+                        placeholder="Ex: 1045938493849"
+                        value={waSettings.metaPhoneNumberId}
+                        onChange={e => setWaSettings({...waSettings, metaPhoneNumberId: e.target.value})}
+                        className="w-full px-3 py-2 border border-blue-200 rounded-md focus:ring-blue-500 focus:border-blue-500 outline-none text-sm bg-white"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex justify-end p-6 border-t border-gray-100 shrink-0 space-x-3 bg-gray-50 rounded-b-xl">
+              <button
+                onClick={() => setSettingsModalOpen(false)}
+                className="px-4 py-2 text-gray-600 hover:bg-gray-200 rounded-lg transition-colors bg-white border border-gray-200 shadow-sm"
+                disabled={savingSettings}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={saveSettings}
+                disabled={savingSettings}
+                className="px-6 py-2 bg-primary text-white rounded-lg hover:bg-primary-light transition-colors disabled:opacity-50 shadow-sm"
+              >
+                {savingSettings ? 'Salvando...' : 'Salvar Configurações'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sending Batch Overlay */}
+      {sendingBatch && (
+        <div className="fixed inset-0 bg-black/80 z-[100] flex flex-col items-center justify-center p-4">
+          <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-primary mb-4"></div>
+          <p className="text-white text-xl font-bold">Enviando mensagens em background...</p>
+          <p className="text-gray-300 mt-2 text-center max-w-md">Por favor, não feche esta janela. O sistema aguarda 2 segundos entre cada envio para evitar o bloqueio do seu número pelo WhatsApp.</p>
+        </div>
+      )}
+
+      {/* Payment Modal */}
+      {paymentModalOpen && (
+        <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl p-6 max-w-sm w-full">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Registrar Pagamento</h3>
+            <p className="text-gray-600 mb-6">
+              Confirmar pagamento de R$ {((clientToPay?.monthlyFee || 0) + (clientToPay?.extraAmount || 0)).toFixed(2)} para {clientToPay?.name} neste mês?
+              {clientToPay?.extraAmount && clientToPay.extraAmount > 0 ? (
+                <span className="block mt-2 text-sm text-pink-600 font-medium">
+                  Inclui R$ {clientToPay.extraAmount.toFixed(2)} de extra ({clientToPay.extraReason || 'Sem motivo'}).
+                </span>
+              ) : null}
+            </p>
+            <div className="flex justify-end space-x-3">
+              <button
+                onClick={() => setPaymentModalOpen(false)}
+                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                disabled={isSubmittingPayment}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={confirmPayment}
+                disabled={isSubmittingPayment}
+                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50"
+              >
+                {isSubmittingPayment ? 'Confirmando...' : 'Confirmar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
