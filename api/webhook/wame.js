@@ -1,7 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
 export default async function handler(req, res) {
-  // 1. Handle Wame/Meta GET Verification Challenge
   if (req.method === 'GET') {
     const mode = req.query["hub.mode"];
     const challenge = req.query["hub.challenge"];
@@ -17,6 +16,7 @@ export default async function handler(req, res) {
 
   try {
     const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
+    // Pegando a chave de forma segura pela Vercel
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
     
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
@@ -32,7 +32,6 @@ export default async function handler(req, res) {
     let content = "";
     let mediaUrl = "";
     
-    // Parse Meta/Wame API format
     if ((body.object === "whatsapp_business_account" || body.object === "wame") && body.entry && body.entry[0].changes) {
        const value = body.entry[0].changes[0].value;
        if (value.messages && value.messages.length > 0) {
@@ -47,7 +46,26 @@ export default async function handler(req, res) {
           return res.status(200).send("EVENT_RECEIVED");
        }
     } 
-    // Fallback parsing for alternative raw formats
+    else if (body.type === "message" && body.data) {
+        if (body.data.me) {
+           return res.status(200).send("EVENT_RECEIVED"); 
+        }
+        
+        phone = body.data.phoneNumber || "";
+        if (!phone && body.data.remoteJid) {
+            phone = body.data.remoteJid.split('@')[0];
+        }
+        
+        if (body.data.messageType === "conversation" && body.data.msgContent && body.data.msgContent.conversation) {
+            content = body.data.msgContent.conversation;
+        } else if (body.data.msgContent && body.data.msgContent.extendedTextMessage && body.data.msgContent.extendedTextMessage.text) {
+            content = body.data.msgContent.extendedTextMessage.text;
+        } else if (body.data.messageType) {
+            content = `[Formato Recebido: ${body.data.messageType}]`;
+        } else {
+            content = "[Mensagem não textual recebida]";
+        }
+    }
     else if (body.phone && body.message) {
         phone = body.phone;
         content = body.message;
@@ -59,13 +77,7 @@ export default async function handler(req, res) {
         content = body.body;
     }
     
-    // DEBUG FALLBACK: SAVE EVERYTHING UNRECOGNIZED
     if (!phone || !content) {
-       await supabaseAdmin.from('chat_messages').insert({
-          session_id: 'e867ca9f-d11f-4bb5-8bc6-96e1455fd260',
-          sender_type: 'client',
-          content: "UNRECOGNIZED WEBHOOK: " + JSON.stringify(body).substring(0, 500)
-       });
        return res.status(200).send("EVENT_RECEIVED");
     }
 
@@ -93,11 +105,6 @@ export default async function handler(req, res) {
     });
     
     if (!matchedClient) {
-        await supabaseAdmin.from('chat_messages').insert({
-          session_id: 'e867ca9f-d11f-4bb5-8bc6-96e1455fd260',
-          sender_type: 'client',
-          content: `CLIENT NOT FOUND FOR PHONE: ${phone}. Msg: ${content}`
-        });
         return res.status(200).send("EVENT_RECEIVED");
     }
 
