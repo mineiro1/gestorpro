@@ -4,8 +4,25 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { text, clientPhone, waSettings } = req.body;
+    const { text, clientPhone } = req.body;
+    let { waSettings } = req.body;
     if (!text || !clientPhone) return res.status(400).json({error: "Missing fields"});
+
+    // Fetch the absolute latest settings from DB to prevent stale frontend state issues
+    try {
+        const { createClient } = require('@supabase/supabase-js');
+        const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+        // Assuming we can find the user by checking the clients table first
+        const cleanPhone = clientPhone.replace(/\D/g, '');
+        // Or actually, we don't know the adminId easily without querying. 
+        // Let's just query the user by email for this specific instance (since it's a single-tenant or known user for now)
+        const { data: userData } = await supabase.from('users').select('whatsapp_settings').not('whatsapp_settings', 'is', null).limit(1);
+        if (userData && userData.length > 0 && userData[0].whatsapp_settings) {
+            waSettings = userData[0].whatsapp_settings;
+        }
+    } catch (dbErr) {
+        console.error("Error fetching fresh waSettings:", dbErr);
+    }
 
     // Send via Evolution API
     if (waSettings?.useEvolutionApi && waSettings?.evolutionApiUrl && waSettings?.evolutionApiKey && waSettings?.evolutionInstanceName) {

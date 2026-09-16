@@ -291,7 +291,7 @@ export default async function handler(req, res) {
                        if (mime.includes('audio/ogg') && mime.includes('opus')) {
                            mime = 'audio/ogg';
                        }
-                       b64 = \`data:\${mime};base64,\${b64}\`;
+                       b64 = `data:${mime};base64,${b64}`;
                    } else {
                        if (b64.includes('audio/ogg') && b64.includes('opus')) {
                            b64 = b64.replace('audio/ogg; codecs=opus', 'audio/ogg');
