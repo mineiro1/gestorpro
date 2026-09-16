@@ -45,6 +45,18 @@ export default async function handler(req, res) {
           phone = msg.from;
           if (msg.type === "text" && msg.text) {
              content = msg.text.body;
+          } else if (msg.type === "audio" && msg.audio) {
+             content = "🎵 Áudio recebido";
+             mediaUrl = msg.audio.url || "";
+          } else if (msg.type === "image" && msg.image) {
+             content = msg.image.caption || "📸 Imagem recebida";
+             mediaUrl = msg.image.url || "";
+          } else if (msg.type === "video" && msg.video) {
+             content = msg.video.caption || "🎥 Vídeo recebido";
+             mediaUrl = msg.video.url || "";
+          } else if (msg.type === "document" && msg.document) {
+             content = `📄 Documento: ${msg.document.filename || 'Arquivo'}`;
+             mediaUrl = msg.document.url || "";
           } else {
              content = `[Media: ${msg.type}]`;
           }
@@ -64,8 +76,36 @@ export default async function handler(req, res) {
             content = body.data.msgContent.conversation;
         } else if (body.data.msgContent && body.data.msgContent.extendedTextMessage && body.data.msgContent.extendedTextMessage.text) {
             content = body.data.msgContent.extendedTextMessage.text;
+        } else if (body.data.messageType === "imageMessage" && body.data.msgContent && body.data.msgContent.imageMessage) {
+            content = body.data.msgContent.imageMessage.caption || "📸 Imagem recebida";
+            if (body.data.base64) {
+               mediaUrl = `data:${body.data.msgContent.imageMessage.mimetype || 'image/jpeg'};base64,${body.data.base64}`;
+            } else if (body.data.fileBase64) {
+               mediaUrl = `data:${body.data.msgContent.imageMessage.mimetype || 'image/jpeg'};base64,${body.data.fileBase64}`;
+            }
+        } else if (body.data.messageType === "audioMessage" && body.data.msgContent && body.data.msgContent.audioMessage) {
+            content = "🎵 Áudio recebido";
+            if (body.data.base64) {
+               mediaUrl = `data:${body.data.msgContent.audioMessage.mimetype || 'audio/ogg'};base64,${body.data.base64}`;
+            } else if (body.data.fileBase64) {
+               mediaUrl = `data:${body.data.msgContent.audioMessage.mimetype || 'audio/ogg'};base64,${body.data.fileBase64}`;
+            }
+        } else if (body.data.messageType === "videoMessage" && body.data.msgContent && body.data.msgContent.videoMessage) {
+            content = body.data.msgContent.videoMessage.caption || "🎥 Vídeo recebido";
+            if (body.data.base64) {
+               mediaUrl = `data:${body.data.msgContent.videoMessage.mimetype || 'video/mp4'};base64,${body.data.base64}`;
+            } else if (body.data.fileBase64) {
+               mediaUrl = `data:${body.data.msgContent.videoMessage.mimetype || 'video/mp4'};base64,${body.data.fileBase64}`;
+            }
+        } else if (body.data.messageType === "documentMessage" && body.data.msgContent && body.data.msgContent.documentMessage) {
+            content = `📄 Documento recebido: ${body.data.msgContent.documentMessage.fileName || 'Arquivo'}`;
+            if (body.data.base64) {
+               mediaUrl = `data:${body.data.msgContent.documentMessage.mimetype || 'application/pdf'};base64,${body.data.base64}`;
+            } else if (body.data.fileBase64) {
+               mediaUrl = `data:${body.data.msgContent.documentMessage.mimetype || 'application/pdf'};base64,${body.data.fileBase64}`;
+            }
         } else if (body.data.messageType) {
-            content = `[Formato Recebido: ${body.data.messageType}]`;
+            content = `[${body.data.messageType}]`;
         } else {
             content = "[Mensagem não textual recebida]";
         }
