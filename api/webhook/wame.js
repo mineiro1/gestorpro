@@ -60,6 +60,21 @@ export default async function handler(req, res) {
           } else {
              content = `[Media: ${msg.type}]`;
           }
+
+          // Fetch the mediaUrl immediately to bypass CORS and get the base64 for the frontend
+          if (mediaUrl && mediaUrl.includes('api-wa.me') && mediaUrl.includes('/media')) {
+             try {
+                 const mediaRes = await fetch(mediaUrl);
+                 if (mediaRes.ok) {
+                     const mediaData = await mediaRes.json();
+                     if (mediaData.base64 && mediaData.mimetype) {
+                         mediaUrl = `data:${mediaData.mimetype};base64,${mediaData.base64}`;
+                     }
+                 }
+             } catch (fetchErr) {
+                 console.error("Error fetching media from api-wa.me:", fetchErr);
+             }
+          }
        } else {
           return res.status(200).send("EVENT_RECEIVED");
        }
