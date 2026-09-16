@@ -79,30 +79,30 @@ export default async function handler(req, res) {
         } else if (body.data.messageType === "imageMessage" && body.data.msgContent && body.data.msgContent.imageMessage) {
             content = body.data.msgContent.imageMessage.caption || "📸 Imagem recebida";
             if (body.data.base64) {
-               mediaUrl = `data:${body.data.msgContent.imageMessage.mimetype || 'image/jpeg'};base64,${body.data.base64}`;
+               const b64 = body.data.base64; if (b64.includes('use GET ')) { mediaUrl = b64.split('GET ')[1].split(' to ')[0]; } else { mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${b64}`; }
             } else if (body.data.fileBase64) {
-               mediaUrl = `data:${body.data.msgContent.imageMessage.mimetype || 'image/jpeg'};base64,${body.data.fileBase64}`;
+               const fb64 = body.data.fileBase64; if (fb64.includes('use GET ')) { mediaUrl = fb64.split('GET ')[1].split(' to ')[0]; } else { mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${fb64}`; }
             }
         } else if (body.data.messageType === "audioMessage" && body.data.msgContent && body.data.msgContent.audioMessage) {
             content = "🎵 Áudio recebido";
             if (body.data.base64) {
-               mediaUrl = `data:${body.data.msgContent.audioMessage.mimetype || 'audio/ogg'};base64,${body.data.base64}`;
+               const b64 = body.data.base64; if (b64.includes('use GET ')) { mediaUrl = b64.split('GET ')[1].split(' to ')[0]; } else { mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${b64}`; }
             } else if (body.data.fileBase64) {
-               mediaUrl = `data:${body.data.msgContent.audioMessage.mimetype || 'audio/ogg'};base64,${body.data.fileBase64}`;
+               const fb64 = body.data.fileBase64; if (fb64.includes('use GET ')) { mediaUrl = fb64.split('GET ')[1].split(' to ')[0]; } else { mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${fb64}`; }
             }
         } else if (body.data.messageType === "videoMessage" && body.data.msgContent && body.data.msgContent.videoMessage) {
             content = body.data.msgContent.videoMessage.caption || "🎥 Vídeo recebido";
             if (body.data.base64) {
-               mediaUrl = `data:${body.data.msgContent.videoMessage.mimetype || 'video/mp4'};base64,${body.data.base64}`;
+               const b64 = body.data.base64; if (b64.includes('use GET ')) { mediaUrl = b64.split('GET ')[1].split(' to ')[0]; } else { mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${b64}`; }
             } else if (body.data.fileBase64) {
-               mediaUrl = `data:${body.data.msgContent.videoMessage.mimetype || 'video/mp4'};base64,${body.data.fileBase64}`;
+               const fb64 = body.data.fileBase64; if (fb64.includes('use GET ')) { mediaUrl = fb64.split('GET ')[1].split(' to ')[0]; } else { mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${fb64}`; }
             }
         } else if (body.data.messageType === "documentMessage" && body.data.msgContent && body.data.msgContent.documentMessage) {
             content = `📄 Documento recebido: ${body.data.msgContent.documentMessage.fileName || 'Arquivo'}`;
             if (body.data.base64) {
-               mediaUrl = `data:${body.data.msgContent.documentMessage.mimetype || 'application/pdf'};base64,${body.data.base64}`;
+               const b64 = body.data.base64; if (b64.includes('use GET ')) { mediaUrl = b64.split('GET ')[1].split(' to ')[0]; } else { mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${b64}`; }
             } else if (body.data.fileBase64) {
-               mediaUrl = `data:${body.data.msgContent.documentMessage.mimetype || 'application/pdf'};base64,${body.data.fileBase64}`;
+               const fb64 = body.data.fileBase64; if (fb64.includes('use GET ')) { mediaUrl = fb64.split('GET ')[1].split(' to ')[0]; } else { mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${fb64}`; }
             }
         } else if (body.data.messageType) {
             content = `[${body.data.messageType}]`;
