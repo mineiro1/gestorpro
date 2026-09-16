@@ -6,8 +6,21 @@ export const MediaViewer = ({ url, alt, className }: { url: string, alt: string,
   const [error, setError] = useState(false);
 
   useEffect(() => {
-    if (url.startsWith('data:') || url.startsWith('blob:')) {
-      setMediaData(url);
+    let processUrl = url;
+    if (url.startsWith('data:image/jpeg;base64,data:image/jpeg;base64,')) {
+       processUrl = url.replace('data:image/jpeg;base64,data:image/jpeg;base64,', 'data:image/jpeg;base64,');
+    } else if (url.includes('{"messageId"')) {
+       try {
+           const jsonStr = url.substring(url.indexOf('{'));
+           const parsed = JSON.parse(jsonStr);
+           if (parsed.base64 && parsed.mimetype) {
+               processUrl = `data:${parsed.mimetype};base64,${parsed.base64}`;
+           }
+       } catch (e) {}
+    }
+
+    if (processUrl.startsWith('data:') || processUrl.startsWith('blob:')) {
+      setMediaData(processUrl);
       return;
     }
 
@@ -53,8 +66,21 @@ export const AudioViewer = ({ url, className }: { url: string, className?: strin
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (url.startsWith('data:') || url.startsWith('blob:')) {
-      setMediaData(url);
+    let processUrl = url;
+    if (url.startsWith('data:audio/ogg; codecs=opus;base64,data:audio/ogg; codecs=opus;base64,')) {
+       processUrl = url.replace('data:audio/ogg; codecs=opus;base64,data:audio/ogg; codecs=opus;base64,', 'data:audio/ogg; codecs=opus;base64,');
+    } else if (url.includes('{"messageId"')) {
+       try {
+           const jsonStr = url.substring(url.indexOf('{'));
+           const parsed = JSON.parse(jsonStr);
+           if (parsed.base64 && parsed.mimetype) {
+               processUrl = `data:${parsed.mimetype};base64,${parsed.base64}`;
+           }
+       } catch (e) {}
+    }
+
+    if (processUrl.startsWith('data:') || processUrl.startsWith('blob:')) {
+      setMediaData(processUrl);
       return;
     }
 
