@@ -117,15 +117,6 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const sendMessage = async (text: string) => {
     if (!text.trim() || !session || session.status === 'closed') return;
     
-    // Add optimistic UI
-    const optimisticMsg = {
-      id: Date.now().toString(),
-      session_id: session.id,
-      sender_type: 'tech',
-      content: text,
-      created_at: new Date().toISOString()
-    };
-    setMessages(prev => [...prev, optimisticMsg]);
     setNewMessage('');
     
     // Actually send to API endpoint which will forward to Meta/Evolution and save
