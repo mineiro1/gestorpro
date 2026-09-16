@@ -11,7 +11,7 @@ import SmsGatewayListener from './SmsGatewayListener';
 
 
 const NotificationBanner = () => {
-  const [permission, setPermission] = useState(Notification.permission);
+  const [permission, setPermission] = useState(typeof Notification !== 'undefined' ? Notification.permission : 'default');
   const [dismissed, setDismissed] = useState(sessionStorage.getItem('notif_banner_dismissed') === 'true');
 
   if (permission !== 'default' || dismissed) return null;
@@ -23,7 +23,7 @@ const NotificationBanner = () => {
         const res = await LocalNotifications.requestPermissions();
         perm = res.display === 'granted' ? 'granted' : 'denied';
       } else {
-        perm = await Notification.requestPermission();
+        perm = typeof Notification !== 'undefined' ? await Notification.requestPermission() : 'denied';
         if (perm === 'granted' && 'serviceWorker' in navigator) {
            const reg = await navigator.serviceWorker.ready;
            // Explicitly show a welcome notification to confirm it works via SW
@@ -113,7 +113,7 @@ export default function Layout() {
         } catch (e) {
           console.error("Local notifications permission error", e);
         }
-      } else if ('Notification' in window && Notification.permission !== 'granted') {
+      } else if (typeof Notification !== 'undefined' && 'Notification' in window && Notification.permission !== 'granted') {
         Notification.requestPermission().catch(() => {});
       }
     };
@@ -145,7 +145,7 @@ export default function Layout() {
           console.error("Capacitor local notification error", e);
         }
       } else {
-        if ('Notification' in window && Notification.permission === 'granted') {
+        if (typeof Notification !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
           if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
             navigator.serviceWorker.ready.then(registration => {
               registration.showNotification(title, {
