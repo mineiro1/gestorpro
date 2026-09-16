@@ -203,7 +203,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
                   )}
                   
                   {msg.media_url ? (
-                    (msg.media_url.includes('audio') || msg.content.includes('Áudio')) && !msg.media_url.includes('image') ? (
+                    (msg.media_url.includes('audio') || msg.content.includes('Áudio') || msg.media_url.includes('.ogg') || msg.media_url.includes('.mp3')) && !msg.media_url.includes('image') ? (
                       <div>
                         <p className="text-sm text-gray-500 mb-1">{msg.content}</p>
                         <AudioViewer url={msg.media_url} className="max-w-[220px] md:max-w-[300px]" />
