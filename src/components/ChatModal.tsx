@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Send, User, MessageCircle, Clock } from 'lucide-react';
+import { MediaViewer, AudioViewer } from './chat/MediaViewer';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 
