@@ -202,10 +202,15 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
                   )}
                   
                   {msg.media_url ? (
-                    msg.media_url.endsWith('.mp3') || msg.media_url.endsWith('.ogg') ? (
-                      <audio controls src={msg.media_url} className="max-w-[200px]" />
+                    (msg.media_url.includes('audio') || msg.content.includes('Áudio')) && !msg.media_url.includes('image') ? (
+                      <div>
+                        <p className="text-sm text-gray-500 mb-1">{msg.content}</p>
+                        <audio controls src={msg.media_url} className="max-w-[220px] md:max-w-[300px]" />
+                      </div>
                     ) : (
-                      <img src={msg.media_url} alt="Mídia" className="max-w-full rounded-lg" />
+                      <a href={msg.media_url} target="_blank" rel="noopener noreferrer">
+                        <img src={msg.media_url} alt="Mídia" className="max-w-full md:max-w-[300px] max-h-[300px] object-cover rounded-lg cursor-pointer hover:opacity-90" />
+                      </a>
                     )
                   ) : (
                     <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
