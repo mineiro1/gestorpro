@@ -67,8 +67,20 @@ export default async function handler(req, res) {
                  const mediaRes = await fetch(mediaUrl);
                  if (mediaRes.ok) {
                      const mediaData = await mediaRes.json();
-                     if (mediaData.base64 && mediaData.mimetype) {
-                         mediaUrl = `data:${mediaData.mimetype};base64,${mediaData.base64}`;
+                     if (mediaData.base64) {
+                         let b64 = mediaData.base64;
+                         if (!b64.startsWith('data:')) {
+                             let mime = mediaData.mimetype || 'application/octet-stream';
+                             if (mime.includes('audio/ogg') && mime.includes('opus')) {
+                                 mime = 'audio/ogg';
+                             }
+                             b64 = \`data:\${mime};base64,\${b64}\`;
+                         } else {
+                             if (b64.includes('audio/ogg') && b64.includes('opus')) {
+                                 b64 = b64.replace('audio/ogg; codecs=opus', 'audio/ogg');
+                             }
+                         }
+                         mediaUrl = b64;
                      }
                  }
              } catch (fetchErr) {
