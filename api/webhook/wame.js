@@ -278,6 +278,33 @@ export default async function handler(req, res) {
        activeSession = newSession;
     }
     
+    // Fetch mediaUrl immediately to bypass CORS and get the base64 for the frontend (Global catch-all)
+    if (mediaUrl && mediaUrl.includes('api-wa.me') && mediaUrl.includes('/media')) {
+       try {
+           const mediaRes = await fetch(mediaUrl);
+           if (mediaRes.ok) {
+               const mediaData = await mediaRes.json();
+               if (mediaData.base64) {
+                   let b64 = mediaData.base64;
+                   if (!b64.startsWith('data:')) {
+                       let mime = mediaData.mimetype || 'application/octet-stream';
+                       if (mime.includes('audio/ogg') && mime.includes('opus')) {
+                           mime = 'audio/ogg';
+                       }
+                       b64 = \`data:\${mime};base64,\${b64}\`;
+                   } else {
+                       if (b64.includes('audio/ogg') && b64.includes('opus')) {
+                           b64 = b64.replace('audio/ogg; codecs=opus', 'audio/ogg');
+                       }
+                   }
+                   mediaUrl = b64;
+               }
+           }
+       } catch (fetchErr) {
+           console.error("Error fetching media from api-wa.me globally:", fetchErr);
+       }
+    }
+
     if (activeSession) {
       await supabaseAdmin.from('chat_messages').insert({
          session_id: activeSession.id,
