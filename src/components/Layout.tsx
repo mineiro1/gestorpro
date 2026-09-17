@@ -223,6 +223,12 @@ export default function Layout() {
 
     const handleNewVisit = async (payload: any) => {
       if (payload.new) {
+        // Only trigger if it's explicitly finalizada
+        const isNowFinalizada = payload.new.status === 'finalizada';
+        const wasNotFinalizada = payload.old ? payload.old.status !== 'finalizada' : true;
+        
+        if (!isNowFinalizada || !wasNotFinalizada) return;
+        
         const isAdminOwner = userProfile.role === 'admin' && payload.new.admin_id === userProfile.uid;
         const isSelf = payload.new.employee_id === userProfile.uid;
 
@@ -305,7 +311,7 @@ export default function Layout() {
 
     const channel = supabase.channel('employee-notifications-fix')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, handleNewChatMessage)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'visits' }, handleNewVisit)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'visits' }, handleNewVisit)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'oneoffjobs' }, handleNewJob)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'oneoffjobs' }, handleJobUpdate)
       .subscribe();
