@@ -343,11 +343,13 @@ async function processPayment(paymentId, adminId) {
       }
       
       let activeSession = sessions[0];
-      const createdTime = new Date(activeSession.created_at).getTime();
       const now = new Date().getTime();
-      if (now - createdTime > 30 * 60 * 1000) {
-         await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
-         return res.status(200).send("EVENT_RECEIVED");
+      if (activeSession.closed_at) {
+          const closedTime = new Date(activeSession.closed_at).getTime();
+          if (now - closedTime > 30 * 60 * 1000) {
+              await supabaseAdmin.from('chat_sessions').update({ status: 'closed' }).eq('id', activeSession.id);
+              return res.status(200).send("EVENT_RECEIVED");
+          }
       }
 
       await supabaseAdmin.from('chat_messages').insert({
@@ -426,11 +428,13 @@ async function processPayment(paymentId, adminId) {
       }
       
       let activeSession = sessions[0];
-      const createdTime = new Date(activeSession.created_at).getTime();
       const now = new Date().getTime();
-      if (now - createdTime > 30 * 60 * 1000) {
-         await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
-         return res.status(200).send("OK");
+      if (activeSession.closed_at) {
+          const closedTime = new Date(activeSession.closed_at).getTime();
+          if (now - closedTime > 30 * 60 * 1000) {
+              await supabaseAdmin.from('chat_sessions').update({ status: 'closed' }).eq('id', activeSession.id);
+              return res.status(200).send("OK");
+          }
       }
 
       await supabaseAdmin.from('chat_messages').insert({

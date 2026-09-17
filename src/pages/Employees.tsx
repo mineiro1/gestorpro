@@ -93,6 +93,12 @@ export default function Employees() {
   const executeHardDelete = async () => {
     if (!employeeToHardDelete) return;
     try {
+      // Cleanup sessions
+      await supabase.from('chat_sessions').update({ employee_id: null }).eq('employee_id', employeeToHardDelete.id);
+      const empVisits = await supabase.from('visits').select('id').eq('employee_id', employeeToHardDelete.id);
+      if (empVisits.data && empVisits.data.length > 0) {
+          await supabase.from('chat_sessions').update({ visit_id: null }).in('visit_id', empVisits.data.map(v => v.id));
+      }
       await supabase.from('visits').delete().eq('employee_id', employeeToHardDelete.id);
       await supabase.from('oneoffjobs').delete().eq('employee_id', employeeToHardDelete.id);
       await supabase.from('clients').update({ employee_id: null }).eq('employee_id', employeeToHardDelete.id);

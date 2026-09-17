@@ -344,6 +344,7 @@ export default function ClientForm() {
           
         if(!fetchErr && visitsData && visitsData.length > 3) {
           const toDelete = visitsData.slice(3).map((v: any) => v.id);
+          if (toDelete && toDelete.length > 0) await supabase.from('chat_sessions').update({ visit_id: null }).in('visit_id', toDelete);
           await supabase.from('visits').delete().in('id', toDelete);
         }
       } catch (cleanupErr) {

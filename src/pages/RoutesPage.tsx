@@ -622,7 +622,7 @@ export default function RoutesPage() {
     }
   };
 
-    const handleOpenChat = async (client: any, e?: React.MouseEvent) => {
+    const handleOpenChat = async (client: any, isCompleted: boolean, e?: React.MouseEvent) => {
     if (e) {
       e.stopPropagation();
       e.preventDefault();
@@ -638,7 +638,7 @@ export default function RoutesPage() {
     
     try {
       const { data: existingVisit } = await supabase.from('visits')
-        .select('id')
+        .select('id, status')
         .eq('client_id', client.id)
         .eq('date', routeDate)
         .limit(1);
@@ -646,6 +646,7 @@ export default function RoutesPage() {
 
       if (existingVisit && existingVisit.length > 0) {
          visitId = existingVisit[0].id;
+         var visitStatus = existingVisit[0].status;
          console.log("Found existing visit:", visitId);
       } else {
          const { data: newVisit, error: newVisitErr } = await supabase.from('visits').insert({
@@ -663,7 +664,7 @@ export default function RoutesPage() {
       console.error(err);
     }
 
-    setActiveChatVisit({ id: visitId });
+    setActiveChatVisit({ id: visitId, status: typeof visitStatus !== 'undefined' ? visitStatus : 'agendada', isCompleted });
     setActiveChatClient(client);
     setChatModalOpen(true);
   };
@@ -872,7 +873,7 @@ export default function RoutesPage() {
     // Fechamento Automático do Chat (Por Ação)
     try {
       await supabase.from('chat_sessions')
-        .update({ status: 'closed', closed_at: new Date().toISOString() })
+        .update({ closed_at: new Date().toISOString() })
         .eq('client_id', selectedClientForReport.id)
         .eq('status', 'open');
     } catch(e) {}
@@ -938,7 +939,7 @@ export default function RoutesPage() {
             if (oneOffError) throw oneOffError;
             
             if (!needsReturn) {
-              await supabase.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('client_id', selectedClientForReport.id).eq('status', 'open');
+              await supabase.from('chat_sessions').update({ closed_at: new Date().toISOString() }).eq('client_id', selectedClientForReport.id).eq('status', 'open');
             }
           } else {
             // Normal Client Visit
@@ -977,7 +978,7 @@ export default function RoutesPage() {
             }
             
             if (!needsReturn) {
-              await supabase.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('client_id', selectedClientForReport.id).eq('status', 'open');
+              await supabase.from('chat_sessions').update({ closed_at: new Date().toISOString() }).eq('client_id', selectedClientForReport.id).eq('status', 'open');
             }
 
             
@@ -1027,6 +1028,7 @@ export default function RoutesPage() {
               if (visitsData && visitsData.length > 3) {
                 const toDelete = visitsData.slice(3).map(v => v.id);
                 for (const id of toDelete) {
+                   await supabase.from('chat_sessions').update({ visit_id: null }).eq('visit_id', id);
                    await supabase.from('visits').delete().eq('id', id);
                 }
               }
@@ -1370,7 +1372,7 @@ export default function RoutesPage() {
                             const unread = unreadCounts[client.id] || 0;
                             return (
                               <button
-                                onClick={(e) => handleOpenChat(client, e)}
+                                onClick={(e) => handleOpenChat(client, isCompleted, e)}
                                 className={`relative p-1 rounded-md transition-colors ${unread > 0 ? 'text-green-600 bg-green-100 hover:bg-green-200' : 'text-blue-600 hover:bg-blue-100'}`}
                                 title="Avisar chegada / Chat"
                               >

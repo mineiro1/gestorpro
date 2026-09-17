@@ -144,6 +144,13 @@ export default function SuperAdminPage() {
     if (!adminToDelete) return;
     setProcessingId(adminToDelete);
     try {
+      // Cleanup sessions
+      const { data: adminSessions } = await supabase.from('chat_sessions').select('id').eq('admin_id', adminToDelete);
+      if (adminSessions && adminSessions.length > 0) {
+         const sessionIds = adminSessions.map(s => s.id);
+         await supabase.from('chat_messages').delete().in('session_id', sessionIds);
+         await supabase.from('chat_sessions').delete().in('id', sessionIds);
+      }
       await supabase.from('visits').delete().eq('admin_id', adminToDelete);
       await supabase.from('payments').delete().eq('admin_id', adminToDelete);
       await supabase.from('agenda_contacts').delete().eq('admin_id', adminToDelete);

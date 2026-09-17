@@ -185,6 +185,13 @@ export default function Clients() {
   const executeHardDelete = async () => {
     if (!clientToHardDelete) return;
     try {
+      // First delete chat messages of this client's sessions
+      const { data: sessions } = await supabase.from('chat_sessions').select('id').eq('client_id', clientToHardDelete.id);
+      if (sessions && sessions.length > 0) {
+         const sessionIds = sessions.map(s => s.id);
+         await supabase.from('chat_messages').delete().in('session_id', sessionIds);
+         await supabase.from('chat_sessions').delete().in('id', sessionIds);
+      }
       await supabase.from('payments').delete().eq('client_id', clientToHardDelete.id);
       await supabase.from('visits').delete().eq('client_id', clientToHardDelete.id);
       await supabase.from('oneoffjobs').delete().eq('client_id', clientToHardDelete.id);

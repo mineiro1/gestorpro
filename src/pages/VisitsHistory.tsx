@@ -145,6 +145,7 @@ export default function VisitsHistory() {
   const confirmDeleteVisit = async () => {
     if (!visitToDelete) return;
     try {
+      await supabase.from('chat_sessions').update({ visit_id: null }).eq('visit_id', visitToDelete);
       const { error } = await supabase.from('visits').delete().eq('id', visitToDelete);
       if (error) throw error;
       
