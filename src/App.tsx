@@ -82,6 +82,14 @@ const RootRoute = () => {
   }
   
   if (Capacitor.isNativePlatform()) {
+    try {
+      if ((window as any).cordova && (window as any).cordova.plugins && (window as any).cordova.plugins.backgroundMode) {
+         (window as any).cordova.plugins.backgroundMode.enable();
+         (window as any).cordova.plugins.backgroundMode.on('activate', function() {
+            (window as any).cordova.plugins.backgroundMode.disableWebViewOptimizations(); 
+         });
+      }
+    } catch(e) {}
     return currentUser ? <Navigate to="/dashboard" replace /> : <Navigate to="/login" replace />;
   }
   

@@ -110,6 +110,14 @@ export default function Layout() {
       if (Capacitor.isNativePlatform()) {
         try {
           await LocalNotifications.requestPermissions();
+          await LocalNotifications.createChannel({
+            id: 'chat_messages',
+            name: 'Mensagens do Chat',
+            description: 'Notificações de novas mensagens',
+            importance: 5,
+            visibility: 1,
+            vibration: true,
+          });
         } catch (e) {
           console.error("Local notifications permission error", e);
         }
@@ -135,8 +143,9 @@ export default function Layout() {
               {
                 title,
                 body,
-                id: new Date().getTime(),
-                schedule: { at: new Date(Date.now() + 1000) },
+                id: Math.floor(Math.random() * 2000000000),
+                schedule: { at: new Date(Date.now() + 100) },
+                channelId: 'chat_messages',
                 sound: 'notificacao.mp3' // Attempt to use custom sound in Capacitor if configured, otherwise default
               }
             ]
