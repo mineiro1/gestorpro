@@ -602,7 +602,7 @@ app.all("/api/sync-payment", async (req, res) => {
           // Find admin/users who should receive this
           const { data: session } = await supabaseAdmin.from('chat_sessions').select('admin_id, client_id, client_name').eq('id', newMsg.session_id).single();
           if (session && session.admin_id) {
-             const { data: users } = await supabaseAdmin.from('users').select('fcm_token').eq('uid', session.admin_id);
+             const { data: users } = await supabaseAdmin.from('users').select('fcm_token').eq('id', session.admin_id);
              if (users && users.length > 0) {
                 users.forEach(u => {
                    if (u.fcm_token) {

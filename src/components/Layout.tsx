@@ -46,7 +46,7 @@ const NotificationBanner = () => {
       const registerListener = PushNotifications.addListener('registration', async (token) => {
         if (userProfile && userProfile.uid) {
           try {
-             await supabase.from('users').update({ fcm_token: token.value }).eq('uid', userProfile.uid);
+             await supabase.from('users').update({ fcm_token: token.value }).eq('id', userProfile.uid);
           } catch(e){}
         }
       });
