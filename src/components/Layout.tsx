@@ -6,11 +6,15 @@ import {  Menu, Store, Wrench, X, Home, Users, UserCircle, Map, LogOut, Bell, Me
 import clsx from 'clsx';
 import { Capacitor } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
+import { PushNotifications } from '@capacitor/push-notifications';
+import { supabase } from '../lib/supabase';
 import EmployeeLocationTracker from './EmployeeLocationTracker';
 import SmsGatewayListener from './SmsGatewayListener';
 
 
 const NotificationBanner = () => {
+  const { userProfile } = useAuth();
+
   const [permission, setPermission] = useState('default');
   const [dismissed, setDismissed] = useState(localStorage.getItem('notif_banner_dismissed') === 'true');
 
@@ -19,6 +23,13 @@ const NotificationBanner = () => {
       if (Capacitor.isNativePlatform()) {
         try {
           const status = await LocalNotifications.checkPermissions();
+          const pushStatus = await PushNotifications.checkPermissions();
+          if (pushStatus.receive === 'prompt') {
+            await PushNotifications.requestPermissions();
+          }
+          if (pushStatus.receive === 'granted') {
+             await PushNotifications.register();
+          }
           if (status.display === 'granted') {
              setPermission('granted');
           } else if (status.display === 'denied') {
@@ -30,7 +41,20 @@ const NotificationBanner = () => {
       }
     };
     checkPerms();
-  }, []);
+
+    if (Capacitor.isNativePlatform()) {
+      const registerListener = PushNotifications.addListener('registration', async (token) => {
+        if (userProfile && userProfile.uid) {
+          try {
+             await supabase.from('users').update({ fcm_token: token.value }).eq('uid', userProfile.uid);
+          } catch(e){}
+        }
+      });
+      return () => {
+        registerListener.then(l => l.remove()).catch(()=>{});
+      };
+    }
+  }, [userProfile]);
 
   if (permission !== 'default' || dismissed) return null;
 
@@ -39,6 +63,10 @@ const NotificationBanner = () => {
       let perm;
       if (Capacitor.isNativePlatform()) {
         const res = await LocalNotifications.requestPermissions();
+        const pushRes = await PushNotifications.requestPermissions();
+        if (pushRes.receive === 'granted') {
+           await PushNotifications.register();
+        }
         perm = res.display === 'granted' ? 'granted' : 'denied';
       } else {
         perm = typeof Notification !== 'undefined' ? await Notification.requestPermission() : 'denied';
