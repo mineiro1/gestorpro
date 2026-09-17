@@ -27,36 +27,83 @@ export default async function handler(req, res) {
     // Send via Evolution API
     if (waSettings?.useEvolutionApi && waSettings?.evolutionApiUrl && waSettings?.evolutionApiKey && waSettings?.evolutionInstanceName) {
       const cleanPhone = clientPhone.replace(/\D/g, '');
-      const response = await fetch(`${waSettings.evolutionApiUrl}/message/sendText/${waSettings.evolutionInstanceName}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': waSettings.evolutionApiKey
-        },
-        body: JSON.stringify({
-          number: `55${cleanPhone}`,
-          text: text,
-          options: { delay: 1200, presence: 'composing' },
-          textMessage: { text: text }
-        })
-      });
-      if (!response.ok) {
-         const errText = await response.text();
-         console.error("Evolution Send Error:", errText);
+      let originalNumber = cleanPhone.startsWith('55') ? cleanPhone : `55${cleanPhone}`;
+      
+      let numbersToTry = [originalNumber];
+      if (originalNumber.length >= 12 && originalNumber.startsWith('55')) {
+        const ddd = parseInt(originalNumber.substring(2, 4), 10);
+        if (ddd <= 28) {
+          if (originalNumber.length === 12) {
+            originalNumber = originalNumber.substring(0, 4) + '9' + originalNumber.substring(4);
+            numbersToTry = [originalNumber];
+          }
+        } else {
+          if (originalNumber.length === 13 && originalNumber[4] === '9') {
+            numbersToTry.push(originalNumber.substring(0, 4) + originalNumber.substring(5));
+          } else if (originalNumber.length === 12) {
+            numbersToTry.push(originalNumber.substring(0, 4) + '9' + originalNumber.substring(4));
+          }
+        }
+      }
+
+      for (const num of numbersToTry) {
+          const response = await fetch(`${waSettings.evolutionApiUrl}/message/sendText/${waSettings.evolutionInstanceName}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'apikey': waSettings.evolutionApiKey
+            },
+            body: JSON.stringify({
+              number: num,
+              text: text,
+              options: { delay: 1200, presence: 'composing' },
+              textMessage: { text: text }
+            })
+          });
+          if (!response.ok) {
+             const errText = await response.text();
+             console.error("Evolution Send Error for num", num, errText);
+          }
       }
     } else if (waSettings?.useMetaApi && waSettings?.metaToken) {
       const cleanPhone = clientPhone.replace(/\D/g, '');
-      const number = cleanPhone.startsWith('55') ? cleanPhone : `55${cleanPhone}`;
+      let originalNumber = cleanPhone.startsWith('55') ? cleanPhone : `55${cleanPhone}`;
       
       const baseUrl = (waSettings.metaServerUrl || 'https://graph.facebook.com/v19.0').replace(/\/$/, '');
       const isWame = baseUrl.includes('api-wa.me') || baseUrl.includes('wame.api.br');
+
+      let numbersToTry = [originalNumber];
+      if (isWame && originalNumber.length >= 12 && originalNumber.startsWith('55')) {
+        const ddd = parseInt(originalNumber.substring(2, 4), 10);
+        if (ddd <= 28) {
+          if (originalNumber.length === 12) {
+            originalNumber = originalNumber.substring(0, 4) + '9' + originalNumber.substring(4);
+            numbersToTry = [originalNumber];
+          }
+        } else {
+          if (originalNumber.length === 13 && originalNumber[4] === '9') {
+            numbersToTry.push(originalNumber.substring(0, 4) + originalNumber.substring(5));
+          } else if (originalNumber.length === 12) {
+            numbersToTry.push(originalNumber.substring(0, 4) + '9' + originalNumber.substring(4));
+          }
+        }
+      }
       
       let url, headers, body;
       
       if (isWame) {
          url = `${baseUrl}/${waSettings.metaToken}/message/text`;
          headers = { 'Content-Type': 'application/json' };
-         body = JSON.stringify({ to: number, text: text });
+         
+         for (const num of numbersToTry) {
+             body = JSON.stringify({ to: num, text: text });
+             const response = await fetch(url, { method: 'POST', headers, body });
+             if (!response.ok) {
+                 const errText = await response.text();
+                 console.error("Meta/WAME Send Error for num", num, errText);
+             }
+         }
+         return res.json({ success: true });
       } else {
          const phoneId = waSettings.metaPhoneNumberId ? `/${waSettings.metaPhoneNumberId}` : '';
          url = `${baseUrl}${phoneId}/messages`;
