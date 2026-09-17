@@ -8,23 +8,25 @@ export function useRealtimeUpdates(tables: string[], filterColumn?: string, filt
   useEffect(() => {
     if (!tables || tables.length === 0) return;
 
-    const channels = tables.map(table => {
+    // Use a single channel name for the component instance
+    const channelName = `realtime-multi-${filterValue || 'all'}-${Math.random().toString(36).substring(7)}`;
+    const channel = supabase.channel(channelName);
+
+    // Bind each table to the same channel
+    tables.forEach(table => {
       const filterObj: any = { event: '*', schema: 'public', table };
       if (filterColumn && filterValue) {
         filterObj.filter = `${filterColumn}=eq.${filterValue}`;
       }
-
-      const channelName = `realtime-${table}-${filterValue || 'all'}-${Math.random().toString(36).substring(7)}`;
-
-      return supabase.channel(channelName)
-        .on('postgres_changes', filterObj, () => {
-          setRefreshTrigger(t => t + 1);
-        })
-        .subscribe();
+      channel.on('postgres_changes', filterObj, () => {
+        setRefreshTrigger(t => t + 1);
+      });
     });
 
+    channel.subscribe();
+
     return () => {
-      channels.forEach(channel => supabase.removeChannel(channel));
+      supabase.removeChannel(channel);
     };
   }, [JSON.stringify(tables), filterColumn, filterValue]);
 

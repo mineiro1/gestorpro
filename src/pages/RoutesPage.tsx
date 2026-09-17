@@ -213,7 +213,6 @@ export default function RoutesPage() {
   const { data: queryData, isLoading, refetch } = useQuery({
     queryKey: ['routeData', routeDate, selectedEmployee, selectedDay, userProfile?.uid, generated],
     enabled: generated && !!userProfile && !!routeDate && !!selectedEmployee,
-    refetchInterval: 15000, // Substitui o autoRefresh manual
     queryFn: async () => {
       const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
       

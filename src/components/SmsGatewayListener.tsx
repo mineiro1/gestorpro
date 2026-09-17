@@ -112,11 +112,11 @@ export default function SmsGatewayListener() {
     // Aciona a varredura assim que o componente monta
     processBacklog();
     
-    // Intervalo de segurança: Varre a fila a cada 15 segundos
+    // Intervalo de segurança: Varre a fila a cada 60 segundos
     // Isso garante que mesmo se o WebSocket cair por causa da tela desligada, ele vai processar.
     const fallbackInterval = setInterval(() => {
       processBacklog();
-    }, 15000);
+    }, 60000);
 
     // Quando a tela do celular acender de novo (app voltar pro primeiro plano), força a varredura
     const handleVisibilityChange = () => {
