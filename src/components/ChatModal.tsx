@@ -223,7 +223,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
               <button onClick={() => sendMessage("Olá, estou indo realizar a limpeza da sua piscina.")} className="whitespace-nowrap px-3 py-1.5 bg-blue-50 text-blue-700 text-xs font-semibold rounded-full hover:bg-blue-100 transition-colors">
                 🚗 Estou a caminho
               </button>
-              <button onClick={() => sendMessage("Cheguei no local, pode abrir a porta por favor?")} className="whitespace-nowrap px-3 py-1.5 bg-blue-50 text-blue-700 text-xs font-semibold rounded-full hover:bg-blue-100 transition-colors">
+              <button onClick={() => sendMessage("Cheguei, estou aguardando aqui na frente")} className="whitespace-nowrap px-3 py-1.5 bg-blue-50 text-blue-700 text-xs font-semibold rounded-full hover:bg-blue-100 transition-colors">
                 📍 Cheguei
               </button>
             </div>
