@@ -235,7 +235,7 @@ export default function Layout() {
               if (sessionData && sessionData.client_id) {
                  const { data: clientData } = await supabase.from('clients').select('name').eq('id', sessionData.client_id).single();
                  const cName = clientData?.name || 'Cliente';
-                 showNotification('Nova Mensagem', `${cName} enviou uma nova mensagem no chat.`);
+                 showNotification(cName, 'Você acaba de receber uma nova mensagem.');
               } else {
                  showNotification('Nova Mensagem', 'Você recebeu uma nova mensagem no chat.');
               }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ChatModal } from '../components/ChatModal';
 import { MessageCircle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
@@ -33,8 +33,34 @@ export default function RoutesPage() {
 
   const [generated, setGenerated] = useState(false);
   const [chatModalOpen, setChatModalOpen] = useState(false);
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>(() => {
+    try { return JSON.parse(localStorage.getItem('unreadCounts') || '{}'); } catch(e) { return {}; }
+  });
+  const activeChatClientRef = useRef<any>(null);
+  const chatModalOpenRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    localStorage.setItem('unreadCounts', JSON.stringify(unreadCounts));
+  }, [unreadCounts]);
+
+
+
+  useEffect(() => {
+    chatModalOpenRef.current = chatModalOpen;
+    if (chatModalOpen && activeChatClientRef.current) {
+      setUnreadCounts(prev => {
+        const nc = {...prev};
+        delete nc[activeChatClientRef.current.id];
+        return nc;
+      });
+    }
+  }, [chatModalOpen]);
+
   const [activeChatVisit, setActiveChatVisit] = useState<any>(null);
   const [activeChatClient, setActiveChatClient] = useState<any>(null);
+  useEffect(() => {
+    activeChatClientRef.current = activeChatClient;
+  }, [activeChatClient]);
 
 
   const [highlightedClientId, setHighlightedClientId] = useState<string | null>(null);
@@ -321,6 +347,23 @@ export default function RoutesPage() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'visits', filter: `admin_id=eq.${adminId}` }, () => refetch())
       .subscribe();
 
+    const channelChat = supabase.channel('routes-chat-notifs')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, async (payload) => {
+        const newMsg = payload.new;
+        if (newMsg.sender_type === 'client') {
+          const { data: session } = await supabase.from('chat_sessions').select('client_id').eq('id', newMsg.session_id).single();
+          if (session && session.client_id) {
+             const cid = session.client_id;
+             if (activeChatClientRef.current && activeChatClientRef.current.id === cid && chatModalOpenRef.current) {
+                // Open, do nothing
+             } else {
+                setUnreadCounts(prev => ({ ...prev, [cid]: (prev[cid] || 0) + 1 }));
+             }
+          }
+        }
+      })
+      .subscribe();
+
     const channel2 = supabase.channel('routes-jobs')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'oneoffjobs', filter: jobFilter }, (payload) => {
         refetch();
@@ -332,6 +375,7 @@ export default function RoutesPage() {
 
     return () => {
       supabase.removeChannel(channel1);
+      supabase.removeChannel(channelChat);
       supabase.removeChannel(channel2);
     };
   }, [generated, routeDate, userProfile, isAdmin]);
@@ -1314,13 +1358,23 @@ export default function RoutesPage() {
                           </button>
                           
                           {/* Botão Estou a caminho / Chat */}
-                          <button
-                            onClick={(e) => handleOpenChat(client, e)}
-                            className="p-1 text-blue-600 hover:bg-blue-100 rounded-md transition-colors"
-                            title="Avisar chegada / Chat"
-                          >
-                            <MessageCircle size={20} />
-                          </button>
+                          {(() => {
+                            const unread = unreadCounts[client.id] || 0;
+                            return (
+                              <button
+                                onClick={(e) => handleOpenChat(client, e)}
+                                className={`relative p-1 rounded-md transition-colors ${unread > 0 ? 'text-green-600 bg-green-100 hover:bg-green-200' : 'text-blue-600 hover:bg-blue-100'}`}
+                                title="Avisar chegada / Chat"
+                              >
+                                <MessageCircle size={20} />
+                                {unread > 0 && (
+                                  <span className="absolute -top-2 -right-2 flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-[9px] font-bold text-white shadow-sm ring-1 ring-white">
+                                    {unread > 9 ? '9+' : unread}
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })()}
                         </div>
                         {isCompleted && (
                           <motion.span 
