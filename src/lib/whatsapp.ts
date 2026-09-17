@@ -1,4 +1,4 @@
-export const openWhatsApp = (phone: string, text: string) => {
+export const openWhatsApp = (phone: string, text: string = "") => {
   if (!phone) return;
   const cleanPhone = phone.replace(/\D/g, '');
   const encodedMessage = encodeURIComponent(text);
