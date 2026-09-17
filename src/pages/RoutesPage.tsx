@@ -936,6 +936,10 @@ export default function RoutesPage() {
               updated_at: finalVisitDate
             }).eq('id', selectedClientForReport.id);
             if (oneOffError) throw oneOffError;
+            
+            if (!needsReturn) {
+              await supabase.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('client_id', selectedClientForReport.id).eq('status', 'open');
+            }
           } else {
             // Normal Client Visit
 
@@ -970,6 +974,10 @@ export default function RoutesPage() {
                 status: 'finalizada'
               });
               insertError = error;
+            }
+            
+            if (!needsReturn) {
+              await supabase.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('client_id', selectedClientForReport.id).eq('status', 'open');
             }
 
             

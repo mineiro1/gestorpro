@@ -360,130 +360,16 @@ async function processPayment(paymentId, adminId) {
         .eq('status', 'open')
         .order('created_at', { ascending: false });
         
-      let activeSession = null;
-      
-      if (!sessions || sessions.length === 0) {
-         // Create a new session so the message is not lost!
-         const { data: newSession, error: createErr } = await supabaseAdmin.from('chat_sessions').insert({
-             client_id: matchedClient.id,
-             admin_id: matchedClient.admin_id,
-             employee_id: matchedClient.employee_id || matchedClient.admin_id,
-             status: 'open'
-         }).select().single();
-         if (createErr || !newSession) return res.status(200).send("EVENT_RECEIVED");
-         activeSession = newSession;
-      } else {
-         activeSession = sessions[0];
-      }
-      // Time lock removed for testing
-      // const createdTime = new Date(activeSession.created_at).getTime();
-      // const now = new Date().getTime();
-      // if (now - createdTime > 30 * 60 * 1000) {
-      //    await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
-      //    return res.status(200).send("EVENT_RECEIVED");
-      // }
-      
-      await supabaseAdmin.from('chat_messages').insert({
-         session_id: activeSession.id,
-         sender_type: 'client',
-         content: content,
-         media_url: mediaUrl
-      });
-      
-      return res.status(200).send("EVENT_RECEIVED");
-    } catch(e) {
-      console.error("Wame Webhook Error:", e);
-      return res.status(500).send("Error");
-    }
-  });
-
-  // Webhook for incoming messages
-  app.post("/api/webhook/evolution", async (req, res) => {
-    try {
-      console.log("Evolution Webhook Received:", JSON.stringify(req.body));
-      const body = req.body;
-      
-      // Evolution API format usually comes in body.data for messages
-      // This varies by version, let's handle the typical structure
-      const msgData = body.data || body;
-      
-      if (!msgData || !msgData.key || !msgData.message) {
+            if (!sessions || sessions.length === 0) {
          return res.status(200).send("OK");
       }
-
-      // Ignore outgoing messages
-      if (msgData.key.fromMe) {
+      let activeSession = sessions[0];
+      const createdTime = new Date(activeSession.created_at).getTime();
+      const now = new Date().getTime();
+      if (now - createdTime > 30 * 60 * 1000) {
+         await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
          return res.status(200).send("OK");
       }
-
-      let remoteJid = msgData.key.remoteJid || "";
-      if (!remoteJid) return res.status(200).send("OK");
-      
-      // remoteJid is usually 5511999999999@s.whatsapp.net
-      let phone = remoteJid.split('@')[0].replace('55', ''); // naive clean
-      
-      // Extract text content
-      let content = "";
-      if (msgData.message.conversation) content = msgData.message.conversation;
-      else if (msgData.message.extendedTextMessage) content = msgData.message.extendedTextMessage.text;
-      
-      // Handle audio/media (Simplified, normally you need to download from Evolution)
-      let mediaUrl = "";
-      if (msgData.message.audioMessage) {
-         content = "🎵 Mensagem de Áudio";
-         // We would download the audio here if we had full evolution setup
-      } else if (msgData.message.imageMessage) {
-         content = "📷 Imagem";
-      }
-
-      if (!content && !mediaUrl) return res.status(200).send("OK");
-
-      // Find an OPEN session for this phone number
-      // Since phone can be formatted differently, we query clients where phone like %phone%
-      // For safety, we query the chat_sessions matching the client.
-      
-      // A more robust query would search by phone or local_phone
-      const { data: clients } = await supabaseAdmin.from('clients').select('id, phone, local_phone, admin_id, employee_id');
-      if (!clients) return res.status(200).send("OK");
-      
-      // Find matching client
-      const matchedClient = clients.find(c => {
-         const cp = (c.phone || '').replace(/\D/g, '');
-         const lp = (c.local_phone || '').replace(/\D/g, '');
-         return cp.includes(phone) || lp.includes(phone) || phone.includes(cp) || phone.includes(lp);
-      });
-      
-      if (!matchedClient) return res.status(200).send("OK");
-
-      // Find open session
-      const { data: sessions } = await supabaseAdmin
-        .from('chat_sessions')
-        .select('*')
-        .eq('client_id', matchedClient.id)
-        .eq('status', 'open')
-        .order('created_at', { ascending: false });
-        
-      let activeSession = null;
-      if (!sessions || sessions.length === 0) {
-         const { data: newSession, error: createErr } = await supabaseAdmin.from('chat_sessions').insert({
-             client_id: matchedClient.id,
-             admin_id: matchedClient.admin_id,
-             employee_id: matchedClient.employee_id || matchedClient.admin_id,
-             status: 'open'
-         }).select().single();
-         if (createErr || !newSession) return res.status(200).send("OK");
-         activeSession = newSession;
-      } else {
-         activeSession = sessions[0];
-      }
-      
-      // Time lock removed for testing
-      // const createdTime = new Date(activeSession.created_at).getTime();
-      // const now = new Date().getTime();
-      // if (now - createdTime > 30 * 60 * 1000) {
-      //    await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
-      //    return res.status(200).send("OK");
-      // }
 
       // Save message
       await supabaseAdmin.from('chat_messages').insert({
@@ -596,6 +482,69 @@ app.all("/api/sync-payment", async (req, res) => {
   
   // Background listener for Push Notifications
   supabaseAdmin.channel('push-notifications-chat')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'visits' }, async (payload) => {
+       if (!fcmInitialized) return;
+       const newVisit = payload.new;
+       if (!newVisit) return;
+       
+       // Detect if it was just finalized
+       let justFinalized = false;
+       if (payload.eventType === 'INSERT' && newVisit.status === 'finalizada') {
+           justFinalized = true;
+       } else if (payload.eventType === 'UPDATE' && payload.old && payload.old.status !== 'finalizada' && newVisit.status === 'finalizada') {
+           justFinalized = true;
+       }
+       
+       if (justFinalized && newVisit.admin_id && newVisit.admin_id !== newVisit.employee_id) {
+           const { data: users } = await supabaseAdmin.from('users').select('fcm_token').eq('id', newVisit.admin_id);
+           if (users && users.length > 0) {
+               // Get names
+               const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', newVisit.employee_id).single();
+               const { data: cliData } = await supabaseAdmin.from('clients').select('name').eq('id', newVisit.client_id).single();
+               
+               const empName = empData?.name || 'Um colaborador';
+               const cliName = cliData?.name || 'um cliente';
+               
+               users.forEach(u => {
+                   if (u.fcm_token) {
+                       getMessaging().send({
+                           token: u.fcm_token,
+                           notification: {
+                               title: 'Visita Concluída',
+                               body: `O colaborador ${empName} acaba de finalizar a visita ao cliente ${cliName}.`
+                           }
+                       }).catch(e => console.error("FCM Send Error:", e));
+                   }
+               });
+           }
+       }
+    })
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'oneoffjobs' }, async (payload) => {
+       if (!fcmInitialized) return;
+       const newJob = payload.new;
+       if (!newJob || !payload.old) return;
+       
+       if (payload.old.status !== 'concluido' && newJob.status === 'concluido' && newJob.admin_id && newJob.admin_id !== newJob.employee_id) {
+           const { data: users } = await supabaseAdmin.from('users').select('fcm_token').eq('id', newJob.admin_id);
+           if (users && users.length > 0) {
+               const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', newJob.employee_id).single();
+               const empName = empData?.name || 'Um colaborador';
+               const cliName = newJob.client_name || 'um cliente';
+               
+               users.forEach(u => {
+                   if (u.fcm_token) {
+                       getMessaging().send({
+                           token: u.fcm_token,
+                           notification: {
+                               title: 'Serviço Avulso Concluído',
+                               body: `O colaborador ${empName} acaba de finalizar a visita ao cliente ${cliName}.`
+                           }
+                       }).catch(e => console.error("FCM Send Error:", e));
+                   }
+               });
+           }
+       }
+    })
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, async (payload) => {
        if (!fcmInitialized) return;
        const newMsg = payload.new;

@@ -1,70 +1,77 @@
 const fs = require('fs');
-let layoutCode = fs.readFileSync('src/components/Layout.tsx', 'utf-8');
 
-const targetImport = `import { LocalNotifications } from '@capacitor/local-notifications';`;
-const replacementImport = `import { LocalNotifications } from '@capacitor/local-notifications';
-import { PushNotifications } from '@capacitor/push-notifications';
-import { supabase } from '../lib/supabase';`;
+let content = fs.readFileSync('server.ts', 'utf8');
 
-if(layoutCode.includes(targetImport)) {
-    layoutCode = layoutCode.replace(targetImport, replacementImport);
-}
+const target = `    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, async (payload) => {
+       if (!fcmInitialized) return;`;
 
-const targetBanner = `const NotificationBanner = () => {`;
-const replacementBanner = `const NotificationBanner = () => {
-  const { userProfile } = useAuth();
-`;
+const replacement = `    .on('postgres_changes', { event: '*', schema: 'public', table: 'visits' }, async (payload) => {
+       if (!fcmInitialized) return;
+       const newVisit = payload.new;
+       if (!newVisit) return;
+       
+       // Detect if it was just finalized
+       let justFinalized = false;
+       if (payload.eventType === 'INSERT' && newVisit.status === 'finalizada') {
+           justFinalized = true;
+       } else if (payload.eventType === 'UPDATE' && payload.old && payload.old.status !== 'finalizada' && newVisit.status === 'finalizada') {
+           justFinalized = true;
+       }
+       
+       if (justFinalized && newVisit.admin_id && newVisit.admin_id !== newVisit.employee_id) {
+           const { data: users } = await supabaseAdmin.from('users').select('fcm_token').eq('id', newVisit.admin_id);
+           if (users && users.length > 0) {
+               // Get names
+               const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', newVisit.employee_id).single();
+               const { data: cliData } = await supabaseAdmin.from('clients').select('name').eq('id', newVisit.client_id).single();
+               
+               const empName = empData?.name || 'Um colaborador';
+               const cliName = cliData?.name || 'um cliente';
+               
+               users.forEach(u => {
+                   if (u.fcm_token) {
+                       getMessaging().send({
+                           token: u.fcm_token,
+                           notification: {
+                               title: 'Visita Concluída',
+                               body: \`O colaborador \${empName} acaba de finalizar a visita ao cliente \${cliName}.\`
+                           }
+                       }).catch(e => console.error("FCM Send Error:", e));
+                   }
+               });
+           }
+       }
+    })
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'oneoffjobs' }, async (payload) => {
+       if (!fcmInitialized) return;
+       const newJob = payload.new;
+       if (!newJob || !payload.old) return;
+       
+       if (payload.old.status !== 'concluido' && newJob.status === 'concluido' && newJob.admin_id && newJob.admin_id !== newJob.employee_id) {
+           const { data: users } = await supabaseAdmin.from('users').select('fcm_token').eq('id', newJob.admin_id);
+           if (users && users.length > 0) {
+               const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', newJob.employee_id).single();
+               const empName = empData?.name || 'Um colaborador';
+               const cliName = newJob.client_name || 'um cliente';
+               
+               users.forEach(u => {
+                   if (u.fcm_token) {
+                       getMessaging().send({
+                           token: u.fcm_token,
+                           notification: {
+                               title: 'Serviço Avulso Concluído',
+                               body: \`O colaborador \${empName} acaba de finalizar a visita ao cliente \${cliName}.\`
+                           }
+                       }).catch(e => console.error("FCM Send Error:", e));
+                   }
+               });
+           }
+       }
+    })
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, async (payload) => {
+       if (!fcmInitialized) return;`;
 
-if(layoutCode.includes(targetBanner)) {
-    layoutCode = layoutCode.replace(targetBanner, replacementBanner);
-}
+content = content.replace(target, replacement);
 
-const targetCheck = `const status = await LocalNotifications.checkPermissions();`;
-const replacementCheck = `const status = await LocalNotifications.checkPermissions();
-          const pushStatus = await PushNotifications.checkPermissions();
-          if (pushStatus.receive === 'prompt') {
-            await PushNotifications.requestPermissions();
-          }
-          if (pushStatus.receive === 'granted') {
-             await PushNotifications.register();
-          }`;
-
-if(layoutCode.includes(targetCheck)) {
-    layoutCode = layoutCode.replace(targetCheck, replacementCheck);
-}
-
-const targetEffect = `checkPerms();
-  }, []);`;
-const replacementEffect = `checkPerms();
-
-    if (Capacitor.isNativePlatform()) {
-      const registerListener = PushNotifications.addListener('registration', async (token) => {
-        if (userProfile && userProfile.uid) {
-          try {
-             await supabase.from('users').update({ fcm_token: token.value }).eq('uid', userProfile.uid);
-          } catch(e){}
-        }
-      });
-      return () => {
-        registerListener.then(l => l.remove()).catch(()=>{});
-      };
-    }
-  }, [userProfile]);`;
-
-if(layoutCode.includes(targetEffect)) {
-    layoutCode = layoutCode.replace(targetEffect, replacementEffect);
-}
-
-const targetReq = `const res = await LocalNotifications.requestPermissions();`;
-const replacementReq = `const res = await LocalNotifications.requestPermissions();
-        const pushRes = await PushNotifications.requestPermissions();
-        if (pushRes.receive === 'granted') {
-           await PushNotifications.register();
-        }`;
-
-if(layoutCode.includes(targetReq)) {
-    layoutCode = layoutCode.replace(targetReq, replacementReq);
-}
-
-fs.writeFileSync('src/components/Layout.tsx', layoutCode);
-console.log('Patched Layout for Push Notifications');
+fs.writeFileSync('server.ts', content);
+console.log("Push notifications updated!");
