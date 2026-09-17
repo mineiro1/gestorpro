@@ -182,8 +182,9 @@ self.addEventListener('fetch', (event) => {
           });
         }
         return networkResponse;
-      }).catch(() => {
-        // ignore fetch errors for assets if we have cache
+      }).catch((error) => {
+        // ignore fetch errors for assets if we have cache, otherwise throw
+        if (!cachedResponse) throw error;
       });
       return cachedResponse || fetchPromise;
     })
