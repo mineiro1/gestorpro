@@ -394,7 +394,22 @@ async function processPayment(paymentId, adminId) {
       const matchedClient = clients.find(c => {
          const cp = (c.phone || '').replace(/\D/g, '');
          const lp = (c.local_phone || '').replace(/\D/g, '');
-         return cp.includes(phone) || lp.includes(phone) || phone.includes(cp) || phone.includes(lp);
+         if (!cp && !lp) return false;
+         
+         const getCore = (num) => num.length >= 8 ? num.slice(-8) : num;
+         const webhookCore = getCore(phone);
+         
+         let matchPhone = false;
+         if (cp.length > 5) {
+            matchPhone = cp.includes(phone) || phone.includes(cp) || getCore(cp) === webhookCore;
+         }
+         
+         let matchLocal = false;
+         if (lp.length > 5) {
+            matchLocal = lp.includes(phone) || phone.includes(lp) || getCore(lp) === webhookCore;
+         }
+         
+         return matchPhone || matchLocal;
       });
       
       if (!matchedClient) return res.status(200).send("OK");
@@ -530,15 +545,19 @@ app.all("/api/sync-payment", async (req, res) => {
   supabaseAdmin.channel('push-notifications-chat')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'visits' }, async (payload) => {
        if (!fcmInitialized) return;
-       const newVisit = payload.new;
+       const newVisit = payload.new as any;
        if (!newVisit) return;
        
        // Detect if it was just finalized
        let justFinalized = false;
-       if (payload.eventType === 'INSERT' && newVisit.status === 'finalizada') {
-           justFinalized = true;
-       } else if (payload.eventType === 'UPDATE' && payload.old && payload.old.status !== 'finalizada' && newVisit.status === 'finalizada') {
-           justFinalized = true;
+       if (newVisit.status === 'finalizada') {
+           if (!global.notifiedVisits) global.notifiedVisits = new Set();
+           if (!global.notifiedVisits.has(newVisit.id)) {
+               global.notifiedVisits.add(newVisit.id);
+               justFinalized = true;
+               // Keep cache small
+               if (global.notifiedVisits.size > 1000) global.notifiedVisits.clear();
+           }
        }
        
        if (justFinalized && newVisit.admin_id && newVisit.admin_id !== newVisit.employee_id) {
@@ -567,10 +586,15 @@ app.all("/api/sync-payment", async (req, res) => {
     })
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'oneoffjobs' }, async (payload) => {
        if (!fcmInitialized) return;
-       const newJob = payload.new;
+       const newJob = payload.new as any;
        if (!newJob || !payload.old) return;
        
-       if (payload.old.status !== 'concluido' && newJob.status === 'concluido' && newJob.admin_id && newJob.admin_id !== newJob.employee_id) {
+       if (newJob.status === 'concluido' && newJob.admin_id && newJob.admin_id !== newJob.employee_id) {
+           if (!global.notifiedJobs) global.notifiedJobs = new Set();
+           if (global.notifiedJobs.has(newJob.id)) return;
+           global.notifiedJobs.add(newJob.id);
+           if (global.notifiedJobs.size > 1000) global.notifiedJobs.clear();
+
            const { data: users } = await supabaseAdmin.from('users').select('fcm_token').eq('id', newJob.admin_id);
            if (users && users.length > 0) {
                const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', newJob.employee_id).single();
@@ -593,7 +617,7 @@ app.all("/api/sync-payment", async (req, res) => {
     })
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, async (payload) => {
        if (!fcmInitialized) return;
-       const newMsg = payload.new;
+       const newMsg = payload.new as any;
        if (newMsg.sender_type === 'client') {
           // Find admin/users who should receive this
           const { data: session } = await supabaseAdmin.from('chat_sessions').select('admin_id, client_id, client_name').eq('id', newMsg.session_id).single();
@@ -605,8 +629,8 @@ app.all("/api/sync-payment", async (req, res) => {
                       getMessaging().send({
                          token: u.fcm_token,
                          notification: {
-                            title: 'Nova mensagem de ' + (session.client_name || 'Cliente'),
-                            body: newMsg.message || 'Mensagem de texto'
+                            title: 'Nova mensagem no Chat',
+                            body: newMsg.content || 'Mensagem de texto'
                          }
                       }).catch(e => console.error("FCM Send Error:", e));
                    }

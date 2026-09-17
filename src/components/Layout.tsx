@@ -7,7 +7,6 @@ import clsx from 'clsx';
 import { Capacitor } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { PushNotifications } from '@capacitor/push-notifications';
-import { supabase } from '../lib/supabase';
 import EmployeeLocationTracker from './EmployeeLocationTracker';
 import SmsGatewayListener from './SmsGatewayListener';
 
@@ -44,9 +43,9 @@ const NotificationBanner = () => {
 
     if (Capacitor.isNativePlatform()) {
       const registerListener = PushNotifications.addListener('registration', async (token) => {
-        if (userProfile && userProfile.id) {
+        if (userProfile && userProfile.uid) {
           try {
-             await supabase.from('users').update({ fcm_token: token.value }).eq('id', userProfile.id);
+             await supabase.from('users').update({ fcm_token: token.value }).eq('id', userProfile.uid);
           } catch(e){}
         }
       });
@@ -107,6 +106,7 @@ const NotificationBanner = () => {
 
 export default function Layout() {
   const notifiedJobsRef = useRef<Set<string>>(new Set());
+  const notifiedVisitsRef = useRef<Set<string>>(new Set());
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const { isAdmin, isManager, isClient, userProfile } = useAuth();
   const navigate = useNavigate();
@@ -223,11 +223,13 @@ export default function Layout() {
 
     const handleNewVisit = async (payload: any) => {
       if (payload.new) {
-        // Only trigger if it's explicitly finalizada
         const isNowFinalizada = payload.new.status === 'finalizada';
-        const wasNotFinalizada = payload.old ? payload.old.status !== 'finalizada' : true;
+        if (!isNowFinalizada) return;
         
-        if (!isNowFinalizada || !wasNotFinalizada) return;
+        // Prevent duplicate notifications using a ref
+        if (!notifiedVisitsRef.current) notifiedVisitsRef.current = new Set();
+        if (notifiedVisitsRef.current.has(payload.new.id)) return;
+        notifiedVisitsRef.current.add(payload.new.id);
         
         const isAdminOwner = userProfile.role === 'admin' && payload.new.admin_id === userProfile.uid;
         const isSelf = payload.new.employee_id === userProfile.uid;
