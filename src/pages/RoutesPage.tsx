@@ -872,10 +872,11 @@ export default function RoutesPage() {
       
     // Fechamento Automático do Chat (Por Ação)
     try {
-      await supabase.from('chat_sessions')
+      const { error: chatUpdateErr } = await supabase.from('chat_sessions')
         .update({ closed_at: new Date().toISOString() })
         .eq('client_id', selectedClientForReport.id)
         .eq('status', 'open');
+      if (chatUpdateErr) console.error("Error updating chat session:", chatUpdateErr);
     } catch(e) {}
 
             const checklistText = checkedItems.length > 0 ? `\n\nTarefas realizadas:\n- ${checkedItems.join('\n- ')}` : '';
