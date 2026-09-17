@@ -12,21 +12,22 @@ dotenv.config();
 const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
 
-import * as admin from 'firebase-admin';
+import { initializeApp, cert } from 'firebase-admin/app';
+import { getMessaging } from 'firebase-admin/messaging';
 let fcmInitialized = false;
 try {
   // Try to initialize Firebase Admin if service account exists
   if (fs.existsSync('./service-account.json')) {
     const serviceAccount = JSON.parse(fs.readFileSync('./service-account.json', 'utf8'));
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
+    initializeApp({
+      credential: cert(serviceAccount)
     });
     fcmInitialized = true;
     console.log("Firebase Admin Initialized for Push Notifications");
   } else if (process.env.FIREBASE_SERVICE_ACCOUNT) {
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
+    initializeApp({
+      credential: cert(serviceAccount)
     });
     fcmInitialized = true;
     console.log("Firebase Admin Initialized from ENV");
@@ -606,7 +607,7 @@ app.all("/api/sync-payment", async (req, res) => {
              if (users && users.length > 0) {
                 users.forEach(u => {
                    if (u.fcm_token) {
-                      admin.messaging().send({
+                      getMessaging().send({
                          token: u.fcm_token,
                          notification: {
                             title: 'Nova mensagem de ' + (session.client_name || 'Cliente'),

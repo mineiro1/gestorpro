@@ -44,9 +44,9 @@ const NotificationBanner = () => {
 
     if (Capacitor.isNativePlatform()) {
       const registerListener = PushNotifications.addListener('registration', async (token) => {
-        if (userProfile && userProfile.uid) {
+        if (userProfile && userProfile.id) {
           try {
-             await supabase.from('users').update({ fcm_token: token.value }).eq('id', userProfile.uid);
+             await supabase.from('users').update({ fcm_token: token.value }).eq('id', userProfile.id);
           } catch(e){}
         }
       });
