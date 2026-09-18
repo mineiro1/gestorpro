@@ -979,7 +979,13 @@ export default function RoutesPage() {
             if (oneOffError) throw oneOffError;
             
             if (!needsReturn) {
-              await supabase.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('client_id', selectedClientForReport.id).eq('status', 'open');
+              try {
+                await fetch('/api/chat/close', {
+                   method: 'POST',
+                   headers: { 'Content-Type': 'application/json' },
+                   body: JSON.stringify({ clientId: selectedClientForReport.id })
+                });
+              } catch(e) { console.error(e); }
             }
           } else {
             // Normal Client Visit
@@ -1018,7 +1024,13 @@ export default function RoutesPage() {
             }
             
             if (!needsReturn) {
-              await supabase.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('client_id', selectedClientForReport.id).eq('status', 'open');
+              try {
+                await fetch('/api/chat/close', {
+                   method: 'POST',
+                   headers: { 'Content-Type': 'application/json' },
+                   body: JSON.stringify({ clientId: selectedClientForReport.id })
+                });
+              } catch(e) { console.error(e); }
             }
 
             

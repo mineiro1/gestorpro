@@ -187,6 +187,17 @@ async function processPayment(paymentId, adminId) {
 
 
   
+  app.post("/api/chat/close", async (req, res) => {
+    try {
+      const { clientId } = req.body;
+      if (!clientId) return res.status(400).json({ error: "Missing clientId" });
+      await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('client_id', clientId).eq('status', 'open');
+      return res.json({ success: true });
+    } catch(e) {
+      return res.status(500).json({ error: e.message });
+    }
+  });
+
   app.post("/api/chat/send", async (req, res) => {
     try {
       const { text, clientPhone, waSettings } = req.body;
@@ -340,7 +351,7 @@ async function processPayment(paymentId, adminId) {
       
       const now = new Date().getTime();
       const createdTime = new Date(activeSession.created_at).getTime();
-      
+      console.log("TIMER CHECK EVOLUTION:", { now, createdTime, diff: now - createdTime, limit: 30 * 60 * 1000 });
       // If session is older than 30 minutes, close it and discard message
       if (now - createdTime > 30 * 60 * 1000) {
           await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
@@ -426,7 +437,7 @@ async function processPayment(paymentId, adminId) {
       
       const now = new Date().getTime();
       const createdTime = new Date(activeSession.created_at).getTime();
-      
+      console.log("TIMER CHECK EVOLUTION:", { now, createdTime, diff: now - createdTime, limit: 30 * 60 * 1000 });
       // If session is older than 30 minutes, close it and discard message
       if (now - createdTime > 30 * 60 * 1000) {
           await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
