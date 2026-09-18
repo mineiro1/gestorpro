@@ -10,7 +10,36 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const [newMessage, setNewMessage] = useState('');
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [timeLeft, setTimeLeft] = useState<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (session?.status === 'open' && session.created_at) {
+      const updateTimer = () => {
+        const now = new Date().getTime();
+        const createdTime = new Date(session.created_at).getTime();
+        const diffMs = (30 * 60 * 1000) - (now - createdTime);
+        
+        if (diffMs <= 0) {
+          setTimeLeft(0);
+        } else {
+          setTimeLeft(Math.floor(diffMs / 1000));
+        }
+      };
+
+      updateTimer();
+      const interval = setInterval(updateTimer, 1000);
+      return () => clearInterval(interval);
+    } else {
+      setTimeLeft(null);
+    }
+  }, [session]);
+
+  const formatTime = (seconds: number) => {
+    const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+    const s = (seconds % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  };
 
   useEffect(() => {
     if (isOpen && visit && visit.id) {
@@ -181,13 +210,13 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
               <MessageCircle className="mr-2 text-blue-600" size={20} />
               Chat: {client?.name}
             </h2>
-            {session?.status === 'closed' ? (
+            {session?.status === 'closed' || timeLeft === 0 ? (
               <span className="text-xs text-red-500 font-semibold flex items-center mt-1">
                 <Clock size={12} className="mr-1"/> Sessão Finalizada
               </span>
             ) : (
               <span className="text-xs text-green-500 font-semibold flex items-center mt-1">
-                <Clock size={12} className="mr-1"/> Sessão Ativa
+                <Clock size={12} className="mr-1"/> Sessão Ativa {timeLeft !== null && `(Expira em ${formatTime(timeLeft)})`}
               </span>
             )}
           </div>
