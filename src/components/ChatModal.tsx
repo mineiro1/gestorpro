@@ -170,7 +170,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   };
 
   const sendMessage = async (text: string) => {
-    if (!text.trim() || !session || session.status === 'closed') return;
+    if (!text.trim() || !session || session.status === 'closed' || timeLeft === 0) return;
     
     setNewMessage('');
     
@@ -271,7 +271,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
           <div ref={messagesEndRef} />
         </div>
 
-        {session?.status === 'open' && (
+        {session?.status === 'open' && timeLeft !== 0 && (
           <div className="p-4 bg-white border-t rounded-b-xl">
             {/* Quick Actions */}
             <div className="flex gap-2 mb-3 overflow-x-auto pb-2 scrollbar-hide">
