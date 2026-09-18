@@ -58,7 +58,7 @@ export default function OneOffJobs() {
       if (error) throw error;
       
       if (data) {
-        const validJobs = data.filter((d: any) => d.client_name !== 'system_route_order' && d.title !== 'system_route_order');
+        const validJobs = data.filter((d: any) => !d.client_name?.startsWith('system_route_order') && !d.title?.startsWith('system_route_order'));
         setJobs(validJobs.map((d: any) => ({
           id: d.id,
           adminId: d.admin_id,

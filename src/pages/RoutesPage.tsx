@@ -252,8 +252,17 @@ export default function RoutesPage() {
         phone: doc.client_phone
       })) as any[];
       
-      const [y, m, d] = routeDate.split('-').map(Number); const currentDayOfWeek = new Date(y, m - 1, d).getDay().toString();
+
+      let currentDayOfWeek = '0';
+      if (routeDate) {
+         const [y, m, d] = routeDate.split('-').map(Number);
+         currentDayOfWeek = new Date(y, m - 1, d).getDay().toString();
+      } else if (selectedDay) {
+         const DAYS = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
+         currentDayOfWeek = DAYS.indexOf(selectedDay).toString();
+      }
       const routeOrderName = 'system_route_order_' + currentDayOfWeek;
+
       const orderJob = jobsSnap?.find(job => job.client_name === routeOrderName);
       let savedOrder = [];
       if (orderJob && orderJob.description) {
@@ -477,8 +486,17 @@ export default function RoutesPage() {
     try {
       const orderArray = orderedClients.map(c => c.id);
       const adminId = isAdmin ? userProfile?.uid : userProfile?.adminId;
-      const [y, m, d] = routeDate.split('-').map(Number); const currentDayOfWeek = new Date(y, m - 1, d).getDay().toString();
+
+      let currentDayOfWeek = '0';
+      if (routeDate) {
+         const [y, m, d] = routeDate.split('-').map(Number);
+         currentDayOfWeek = new Date(y, m - 1, d).getDay().toString();
+      } else if (selectedDay) {
+         const DAYS = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
+         currentDayOfWeek = DAYS.indexOf(selectedDay).toString();
+      }
       const routeOrderName = 'system_route_order_' + currentDayOfWeek;
+
       
       const { data: jobsSnap } = await supabase.from('oneoffjobs')
         .select('*')
@@ -500,7 +518,7 @@ export default function RoutesPage() {
            client_phone: '00000000000',
            description: JSON.stringify(orderArray),
            price: 0,
-           date: routeDate,
+           date: routeDate || new Date().toISOString().split('T')[0],
            status: 'cancelado'
         });
         if (error) throw error;
