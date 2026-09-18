@@ -639,7 +639,7 @@ export default function RoutesPage() {
       const { data: existingVisit } = await supabase.from('visits')
         .select('id, status')
         .eq('client_id', client.id)
-        .or(`date.like.${routeDate}%,time.eq.${routeDate}`)
+        .or(`time.eq.${routeDate},date.gte.${routeDate}T00:00:00.000Z`)
         .order('created_at', { ascending: false })
         .limit(1);
         

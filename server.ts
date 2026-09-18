@@ -423,11 +423,24 @@ async function processPayment(paymentId, adminId) {
         .eq('status', 'open')
         .order('created_at', { ascending: false });
         
-      if (!sessions || sessions.length === 0) {
+      let activeSession = sessions && sessions.length > 0 ? sessions[0] : null;
+      
+      // If no open session exists, create a new one automatically for incoming message
+      if (!activeSession) {
+          const { data: newSession } = await supabaseAdmin.from('chat_sessions').insert({
+              admin_id: matchedClient.admin_id,
+              client_id: matchedClient.id,
+              employee_id: matchedClient.employee_id || matchedClient.admin_id,
+              status: 'open'
+          }).select('*').single();
+          
+          if (newSession) activeSession = newSession;
+      }
+      
+      if (!activeSession) {
          return res.status(200).send("OK");
       }
       
-      let activeSession = sessions[0];
       const now = new Date().getTime();
       if (activeSession.closed_at) {
           const closedTime = new Date(activeSession.closed_at).getTime();
