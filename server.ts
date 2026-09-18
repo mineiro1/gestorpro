@@ -343,13 +343,14 @@ async function processPayment(paymentId, adminId) {
       }
       
       let activeSession = sessions[0];
+      
       const now = new Date().getTime();
-      if (activeSession.closed_at) {
-          const closedTime = new Date(activeSession.closed_at).getTime();
-          if (now - closedTime > 30 * 60 * 1000) {
-              await supabaseAdmin.from('chat_sessions').update({ status: 'closed' }).eq('id', activeSession.id);
-              return res.status(200).send("EVENT_RECEIVED");
-          }
+      const createdTime = new Date(activeSession.created_at).getTime();
+      
+      // If session is older than 30 minutes, close it and discard message
+      if (now - createdTime > 30 * 60 * 1000) {
+          await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
+          return res.status(200).send("EVENT_RECEIVED");
       }
 
       await supabaseAdmin.from('chat_messages').insert({
