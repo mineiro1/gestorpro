@@ -274,13 +274,7 @@ async function processPayment(paymentId, adminId) {
   app.post("/api/webhook/wame", async (req, res) => {
     try {
       console.log("Wame/Meta Webhook Received:", JSON.stringify(req.body));
-      try {
-         await supabaseAdmin.from('chat_messages').insert({
-            session_id: 'e867ca9f-d11f-4bb5-8bc6-96e1455fd260',
-            sender_type: 'client',
-            content: "WEBHOOK_PAYLOAD: " + JSON.stringify(req.body).substring(0, 500)
-         });
-      } catch(e) {}
+
       const body = req.body;
       let phone = "";
       let content = "";
