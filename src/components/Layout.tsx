@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
+import { useQueryClient } from '@tanstack/react-query';
 import {  Menu, Store, Wrench, X, Home, Users, UserCircle, Map, LogOut, Bell, MessageSquare, Headphones, Briefcase, History, Contact , Package, Settings, HelpCircle } from 'lucide-react';
 import clsx from 'clsx';
 import { Capacitor } from '@capacitor/core';
@@ -105,6 +106,7 @@ const NotificationBanner = () => {
 };
 
 export default function Layout() {
+  const queryClient = useQueryClient();
   const notifiedJobsRef = useRef<Set<string>>(new Set());
   const notifiedVisitsRef = useRef<Set<string>>(new Set());
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -224,7 +226,20 @@ export default function Layout() {
     const handleNewVisit = async (payload: any) => {
       if (payload.new) {
         const isNowFinalizada = payload.new.status === 'finalizada';
-        if (!isNowFinalizada) return;
+        if (isNowFinalizada) {
+          // Instantly sync route data query cache across the app
+          queryClient.invalidateQueries({ queryKey: ['routeData'] });
+          if (payload.new.client_id) {
+            queryClient.setQueriesData({ queryKey: ['routeData'] }, (old: any) => {
+              if (!old) return old;
+              const next = new Set(old.completed || []);
+              next.add(payload.new.client_id);
+              return { ...old, completed: next };
+            });
+          }
+        } else {
+          return;
+        }
         
         // Prevent duplicate notifications using a ref
         if (!notifiedVisitsRef.current) notifiedVisitsRef.current = new Set();
@@ -286,6 +301,18 @@ export default function Layout() {
         
         const wasNotCompleted = payload.old.status !== 'concluido';
         const isNowCompleted = payload.new.status === 'concluido';
+
+        if (isNowCompleted) {
+          queryClient.invalidateQueries({ queryKey: ['routeData'] });
+          if (payload.new?.id) {
+            queryClient.setQueriesData({ queryKey: ['routeData'] }, (old: any) => {
+              if (!old) return old;
+              const next = new Set(old.completed || []);
+              next.add(payload.new.id);
+              return { ...old, completed: next };
+            });
+          }
+        }
 
         if (isAdminOwner && !isSelf && isNowCompleted && !notifiedJobsRef.current.has(payload.new.id)) {
           notifiedJobsRef.current.add(payload.new.id);

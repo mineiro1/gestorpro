@@ -4,7 +4,7 @@ import { MessageCircle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { jsPDF } from 'jspdf';
-import { Share2, FileText, Map, Camera, CheckCircle, MapPin, Image as ImageIcon, ArrowUp, ArrowDown, Save, ListOrdered, Search } from 'lucide-react';
+import { Share2, FileText, Map, Camera, CheckCircle, MapPin, Image as ImageIcon, ArrowUp, ArrowDown, Save, ListOrdered, Search, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { openMap, openRouteMap, openWaze } from '../lib/maps';
 import { openWhatsApp, sendEvolutionMessage, sendMetaMessage } from '../lib/whatsapp';
@@ -154,7 +154,8 @@ export default function RoutesPage() {
             time: payload.time,
             notes: payload.notes,
             photo_urls: payload.photoUrls,
-            location: payload.location
+            location: payload.location,
+            status: 'finalizada'
           });
           if (insertError) throw insertError;
           
@@ -210,9 +211,13 @@ export default function RoutesPage() {
   }, [isAdmin, isManager, userProfile]);
 
   
-  const { data: queryData, isLoading, refetch } = useQuery({
+  const { data: queryData, isLoading, isFetching, refetch } = useQuery({
     queryKey: ['routeData', routeDate, selectedEmployee, selectedDay, userProfile?.uid, generated],
     enabled: generated && !!userProfile && !!routeDate && !!selectedEmployee,
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+    refetchInterval: 4000,
+    refetchIntervalInBackground: false,
     queryFn: async () => {
       const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
       
@@ -348,14 +353,47 @@ export default function RoutesPage() {
   useEffect(() => {
     if (!generated || !userProfile || !routeDate) return;
     const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
-    let jobFilter = `admin_id=eq.${adminId}`;
-    if (!isAdmin && !isManager) jobFilter += `&employee_id=eq.${userProfile.uid}`;
 
-    const channel1 = supabase.channel('routes-visits')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'visits', filter: `admin_id=eq.${adminId}` }, () => refetch())
-      .subscribe();
+    const channelPrefix = `routes-live-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
 
-    const channelChat = supabase.channel('routes-chat-notifs')
+    const channel1 = supabase.channel(`${channelPrefix}-visits`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'visits' }, (payload) => {
+        const newV = payload.new as any;
+        const oldV = payload.old as any;
+
+        // Ensure visit belongs to this admin's workspace
+        if (newV?.admin_id && newV.admin_id !== adminId) return;
+        if (oldV?.admin_id && oldV.admin_id !== adminId) return;
+
+        // Instant UI reaction: immediately flip visit to completed or uncompleted
+        if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+          if (newV?.client_id && newV.status !== 'agendada') {
+            queryClient.setQueriesData({ queryKey: ['routeData'] }, (old: any) => {
+              if (!old) return old;
+              const next = new Set(old.completed || []);
+              next.add(newV.client_id);
+              return { ...old, completed: next };
+            });
+          }
+        } else if (payload.eventType === 'DELETE') {
+          if (oldV?.client_id) {
+            queryClient.setQueriesData({ queryKey: ['routeData'] }, (old: any) => {
+              if (!old) return old;
+              const next = new Set(old.completed || []);
+              next.delete(oldV.client_id);
+              return { ...old, completed: next };
+            });
+          }
+        }
+
+        queryClient.invalidateQueries({ queryKey: ['routeData'] });
+        refetch();
+      })
+      .subscribe((status) => {
+        console.log('[Routes Live] Visits subscription status:', status);
+      });
+
+    const channelChat = supabase.channel(`${channelPrefix}-chat`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, async (payload) => {
         const newMsg = payload.new;
         if (newMsg.sender_type === 'client') {
@@ -372,21 +410,43 @@ export default function RoutesPage() {
       })
       .subscribe();
 
-    const channel2 = supabase.channel('routes-jobs')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'oneoffjobs', filter: jobFilter }, (payload) => {
-        refetch();
-        if (payload.new && (payload.new as any).client_name && (payload.new as any).client_name.startsWith('system_route_order_')) {
+    const channel2 = supabase.channel(`${channelPrefix}-jobs`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'oneoffjobs' }, (payload) => {
+        const newJob = payload.new as any;
+        const oldJob = payload.old as any;
+
+        if (newJob?.admin_id && newJob.admin_id !== adminId) return;
+        if (oldJob?.admin_id && oldJob.admin_id !== adminId) return;
+
+        // Instant UI reaction for one-off jobs
+        if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+          if (newJob?.id && (newJob.status === 'concluido' || newJob.status === 'em_andamento')) {
+            queryClient.setQueriesData({ queryKey: ['routeData'] }, (old: any) => {
+              if (!old) return old;
+              const next = new Set(old.completed || []);
+              next.add(newJob.id);
+              return { ...old, completed: next };
+            });
+          }
+        }
+
+        if (newJob && newJob.client_name && newJob.client_name.startsWith('system_route_order_')) {
           if (!isAdmin) setRouteOrderChanged(true);
         }
+
+        queryClient.invalidateQueries({ queryKey: ['routeData'] });
+        refetch();
       })
-      .subscribe();
+      .subscribe((status) => {
+        console.log('[Routes Live] Jobs subscription status:', status);
+      });
 
     return () => {
       supabase.removeChannel(channel1);
       supabase.removeChannel(channelChat);
       supabase.removeChannel(channel2);
     };
-  }, [generated, routeDate, userProfile, isAdmin]);
+  }, [generated, routeDate, selectedEmployee, selectedDay, userProfile, isAdmin, isManager, queryClient]);
 
 
   
@@ -1018,6 +1078,7 @@ export default function RoutesPage() {
             let insertError = null;
             if (existingAgendada && existingAgendada.length > 0) {
               const { error } = await supabase.from('visits').update({
+                admin_id: adminId,
                 date: finalVisitDate,
                 time: activeRouteDate,
                 notes: finalNotes,
@@ -1210,7 +1271,20 @@ export default function RoutesPage() {
         <div className="bg-white rounded-xl shadow-sm p-6">
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 space-y-4 md:space-y-0">
             <div>
-              <h2 className="text-lg font-bold text-gray-800">Resultado da Rota</h2>
+              <div className="flex items-center space-x-2.5">
+                <h2 className="text-lg font-bold text-gray-800">Resultado da Rota</h2>
+                <span className="inline-flex items-center text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
+                  <span className="w-1.5 h-1.5 mr-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
+                  Tempo Real
+                </span>
+                <button
+                  onClick={() => refetch()}
+                  title="Atualizar agora"
+                  className="p-1 text-gray-400 hover:text-blue-600 hover:bg-gray-100 rounded-md transition-colors"
+                >
+                  <RefreshCw size={14} className={isFetching ? "animate-spin text-blue-600" : ""} />
+                </button>
+              </div>
               {routeClients.length > 0 && (
                 <p className="text-sm text-gray-600 mt-1">
                   Total: <span className="font-semibold">{routeClients.length}</span> |
