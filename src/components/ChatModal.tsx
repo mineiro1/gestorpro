@@ -71,18 +71,20 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       if (sessions && sessions.length > 0) {
         currentSession = sessions[0];
         
-        // Verificação de expiração local
-        if (currentSession.closed_at) {
-           const closedTime = new Date(currentSession.closed_at).getTime();
-           const now = new Date().getTime();
-           if (now - closedTime > 30 * 60 * 1000) {
-              // Expirou! Fecha e não usa
-              await supabase.from('chat_sessions').update({ status: 'closed' }).eq('id', currentSession.id);
-              currentSession.status = 'closed';
-              validSession = null;
-           } else {
-              validSession = currentSession;
-           }
+        // Verificação de expiração: se já passaram mais de 30 min desde a criação ou fechamento
+        const createdTime = currentSession.created_at ? new Date(currentSession.created_at).getTime() : 0;
+        const closedTime = currentSession.closed_at ? new Date(currentSession.closed_at).getTime() : 0;
+        const now = new Date().getTime();
+        
+        const isExpired = (now - createdTime > 30 * 60 * 1000) || (closedTime > 0 && now - closedTime > 30 * 60 * 1000);
+
+        if (isExpired) {
+           // Expirou! Fecha no banco e não usa mais
+           await supabase.from('chat_sessions').update({ 
+              status: 'closed',
+              closed_at: currentSession.closed_at || new Date().toISOString()
+           }).eq('id', currentSession.id);
+           validSession = null;
         } else {
            validSession = currentSession;
         }
@@ -90,7 +92,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
 
       if (validSession) {
         currentSession = validSession;
-      } else if (visit && !visit.isCompleted && visit.status !== 'finalizada') {
+      } else if (!visit?.isCompleted && visit?.status !== 'finalizada') {
         // Create new session if none exists AND visit is not finalized
         const adminId = userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId;
         
@@ -101,12 +103,12 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
             admin_id: adminId,
             client_id: client.id,
             employee_id: userProfile?.uid,
-            status: 'open'
+            status: 'open',
+            created_at: new Date().toISOString()
           }).select().single();
           
         console.log("CREATE SESSION RESULT:", newSession, "ERROR:", createError, "PARAMS:", { visit_id: visit ? visit.id : null, admin_id: adminId, client_id: client.id, employee_id: userProfile?.uid });
 
-          
         if (!createError && newSession) {
           currentSession = newSession;
         }

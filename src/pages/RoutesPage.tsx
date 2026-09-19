@@ -720,28 +720,30 @@ export default function RoutesPage() {
     }
 
     const { data: existingSessions } = await supabase.from('chat_sessions')
-        .select('id, status, created_at')
+        .select('id, status, created_at, closed_at')
         .eq('client_id', client.id)
-        .gte('created_at', `${todayStr}T00:00:00.000Z`)
         .order('created_at', { ascending: false });
 
-    let hasOpenSession = false;
+    let hasActiveOpenSession = false;
     if (existingSessions && existingSessions.length > 0) {
-        const sess = existingSessions[0];
-        if (sess.status === 'open') {
-            const sessTime = new Date(sess.created_at).getTime();
-            if (now.getTime() - sessTime > 30 * 60 * 1000) {
-                alert('O tempo de 30 minutos já expirou. O chat está inativo.');
-                return;
+        for (const sess of existingSessions) {
+            if (sess.status === 'open') {
+                const sessTime = new Date(sess.created_at).getTime();
+                const isExpired = (now.getTime() - sessTime > 30 * 60 * 1000) || (sess.closed_at && (now.getTime() - new Date(sess.closed_at).getTime() > 30 * 60 * 1000));
+                if (isExpired) {
+                    // Fechar sessão expirada no banco para não travar o cliente
+                    await supabase.from('chat_sessions').update({ 
+                        status: 'closed', 
+                        closed_at: sess.closed_at || new Date().toISOString() 
+                    }).eq('id', sess.id);
+                } else if (!hasActiveOpenSession) {
+                    hasActiveOpenSession = true;
+                }
             }
-            hasOpenSession = true;
-        } else {
-            alert('A sessão de chat para hoje já foi encerrada ou expirou. O chat está inativo.');
-            return;
         }
     }
 
-    if (!hasOpenSession) {
+    if (!hasActiveOpenSession) {
         if (!window.confirm(`Gostaria de iniciar o chat com o cliente ${client.name}?`)) {
             return;
         }
@@ -991,7 +993,10 @@ export default function RoutesPage() {
     // Fechamento Automático do Chat (Por Ação)
     try {
       const { error: chatUpdateErr } = await supabase.from('chat_sessions')
-        .update({ closed_at: new Date().toISOString() })
+        .update({ 
+          status: 'closed',
+          closed_at: new Date().toISOString() 
+        })
         .eq('client_id', selectedClientForReport.id)
         .eq('status', 'open');
       if (chatUpdateErr) console.error("Error updating chat session:", chatUpdateErr);
