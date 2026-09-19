@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Briefcase, MapPin, Calendar, DollarSign, User, Plus, Edit, Trash2, CheckCircle } from 'lucide-react';
 import { useRealtimeUpdates } from '../hooks/useRealtimeUpdates';
+import { notifyAdminAttendanceFinished } from '../lib/pushNotifications';
 
 interface OneOffJob {
   id?: string;
@@ -153,6 +154,16 @@ export default function OneOffJobs() {
       const { error } = await supabase.from('oneoffjobs').update({ status: 'concluido' }).eq('id', id);
       if (error) throw error;
       fetchJobs();
+
+      const job = jobs.find(j => j.id === id);
+      if (job && job.adminId) {
+        notifyAdminAttendanceFinished({
+          adminId: job.adminId,
+          employeeId: job.employeeId || userProfile?.uid,
+          clientName: job.clientName,
+          type: 'job'
+        }).catch(e => console.warn('[Push] Error notifying job completion:', e));
+      }
     } catch(err) {
       console.error(err);
       alert('Erro ao concluir serviço avulso.');

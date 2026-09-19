@@ -1,0 +1,15 @@
+{
+  "appId": "com.gestaopro.app",
+  "appName": "GestãoPro",
+  "webDir": "dist",
+  "plugins": {
+    "PushNotifications": {
+      "presentationOptions": ["badge", "sound", "alert"]
+    },
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_icon_config_sample",
+      "iconColor": "#2563eb",
+      "sound": "notificacao.mp3"
+    }
+  }
+}

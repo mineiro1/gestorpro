@@ -8,6 +8,7 @@ import { Share2, FileText, Map, Camera, CheckCircle, MapPin, Image as ImageIcon,
 import { motion, AnimatePresence } from 'motion/react';
 import { openMap, openRouteMap, openWaze } from '../lib/maps';
 import { openWhatsApp, sendEvolutionMessage, sendMetaMessage } from '../lib/whatsapp';
+import { notifyAdminAttendanceFinished } from '../lib/pushNotifications';
 import EmployeeMap from '../components/EmployeeMap';
 import exifr from 'exifr';
 
@@ -1166,6 +1167,18 @@ export default function RoutesPage() {
             } catch (cleanupErr) {
               console.error("Erro ao limpar visitas antigas:", cleanupErr);
             }
+          }
+
+          // Trigger Push Notification alert to administrator
+          if (adminId) {
+            notifyAdminAttendanceFinished({
+              adminId,
+              employeeId: payload.employeeId || userProfile?.uid,
+              clientId: selectedClientForReport.id,
+              clientName: selectedClientForReport.name,
+              type: selectedClientForReport.isOneOffJob ? 'job' : 'visit',
+              notes: reportNotes
+            }).catch(e => console.warn('[Push] Error triggering admin push notification:', e));
           }
         } catch (dbError) {
           console.error("Database error, saving offline:", dbError);

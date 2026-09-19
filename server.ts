@@ -549,13 +549,177 @@ app.all("/api/sync-payment", async (req, res) => {
         hasServiceKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
         hasAnonKey: !!process.env.VITE_SUPABASE_ANON_KEY
     });
-});
+  });
 
-  
+  // Helper to send push notification to all devices registered for an admin
+  async function sendPushToAdmin(adminId: string, title: string, body: string, data: Record<string, string> = {}) {
+    try {
+      if (!adminId) return false;
+      const { data: users, error } = await supabaseAdmin
+        .from('users')
+        .select('id, name, fcm_token')
+        .eq('id', adminId);
+
+      if (error) {
+        console.error('[Push Server] Erro ao consultar usuário administrador:', error);
+        return false;
+      }
+
+      if (!users || users.length === 0) {
+        console.log('[Push Server] Administrador não encontrado:', adminId);
+        return false;
+      }
+
+      const tokens = users.map(u => u.fcm_token).filter(Boolean);
+      if (tokens.length === 0) {
+        console.log(`[Push Server] Admin ${adminId} não possui tokens FCM registrados no momento.`);
+        return false;
+      }
+
+      console.log(`[Push Server] Disparando push notification para ${tokens.length} dispositivo(s) do admin ${adminId}: "${title}"`);
+
+      let sentCount = 0;
+      for (const token of tokens) {
+        if (fcmInitialized) {
+          try {
+            await getMessaging().send({
+              token,
+              notification: {
+                title,
+                body
+              },
+              data: {
+                ...data,
+                click_action: 'FCM_PLUGIN_ACTIVITY',
+                url: data.url || '/routes',
+                channelId: data.channelId || 'atendimentos'
+              },
+              android: {
+                priority: 'high',
+                notification: {
+                  channelId: data.channelId || 'atendimentos',
+                  sound: 'default',
+                  priority: 'max',
+                  defaultSound: true,
+                  defaultVibrateTimings: true
+                }
+              },
+              apns: {
+                payload: {
+                  aps: {
+                    sound: 'default',
+                    badge: 1,
+                    alert: {
+                      title,
+                      body
+                    }
+                  }
+                }
+              }
+            });
+            sentCount++;
+            console.log(`[Push Server] Push entregue via FCM para token ${token.substring(0, 10)}...`);
+          } catch (fcmErr: any) {
+            console.error(`[Push Server] Erro ao enviar token ${token.substring(0, 10)}...:`, fcmErr?.message || fcmErr);
+            if (fcmErr?.code === 'messaging/registration-token-not-registered' || fcmErr?.code === 'messaging/invalid-registration-token') {
+              // Limpar token inválido
+              await supabaseAdmin.from('users').update({ fcm_token: null }).eq('fcm_token', token);
+            }
+          }
+        } else {
+          console.log(`[Push Server] Firebase Admin não inicializado no servidor. Token do admin registrado: ${token.substring(0, 12)}...`);
+        }
+      }
+      return sentCount > 0;
+    } catch (e: any) {
+      console.error('[Push Server] Erro geral ao disparar push:', e);
+      return false;
+    }
+  }
+
+  // Endpoint to immediately trigger attendance completion push notification
+  app.post("/api/notifications/notify-visit-completion", async (req, res) => {
+    try {
+      const { adminId, employeeId, clientId, clientName, type, notes } = req.body;
+      if (!adminId) {
+        return res.status(400).json({ error: "Missing adminId" });
+      }
+
+      let empName = "Colaborador";
+      if (employeeId) {
+        const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', employeeId).single();
+        if (empData?.name) empName = empData.name;
+      }
+
+      let resolvedClientName = clientName;
+      if (!resolvedClientName && clientId) {
+        const { data: cliData } = await supabaseAdmin.from('clients').select('name').eq('id', clientId).single();
+        if (cliData?.name) resolvedClientName = cliData.name;
+      }
+      if (!resolvedClientName) resolvedClientName = "Cliente";
+
+      const isJob = type === 'job';
+      const title = isJob ? 'Serviço Avulso Finalizado' : 'Visita Finalizada';
+      const body = `O colaborador ${empName} finalizou o atendimento no cliente ${resolvedClientName}.`;
+
+      const sent = await sendPushToAdmin(adminId, title, body, {
+        url: '/routes',
+        channelId: 'atendimentos',
+        type: isJob ? 'job_completed' : 'visit_completed',
+        clientId: String(clientId || ''),
+        employeeId: String(employeeId || '')
+      });
+
+      return res.json({ success: true, sent });
+    } catch (err: any) {
+      console.error('[Push Server] Erro no endpoint notify-visit-completion:', err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Endpoint to send a test push notification to verify Capacitor setup
+  app.post("/api/notifications/test-push", async (req, res) => {
+    try {
+      const { adminId } = req.body;
+      if (!adminId) return res.status(400).json({ error: "Missing adminId" });
+
+      const { data: user } = await supabaseAdmin.from('users').select('fcm_token, name').eq('id', adminId).single();
+      const hasToken = !!user?.fcm_token;
+
+      const sent = await sendPushToAdmin(
+        adminId,
+        'Teste de Notificação Push',
+        'Seu dispositivo está conectado e configurado para receber alertas em tempo real das rotas!',
+        {
+          url: '/routes',
+          channelId: 'atendimentos',
+          type: 'test_push'
+        }
+      );
+
+      return res.json({
+        success: true,
+        sent,
+        hasToken,
+        fcmInitialized,
+        tokenPreview: user?.fcm_token ? `${user.fcm_token.substring(0, 10)}...` : null
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Endpoint to check FCM server status
+  app.get("/api/notifications/status", (req, res) => {
+    res.json({
+      fcmInitialized,
+      hasServiceAccount: fs.existsSync('./service-account.json') || !!process.env.FIREBASE_SERVICE_ACCOUNT
+    });
+  });
+
   // Background listener for Push Notifications
   supabaseAdmin.channel('push-notifications-chat')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'visits' }, async (payload) => {
-       if (!fcmInitialized) return;
        const newVisit = payload.new as any;
        if (!newVisit) return;
        
@@ -566,37 +730,32 @@ app.all("/api/sync-payment", async (req, res) => {
            if (!global.notifiedVisits.has(newVisit.id)) {
                global.notifiedVisits.add(newVisit.id);
                justFinalized = true;
-               // Keep cache small
                if (global.notifiedVisits.size > 1000) global.notifiedVisits.clear();
            }
        }
        
        if (justFinalized && newVisit.admin_id && newVisit.admin_id !== newVisit.employee_id) {
-           const { data: users } = await supabaseAdmin.from('users').select('fcm_token').eq('id', newVisit.admin_id);
-           if (users && users.length > 0) {
-               // Get names
-               const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', newVisit.employee_id).single();
-               const { data: cliData } = await supabaseAdmin.from('clients').select('name').eq('id', newVisit.client_id).single();
-               
-               const empName = empData?.name || 'Um colaborador';
-               const cliName = cliData?.name || 'um cliente';
-               
-               users.forEach(u => {
-                   if (u.fcm_token) {
-                       getMessaging().send({
-                           token: u.fcm_token,
-                           notification: {
-                               title: 'Visita Concluída',
-                               body: `O colaborador ${empName} acaba de finalizar a visita ao cliente ${cliName}.`
-                           }
-                       }).catch(e => console.error("FCM Send Error:", e));
-                   }
-               });
-           }
+           const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', newVisit.employee_id).single();
+           const { data: cliData } = await supabaseAdmin.from('clients').select('name').eq('id', newVisit.client_id).single();
+           
+           const empName = empData?.name || 'Um colaborador';
+           const cliName = cliData?.name || 'um cliente';
+
+           await sendPushToAdmin(
+             newVisit.admin_id,
+             'Visita Concluída',
+             `O colaborador ${empName} acaba de finalizar a visita ao cliente ${cliName}.`,
+             {
+               url: '/routes',
+               channelId: 'atendimentos',
+               type: 'visit_completed',
+               visitId: String(newVisit.id || ''),
+               clientId: String(newVisit.client_id || '')
+             }
+           );
        }
     })
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'oneoffjobs' }, async (payload) => {
-       if (!fcmInitialized) return;
        const newJob = payload.new as any;
        if (!newJob || !payload.old) return;
        
@@ -606,47 +765,39 @@ app.all("/api/sync-payment", async (req, res) => {
            global.notifiedJobs.add(newJob.id);
            if (global.notifiedJobs.size > 1000) global.notifiedJobs.clear();
 
-           const { data: users } = await supabaseAdmin.from('users').select('fcm_token').eq('id', newJob.admin_id);
-           if (users && users.length > 0) {
-               const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', newJob.employee_id).single();
-               const empName = empData?.name || 'Um colaborador';
-               const cliName = newJob.client_name || 'um cliente';
-               
-               users.forEach(u => {
-                   if (u.fcm_token) {
-                       getMessaging().send({
-                           token: u.fcm_token,
-                           notification: {
-                               title: 'Serviço Avulso Concluído',
-                               body: `O colaborador ${empName} acaba de finalizar a visita ao cliente ${cliName}.`
-                           }
-                       }).catch(e => console.error("FCM Send Error:", e));
-                   }
-               });
-           }
+           const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', newJob.employee_id).single();
+           const empName = empData?.name || 'Um colaborador';
+           const cliName = newJob.client_name || 'um cliente';
+
+           await sendPushToAdmin(
+             newJob.admin_id,
+             'Serviço Avulso Concluído',
+             `O colaborador ${empName} acaba de finalizar o serviço avulso para ${cliName}.`,
+             {
+               url: '/routes',
+               channelId: 'atendimentos',
+               type: 'job_completed',
+               jobId: String(newJob.id || '')
+             }
+           );
        }
     })
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, async (payload) => {
-       if (!fcmInitialized) return;
        const newMsg = payload.new as any;
        if (newMsg.sender_type === 'client') {
-          // Find admin/users who should receive this
           const { data: session } = await supabaseAdmin.from('chat_sessions').select('admin_id, client_id, client_name').eq('id', newMsg.session_id).single();
           if (session && session.admin_id) {
-             const { data: users } = await supabaseAdmin.from('users').select('fcm_token').eq('id', session.admin_id);
-             if (users && users.length > 0) {
-                users.forEach(u => {
-                   if (u.fcm_token) {
-                      getMessaging().send({
-                         token: u.fcm_token,
-                         notification: {
-                            title: 'Nova mensagem no Chat',
-                            body: newMsg.content || 'Mensagem de texto'
-                         }
-                      }).catch(e => console.error("FCM Send Error:", e));
-                   }
-                });
-             }
+             await sendPushToAdmin(
+               session.admin_id,
+               'Nova mensagem no Chat',
+               newMsg.content || 'Mensagem de texto recebida',
+               {
+                 url: '/messages',
+                 channelId: 'chat_messages',
+                 type: 'chat_message',
+                 sessionId: String(newMsg.session_id || '')
+               }
+             );
           }
        }
     })

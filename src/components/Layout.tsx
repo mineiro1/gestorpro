@@ -8,6 +8,7 @@ import clsx from 'clsx';
 import { Capacitor } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { PushNotifications } from '@capacitor/push-notifications';
+import { initCapacitorPushNotifications, requestPushPermissions } from '../lib/pushNotifications';
 import EmployeeLocationTracker from './EmployeeLocationTracker';
 import SmsGatewayListener from './SmsGatewayListener';
 
@@ -24,15 +25,9 @@ const NotificationBanner = () => {
         try {
           const status = await LocalNotifications.checkPermissions();
           const pushStatus = await PushNotifications.checkPermissions();
-          if (pushStatus.receive === 'prompt') {
-            await PushNotifications.requestPermissions();
-          }
-          if (pushStatus.receive === 'granted') {
-             await PushNotifications.register();
-          }
-          if (status.display === 'granted') {
+          if (status.display === 'granted' || pushStatus.receive === 'granted') {
              setPermission('granted');
-          } else if (status.display === 'denied') {
+          } else if (status.display === 'denied' || pushStatus.receive === 'denied') {
              setPermission('denied');
           }
         } catch(e) {}
@@ -41,44 +36,13 @@ const NotificationBanner = () => {
       }
     };
     checkPerms();
-
-    if (Capacitor.isNativePlatform()) {
-      const registerListener = PushNotifications.addListener('registration', async (token) => {
-        if (userProfile && userProfile.uid) {
-          try {
-             await supabase.from('users').update({ fcm_token: token.value }).eq('id', userProfile.uid);
-          } catch(e){}
-        }
-      });
-      return () => {
-        registerListener.then(l => l.remove()).catch(()=>{});
-      };
-    }
   }, [userProfile]);
 
   if (permission !== 'default' || dismissed) return null;
 
   const requestPermission = async () => {
     try {
-      let perm;
-      if (Capacitor.isNativePlatform()) {
-        const res = await LocalNotifications.requestPermissions();
-        const pushRes = await PushNotifications.requestPermissions();
-        if (pushRes.receive === 'granted') {
-           await PushNotifications.register();
-        }
-        perm = res.display === 'granted' ? 'granted' : 'denied';
-      } else {
-        perm = typeof Notification !== 'undefined' ? await Notification.requestPermission() : 'denied';
-        if (perm === 'granted' && 'serviceWorker' in navigator) {
-           const reg = await navigator.serviceWorker.ready;
-           // Explicitly show a welcome notification to confirm it works via SW
-           reg.showNotification('Notificações Ativadas!', {
-             body: 'Você receberá alertas do aplicativo aqui.',
-             icon: 'https://cdn-icons-png.flaticon.com/512/123/123382.png'
-           });
-        }
-      }
+      const perm = await requestPushPermissions();
       setPermission(perm);
       localStorage.setItem('notif_banner_dismissed', 'true');
     } catch (e) {
@@ -95,7 +59,7 @@ const NotificationBanner = () => {
     <div className="bg-blue-600 text-white p-4 flex flex-col sm:flex-row items-center justify-between shadow-md relative z-50">
       <div className="flex items-center space-x-3 mb-2 sm:mb-0">
         <Bell className="w-6 h-6 animate-pulse" />
-        <span className="text-sm font-medium">Ative as notificações para receber alertas de bate-papo e de serviços finalizados.</span>
+        <span className="text-sm font-medium">Ative as notificações push para receber alertas em tempo real das rotas e serviços finalizados.</span>
       </div>
       <div className="flex space-x-2">
         <button onClick={requestPermission} className="bg-white text-blue-600 px-4 py-1.5 rounded-md text-sm font-bold shadow hover:bg-blue-50 transition cursor-pointer">Ativar</button>
@@ -117,6 +81,27 @@ export default function Layout() {
   // Client Selection State
   const [availableClients, setAvailableClients] = useState<any[]>([]);
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
+
+  // Initialize Capacitor Push Notifications lifecycle for real-time alerts
+  useEffect(() => {
+    if (!userProfile?.uid) return;
+
+    let cleanupFn: (() => void) | undefined;
+    initCapacitorPushNotifications(userProfile, {
+      onNavigate: (url) => {
+        navigate(url);
+      },
+      onVisitCompleted: () => {
+        queryClient.invalidateQueries({ queryKey: ['routeData'] });
+      },
+    }).then((cleanup) => {
+      cleanupFn = cleanup;
+    });
+
+    return () => {
+      if (cleanupFn) cleanupFn();
+    };
+  }, [userProfile?.uid, navigate, queryClient]);
 
   useEffect(() => {
     // Fetch available clients if the user is a client
@@ -176,7 +161,7 @@ export default function Layout() {
     };
     requestPerms();
 
-    const showNotification = async (title: string, body: string) => {
+    const showNotification = async (title: string, body: string, channelId: string = 'atendimentos') => {
       // Play custom sound
       try {
         const audio = new Audio('/notificacao.mp3');
@@ -194,8 +179,9 @@ export default function Layout() {
                 body,
                 id: Math.floor(Math.random() * 2000000000),
                 schedule: { at: new Date(Date.now() + 100) },
-                channelId: 'chat_messages',
-                sound: 'notificacao.mp3' // Attempt to use custom sound in Capacitor if configured, otherwise default
+                channelId: channelId,
+                sound: 'notificacao.mp3',
+                extra: { url: channelId === 'chat_messages' ? '/messages' : '/routes' }
               }
             ]
           });
@@ -209,14 +195,12 @@ export default function Layout() {
               registration.showNotification(title, {
                 body,
                 icon: 'https://cdn-icons-png.flaticon.com/512/123/123382.png',
-                // vibrate: [200, 100, 200, 100, 200], // Vibration pattern
               });
             });
           } else {
             new Notification(title, { 
               body, 
               icon: 'https://cdn-icons-png.flaticon.com/512/123/123382.png',
-              // vibrate: [200, 100, 200, 100, 200]
             });
           }
         }

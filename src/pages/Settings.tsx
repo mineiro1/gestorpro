@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { Settings as SettingsIcon, Save, Image, Building, Smartphone, Server } from 'lucide-react';
+import { Settings as SettingsIcon, Save, Image, Building, Smartphone, Server, Bell, CheckCircle2, AlertCircle, Send, Volume2 } from 'lucide-react';
+import { Capacitor } from '@capacitor/core';
+import { requestPushPermissions, sendTestPushNotification } from '../lib/pushNotifications';
 
 export default function Settings() {
   const { userProfile, isAdmin } = useAuth();
@@ -11,6 +13,12 @@ export default function Settings() {
   const [isSmsGateway, setIsSmsGateway] = useState(false);
   const [useSmsForReports, setUseSmsForReports] = useState(false);
 
+  // Push Notification state
+  const [pushPermStatus, setPushPermStatus] = useState<string>('checking');
+  const [fcmToken, setFcmToken] = useState<string | null>(null);
+  const [testingPush, setTestingPush] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+
   useEffect(() => {
     if (userProfile?.whatsappSettings) {
       setCompanyName((userProfile.whatsappSettings as any).companyName || '');
@@ -19,7 +27,62 @@ export default function Settings() {
     }
     // Load local SMS Gateway setting
     setIsSmsGateway(localStorage.getItem('isSmsGateway') === 'true');
+
+    // Check Push status
+    checkPushStatus();
   }, [userProfile]);
+
+  const checkPushStatus = async () => {
+    const token = localStorage.getItem('fcm_token') || (userProfile as any)?.fcm_token;
+    setFcmToken(token || null);
+
+    if (Capacitor.isNativePlatform()) {
+      try {
+        const { PushNotifications } = await import('@capacitor/push-notifications');
+        const perm = await PushNotifications.checkPermissions();
+        setPushPermStatus(perm.receive);
+      } catch (e) {
+        setPushPermStatus('unknown');
+      }
+    } else {
+      if (typeof Notification !== 'undefined') {
+        setPushPermStatus(Notification.permission);
+      } else {
+        setPushPermStatus('unsupported');
+      }
+    }
+  };
+
+  const handleRequestPushPerm = async () => {
+    const res = await requestPushPermissions();
+    setPushPermStatus(res);
+    await checkPushStatus();
+    alert(res === 'granted' ? 'Permissões de notificação push ativadas com sucesso!' : 'Permissão não concedida.');
+  };
+
+  const handleTestPush = async () => {
+    if (!userProfile?.uid) return;
+    setTestingPush(true);
+    setTestResult(null);
+    try {
+      // Also play local sound to confirm
+      try {
+        const audio = new Audio('/notificacao.mp3');
+        audio.play().catch(() => {});
+      } catch (e) {}
+
+      const res = await sendTestPushNotification(userProfile.uid);
+      if (res.success) {
+        setTestResult('Alerta enviado com sucesso! Verifique a barra de notificações do seu celular.');
+      } else {
+        setTestResult('Alerta disparado no servidor: ' + (res.message || 'Verifique se as notificações do app estão liberadas nas configurações do aparelho.'));
+      }
+    } catch (e: any) {
+      setTestResult('Erro ao enviar teste: ' + e.message);
+    } finally {
+      setTestingPush(false);
+    }
+  };
 
   const toggleSmsGateway = () => {
     const newValue = !isSmsGateway;
@@ -253,6 +316,111 @@ export default function Settings() {
               />
             </button>
           </div>
+        </div>
+      </div>
+
+      {/* Capacitor Push Notifications Management */}
+      <div className="mt-8 bg-white rounded-xl shadow-md overflow-hidden border-2 border-emerald-100">
+        <div className="p-6 border-b border-gray-100 bg-emerald-50/50 flex flex-col sm:flex-row justify-between sm:items-center gap-4">
+          <div>
+            <h2 className="text-xl font-bold text-emerald-900 flex items-center">
+              <Bell className="mr-2 text-emerald-600" size={24} />
+              Notificações Push em Tempo Real (Capacitor)
+            </h2>
+            <p className="text-sm text-gray-500 mt-1">
+              Receba alertas sonoros e visuais instantâneos quando qualquer colaborador finalizar um atendimento ou visita nas rotas.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={handleRequestPushPerm}
+              className="px-4 py-2 bg-white border border-emerald-300 text-emerald-700 rounded-lg hover:bg-emerald-50 transition-colors font-medium text-sm flex items-center shadow-sm"
+            >
+              <CheckCircle2 size={16} className="mr-2 text-emerald-600" />
+              Ativar / Permissões
+            </button>
+            <button
+              onClick={handleTestPush}
+              disabled={testingPush}
+              className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors font-medium text-sm flex items-center shadow-sm disabled:opacity-50"
+            >
+              <Send size={16} className="mr-2" />
+              {testingPush ? 'Enviando...' : 'Testar Alerta Push'}
+            </button>
+          </div>
+        </div>
+
+        <div className="p-6 space-y-6">
+          {/* Status grid */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider block mb-1">
+                Plataforma Detectada
+              </span>
+              <div className="flex items-center text-gray-800 font-bold">
+                <Smartphone className="mr-2 text-emerald-600" size={18} />
+                {Capacitor.isNativePlatform() ? 'Nativo (Android / iOS)' : 'Navegador Web / PWA'}
+              </div>
+            </div>
+
+            <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider block mb-1">
+                Permissão de Notificação
+              </span>
+              <div className="flex items-center font-bold">
+                {pushPermStatus === 'granted' ? (
+                  <span className="text-emerald-600 flex items-center">
+                    <CheckCircle2 size={18} className="mr-1.5" /> Liberada (Ativa)
+                  </span>
+                ) : pushPermStatus === 'denied' ? (
+                  <span className="text-red-600 flex items-center">
+                    <AlertCircle size={18} className="mr-1.5" /> Bloqueada
+                  </span>
+                ) : (
+                  <span className="text-amber-600 flex items-center">
+                    <AlertCircle size={18} className="mr-1.5" /> Pendente de Ativação
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider block mb-1">
+                Canal de Notificação
+              </span>
+              <div className="flex items-center text-gray-800 font-bold">
+                <Volume2 className="mr-2 text-emerald-600" size={18} />
+                Alta Prioridade (Som + Vibração)
+              </div>
+            </div>
+          </div>
+
+          {/* Token info */}
+          <div className="p-4 bg-emerald-50/60 rounded-xl border border-emerald-200 text-sm">
+            <div className="flex items-start">
+              <CheckCircle2 className="text-emerald-600 mr-2.5 mt-0.5 shrink-0" size={18} />
+              <div>
+                <p className="font-semibold text-emerald-900">
+                  Monitoramento instantâneo de rotas configurado
+                </p>
+                <p className="text-emerald-800 mt-1 text-xs sm:text-sm">
+                  Assim que um técnico ou colaborador enviar a conclusão de uma visita pelo aplicativo, o servidor despachará a notificação push diretamente para o seu aparelho com o nome do cliente e do colaborador, tocando o áudio de notificação e atualizando o painel de rotas automaticamente.
+                </p>
+                {fcmToken && (
+                  <p className="text-xs text-emerald-700 mt-2 font-mono">
+                    Token FCM ativo: {fcmToken.substring(0, 16)}...{fcmToken.substring(fcmToken.length - 8)}
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {testResult && (
+            <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl text-blue-900 text-sm flex items-center">
+              <Bell className="mr-2.5 text-blue-600 shrink-0" size={18} />
+              <span>{testResult}</span>
+            </div>
+          )}
         </div>
       </div>
     </div>
