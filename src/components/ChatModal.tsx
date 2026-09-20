@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { X, Send, User, MessageCircle, Clock } from 'lucide-react';
 import { MediaViewer, AudioViewer } from './chat/MediaViewer';
 import { supabase } from '../lib/supabase';
@@ -12,8 +12,30 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
+
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const clientSessionIdsRef = useRef<Set<string>>(new Set());
+  const isInitialScrollDoneRef = useRef(false);
+
+  const scrollToBottom = useCallback((smooth = true) => {
+    if (messagesContainerRef.current) {
+      const { scrollHeight, clientHeight } = messagesContainerRef.current;
+      const target = scrollHeight - clientHeight;
+      if (target > 0) {
+        if (smooth) {
+          messagesContainerRef.current.scrollTo({ top: target, behavior: 'smooth' });
+        } else {
+          messagesContainerRef.current.scrollTop = target;
+        }
+      }
+    }
+    if (messagesEndRef.current) {
+      try {
+        messagesEndRef.current.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'end' });
+      } catch (e) {}
+    }
+  }, []);
 
   // Timer countdown for active session
   useEffect(() => {
@@ -48,28 +70,83 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     return `${m}:${s}`;
   };
 
-  // Scroll to bottom when messages change
+  // Trigger auto-scroll on messages change
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (messages.length === 0) return;
 
-  // Main lifecycle: load session, load messages, mark as read, subscribe in real-time
+    if (!isInitialScrollDoneRef.current) {
+      // Instant scroll immediately on first batch of messages
+      scrollToBottom(false);
+      const t1 = setTimeout(() => scrollToBottom(false), 50);
+      const t2 = setTimeout(() => {
+        scrollToBottom(false);
+        isInitialScrollDoneRef.current = true;
+      }, 200);
+      return () => {
+        clearTimeout(t1);
+        clearTimeout(t2);
+      };
+    } else {
+      // Smooth scroll for subsequent messages
+      scrollToBottom(true);
+      const t = setTimeout(() => scrollToBottom(true), 80);
+      return () => clearTimeout(t);
+    }
+  }, [messages, scrollToBottom]);
+
+  // Main lifecycle: load session, load messages asynchronously, mark as read, real-time subscription
   useEffect(() => {
     if (!isOpen || !client?.id) {
       setMessages([]);
       setSession(null);
       setLoading(false);
       clientSessionIdsRef.current = new Set();
+      isInitialScrollDoneRef.current = false;
       return;
     }
 
     let isMounted = true;
     let channel: any = null;
+    isInitialScrollDoneRef.current = false;
+
+    // Helper to merge and sort messages without duplicates
+    const mergeMessages = (incoming: any[]) => {
+      setMessages((prev) => {
+        const map = new Map<string, any>();
+        prev.forEach((m) => {
+          if (m && m.id) map.set(m.id, m);
+        });
+        incoming.forEach((m) => {
+          if (m && m.id && m.sender_type !== 'read') {
+            map.set(m.id, m);
+          }
+        });
+        return Array.from(map.values()).sort(
+          (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        );
+      });
+    };
+
+    const fetchAllClientMessages = async (sessionIds: Set<string>) => {
+      if (sessionIds.size === 0) return;
+      try {
+        const { data: loadedMsgs } = await supabase
+          .from('chat_messages')
+          .select('*')
+          .in('session_id', Array.from(sessionIds))
+          .order('created_at', { ascending: true });
+
+        if (isMounted && loadedMsgs && loadedMsgs.length > 0) {
+          mergeMessages(loadedMsgs);
+        }
+      } catch (err) {
+        console.error('[ChatModal] Erro ao carregar mensagens:', err);
+      }
+    };
 
     const setupChat = async () => {
       setLoading(true);
-      setMessages([]);
-      
+
       try {
         // 1. Marca imediatamente como lido em todos os dispositivos
         markClientChatAsRead(client.id, supabase);
@@ -110,10 +187,10 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         if (!isMounted) return;
         setSession(currentSession);
 
-        // 3. Carrega histórico de mensagens de todas as sessões do cliente
+        // 3. Carrega histórico de todas as sessões do cliente
         const { data: allSessions } = await supabase
           .from('chat_sessions')
-          .select('id')
+          .select('id, status, created_at, closed_at')
           .eq('client_id', client.id);
 
         const sessionIds = new Set<string>();
@@ -125,63 +202,104 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         }
         clientSessionIdsRef.current = sessionIds;
 
-        if (sessionIds.size > 0) {
-          const { data: loadedMsgs } = await supabase
-            .from('chat_messages')
-            .select('*')
-            .in('session_id', Array.from(sessionIds))
-            .order('created_at', { ascending: true });
+        // 4. Carrega as mensagens de forma assíncrona
+        await fetchAllClientMessages(sessionIds);
 
-          if (isMounted && loadedMsgs) {
-            setMessages(loadedMsgs.filter((m: any) => m.sender_type !== 'read'));
-          }
+      } catch (err) {
+        console.error('[ChatModal] Erro na configuração do chat:', err);
+      } finally {
+        if (isMounted) {
+          setLoading(false);
+          // Força rolagem imediata ao final após o término do carregamento
+          requestAnimationFrame(() => {
+            scrollToBottom(false);
+          });
         }
+      }
+    };
 
-        // 4. Cria inscrição em tempo real dedicada para novas mensagens
-        const channelName = `chat-modal-${client.id}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-        channel = supabase
-          .channel(channelName)
-          .on('postgres_changes', {
-            event: 'INSERT',
-            schema: 'public',
-            table: 'chat_messages'
-          }, (payload) => {
-            if (!isMounted) return;
-            const newMsg = payload.new as any;
-            if (!newMsg) return;
+    // 5. Inscrição em tempo real imediata para novas mensagens e atualizações de sessões
+    const channelName = `chat-modal-${client.id}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    channel = supabase
+      .channel(channelName)
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'chat_messages'
+      }, async (payload) => {
+        if (!isMounted) return;
+        const newMsg = payload.new as any;
+        if (!newMsg || newMsg.sender_type === 'read') return;
 
-            // Verifica se a mensagem pertence a alguma sessão do cliente aberto
-            if (clientSessionIdsRef.current.has(newMsg.session_id) || newMsg.session_id === currentSession?.id) {
-              if (newMsg.sender_type !== 'read') {
-                setMessages((prev) => {
-                  if (prev.some((m) => m.id === newMsg.id)) return prev;
-                  return [...prev, newMsg];
-                });
-              }
-              // Marca como lido globalmente se for mensagem de cliente
+        // Verifica se a mensagem pertence a uma sessão conhecida deste cliente
+        if (clientSessionIdsRef.current.has(newMsg.session_id) || newMsg.session_id === session?.id) {
+          mergeMessages([newMsg]);
+          if (newMsg.sender_type === 'client') {
+            markClientChatAsRead(client.id, supabase);
+          }
+        } else {
+          // Se a sessão ainda não está no Set, verifica se pertence a este cliente
+          try {
+            const { data: sess } = await supabase
+              .from('chat_sessions')
+              .select('id, client_id')
+              .eq('id', newMsg.session_id)
+              .single();
+
+            if (sess && sess.client_id === client.id) {
+              clientSessionIdsRef.current.add(sess.id);
+              mergeMessages([newMsg]);
               if (newMsg.sender_type === 'client') {
                 markClientChatAsRead(client.id, supabase);
               }
             }
-          })
-          .subscribe();
-
-      } catch (err) {
-        console.error('[ChatModal] Erro ao carregar mensagens:', err);
-      } finally {
-        if (isMounted) setLoading(false);
-      }
-    };
+          } catch (e) {}
+        }
+      })
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'chat_sessions',
+        filter: `client_id=eq.${client.id}`
+      }, (payload) => {
+        if (!isMounted) return;
+        const updatedSession = payload.new as any;
+        if (updatedSession) {
+          clientSessionIdsRef.current.add(updatedSession.id);
+          setSession((prev: any) => {
+            if (!prev || prev.id === updatedSession.id) {
+              return updatedSession;
+            }
+            return prev;
+          });
+        }
+      })
+      .subscribe();
 
     setupChat();
 
+    // Sincronização ao focar novamente na janela
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible' && isMounted) {
+        markClientChatAsRead(client.id, supabase);
+        if (clientSessionIdsRef.current.size > 0) {
+          fetchAllClientMessages(clientSessionIdsRef.current);
+        }
+      }
+    };
+
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+
     return () => {
       isMounted = false;
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
       if (channel) {
         supabase.removeChannel(channel);
       }
     };
-  }, [isOpen, client?.id, visit?.id]);
+  }, [isOpen, client?.id, visit?.id, scrollToBottom]);
 
   const sendMessage = async (text: string) => {
     if (!text.trim() || !session || session.status === 'closed' || timeLeft === 0) return;
@@ -201,6 +319,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
           if (prev.some((m) => m.id === insertedMsg.id)) return prev;
           return [...prev, insertedMsg];
         });
+        requestAnimationFrame(() => scrollToBottom(true));
       }
 
       // 2. Marca como lido no sistema
@@ -248,7 +367,10 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 bg-gray-50 space-y-4">
+        <div 
+          ref={messagesContainerRef}
+          className="flex-1 overflow-y-auto p-4 bg-gray-50 space-y-4"
+        >
           {loading ? (
             <div className="flex justify-center mt-10">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
@@ -278,7 +400,12 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
                         <AudioViewer url={msg.media_url} className="max-w-[220px] md:max-w-[300px]" />
                       </div>
                     ) : (
-                      <MediaViewer url={msg.media_url} alt="Mídia" className="max-w-full md:max-w-[300px] max-h-[300px] object-cover rounded-lg cursor-pointer hover:opacity-90" />
+                      <MediaViewer 
+                        url={msg.media_url} 
+                        alt="Mídia" 
+                        onLoad={() => scrollToBottom(false)}
+                        className="max-w-full md:max-w-[300px] max-h-[300px] object-cover rounded-lg cursor-pointer hover:opacity-90" 
+                      />
                     )
                   ) : (
                     <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
@@ -336,3 +463,4 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   );
 }
 // Atualização de segurança para renderização de mídia
+

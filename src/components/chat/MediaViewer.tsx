@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-export const MediaViewer = ({ url, alt, className }: { url: string, alt: string, className?: string }) => {
+export const MediaViewer = ({ url, alt, className, onLoad }: { url: string, alt: string, className?: string, onLoad?: () => void }) => {
   const [mediaData, setMediaData] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
@@ -56,7 +56,7 @@ export const MediaViewer = ({ url, alt, className }: { url: string, alt: string,
 
   return (
     <a href={mediaData} target="_blank" rel="noopener noreferrer">
-      <img src={mediaData} alt={alt} className={className} />
+      <img src={mediaData} alt={alt} className={className} onLoad={onLoad} />
     </a>
   );
 };
