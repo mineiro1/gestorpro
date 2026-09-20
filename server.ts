@@ -287,7 +287,8 @@ async function processPayment(paymentId, adminId) {
             sent = true;
             try {
               const metaData = await response.json();
-              if (metaData?.messages?.[0]?.id) externalId = metaData.messages[0].id;
+              if (metaData?.key?.id) externalId = metaData.key.id;
+              else if (metaData?.messages?.[0]?.id) externalId = metaData.messages[0].id;
               else if (metaData?.id) externalId = metaData.id;
             } catch (e) {}
             break; // Retorna imediatamente no primeiro sucesso
@@ -298,6 +299,111 @@ async function processPayment(paymentId, adminId) {
       res.json({ success: true, externalId });
     } catch(e: any) {
       console.error(e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/chat/sync-status", async (req, res) => {
+    try {
+      const { messageIds, waSettings } = req.body;
+      if (!Array.isArray(messageIds) || messageIds.length === 0) {
+        return res.json({ updated: 0 });
+      }
+
+      const { data: msgs } = await supabaseAdmin
+        .from('chat_messages')
+        .select('id, media_url, sender_type')
+        .in('id', messageIds)
+        .eq('sender_type', 'tech');
+
+      if (!msgs || msgs.length === 0) {
+        return res.json({ updated: 0 });
+      }
+
+      let updatedCount = 0;
+
+      for (const msg of msgs) {
+        let meta: any = {};
+        try { meta = JSON.parse(msg.media_url); } catch(e) {}
+        
+        if (meta.status === 'read' || !meta.external_id) continue;
+
+        const externalId = meta.external_id;
+        let remoteStatus: 'sent' | 'delivered' | 'read' | null = null;
+
+        // Check with WAME API
+        if (waSettings?.useMetaApi && waSettings?.metaToken) {
+          let baseUrl = (waSettings.metaServerUrl || 'https://graph.facebook.com/v19.0').trim().replace(/\/$/, '');
+          if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
+          const isWame = baseUrl && !baseUrl.includes('graph.facebook.com');
+
+          if (isWame) {
+            try {
+              const checkUrl = `${baseUrl}/${waSettings.metaToken}/message/${externalId}`;
+              const checkRes = await fetch(checkUrl);
+              if (checkRes.ok) {
+                const msgDetails = await checkRes.json();
+                const rawStatus = msgDetails?.status ?? msgDetails?.update?.status ?? msgDetails?.ack;
+                const str = String(rawStatus || '').toUpperCase();
+                if (str === '4' || str === '5' || str === 'READ' || str === 'PLAYED' || str === 'READ_RECEIPT') {
+                  remoteStatus = 'read';
+                } else if (str === '3' || str === 'DELIVERY_ACK' || str === 'DELIVERED') {
+                  remoteStatus = 'delivered';
+                }
+              }
+            } catch(e) {}
+          }
+        } else if (waSettings?.useEvolutionApi && waSettings?.evolutionApiUrl && waSettings?.evolutionApiKey && waSettings?.evolutionInstanceName) {
+          // Check with Evolution API
+          try {
+            let baseUrl = waSettings.evolutionApiUrl.trim().replace(/\/$/, '');
+            if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
+            const checkUrl = `${baseUrl}/chat/findMessages/${waSettings.evolutionInstanceName}`;
+            const checkRes = await fetch(checkUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'apikey': waSettings.evolutionApiKey
+              },
+              body: JSON.stringify({
+                where: {
+                  key: {
+                    id: externalId
+                  }
+                }
+              })
+            });
+            if (checkRes.ok) {
+              const evoData = await checkRes.json();
+              const rec = evoData?.messages?.records?.[0] || evoData?.records?.[0] || (Array.isArray(evoData) ? evoData[0] : evoData);
+              const rawStatus = rec?.status || rec?.update?.status;
+              const str = String(rawStatus || '').toUpperCase();
+              if (str === '4' || str === '5' || str === 'READ' || str === 'PLAYED' || str === 'READ_RECEIPT') {
+                remoteStatus = 'read';
+              } else if (str === '3' || str === 'DELIVERY_ACK' || str === 'DELIVERED') {
+                remoteStatus = 'delivered';
+              }
+            }
+          } catch(e) {}
+        }
+
+        if (remoteStatus && remoteStatus !== meta.status) {
+          await supabaseAdmin
+            .from('chat_messages')
+            .update({
+              media_url: JSON.stringify({
+                ...meta,
+                status: remoteStatus,
+                status_updated_at: new Date().toISOString()
+              })
+            })
+            .eq('id', msg.id);
+          updatedCount++;
+        }
+      }
+
+      res.json({ updated: updatedCount });
+    } catch(e: any) {
       res.status(500).json({ error: e.message });
     }
   });

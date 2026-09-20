@@ -272,18 +272,67 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       }
     };
 
+    // Polling ativo a cada 3 segundos para sincronizar confirmações de entrega/leitura do WhatsApp
+    const syncStatusInterval = setInterval(async () => {
+      if (!isMounted || clientSessionIdsRef.current.size === 0) return;
+      try {
+        const { data: currentMsgs } = await supabase
+          .from('chat_messages')
+          .select('*')
+          .in('session_id', Array.from(clientSessionIdsRef.current))
+          .order('created_at', { ascending: true });
+
+        if (currentMsgs && currentMsgs.length > 0) {
+          if (isMounted) mergeMessages(currentMsgs);
+
+          const unreadTechMsgs = currentMsgs.filter((m) => {
+            if (m.sender_type !== 'tech') return false;
+            let status = 'sent';
+            try {
+              const meta = JSON.parse(m.media_url);
+              status = meta.status || 'sent';
+            } catch(e) {}
+            return status !== 'read';
+          });
+
+          if (unreadTechMsgs.length > 0) {
+            const msgIds = unreadTechMsgs.map((m) => m.id);
+            const syncRes = await fetch('/api/chat/sync-status', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ messageIds: msgIds, waSettings })
+            });
+            if (syncRes.ok) {
+              const resData = await syncRes.json();
+              if (resData.updated > 0) {
+                const { data: updatedMsgs } = await supabase
+                  .from('chat_messages')
+                  .select('*')
+                  .in('session_id', Array.from(clientSessionIdsRef.current))
+                  .order('created_at', { ascending: true });
+                if (isMounted && updatedMsgs) {
+                  mergeMessages(updatedMsgs);
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {}
+    }, 3000);
+
     window.addEventListener('focus', handleVisibilityOrFocus);
     document.addEventListener('visibilitychange', handleVisibilityOrFocus);
 
     return () => {
       isMounted = false;
+      clearInterval(syncStatusInterval);
       window.removeEventListener('focus', handleVisibilityOrFocus);
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
       if (channel) {
         supabase.removeChannel(channel);
       }
     };
-  }, [isOpen, client?.id, visit?.id, scrollToBottom]);
+  }, [isOpen, client?.id, visit?.id, scrollToBottom, waSettings]);
 
   const sendMessage = async (text: string) => {
     if (!text.trim() || !session || session.status === 'closed' || timeLeft === 0) return;
@@ -443,7 +492,18 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
               })();
 
               const realMediaUrl = parsedMedia?.url;
-              const deliveryStatus = parsedMedia?.status || msg.status || 'sent';
+              
+              // Se o cliente já enviou alguma mensagem posterior no chat, esta mensagem foi visualizada
+              const hasClientReplyAfter = messages.some(
+                (other) =>
+                  other.sender_type === 'client' &&
+                  new Date(other.created_at).getTime() >= new Date(msg.created_at).getTime()
+              );
+
+              let deliveryStatus = parsedMedia?.status || msg.status || 'sent';
+              if (hasClientReplyAfter) {
+                deliveryStatus = 'read';
+              }
 
               return (
                 <div key={msg.id || idx} className={`flex ${msg.sender_type === 'tech' ? 'justify-end' : 'justify-start'}`}>
@@ -476,24 +536,24 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
                       <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
                     )}
                     
-                    <div className={`text-[10px] mt-1 flex items-center gap-1 ${msg.sender_type === 'tech' ? 'text-blue-200 justify-end' : 'text-gray-400 justify-start'}`}>
+                    <div className={`text-[10px] mt-1 flex items-center gap-1 ${msg.sender_type === 'tech' ? 'text-blue-100 justify-end' : 'text-gray-400 justify-start'}`}>
                       <span>{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                       {msg.sender_type === 'tech' && (
                         deliveryStatus === 'read' ? (
                           <span title="Visualizada pelo cliente" className="inline-flex items-center">
-                            <CheckCheck size={14} className="text-cyan-300 ml-0.5" />
+                            <CheckCheck size={15} className="text-sky-300 font-bold ml-0.5" />
                           </span>
                         ) : deliveryStatus === 'delivered' ? (
                           <span title="Entregue ao cliente" className="inline-flex items-center">
-                            <CheckCheck size={14} className="text-blue-200 opacity-90 ml-0.5" />
+                            <CheckCheck size={15} className="text-white/80 ml-0.5" />
                           </span>
                         ) : deliveryStatus === 'sending' ? (
                           <span title="Enviando..." className="inline-flex items-center">
-                            <Clock size={11} className="text-blue-200 opacity-70 ml-0.5" />
+                            <Clock size={12} className="text-white/60 ml-0.5" />
                           </span>
                         ) : (
                           <span title="Enviada" className="inline-flex items-center">
-                            <Check size={14} className="text-blue-200 opacity-80 ml-0.5" />
+                            <Check size={15} className="text-white/70 ml-0.5" />
                           </span>
                         )
                       )}
