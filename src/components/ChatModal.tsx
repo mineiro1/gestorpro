@@ -151,60 +151,43 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         // 1. Marca imediatamente como lido em todos os dispositivos
         markClientChatAsRead(client.id, supabase);
 
-        // 2. Busca disponibilidade diária e sessão ativa
-        const check = await checkDailyChatAvailability(client.id, supabase);
-        if (!isMounted) return;
-
-        let currentSession = null;
-
-        if (check.activeSession) {
-          currentSession = check.activeSession;
-        } else if (check.canStartNewSession && !visit?.isCompleted && visit?.status !== 'finalizada') {
-          const adminId = userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId;
-          
-          const { data: newSession, error: createError } = await supabase
+        // 2. Busca sessões e disponibilidade em paralelo para carregamento instantâneo
+        const [check, sessionsRes] = await Promise.all([
+          checkDailyChatAvailability(client.id, supabase),
+          supabase
             .from('chat_sessions')
-            .insert({
-              visit_id: visit?.id || null,
-              admin_id: adminId,
-              client_id: client.id,
-              employee_id: userProfile?.uid,
-              status: 'open',
-              created_at: new Date().toISOString()
-            }).select().single();
+            .select('id, status, created_at, closed_at')
+            .eq('client_id', client.id)
+            .order('created_at', { ascending: false })
+        ]);
 
-          if (!createError && newSession) {
-            currentSession = newSession;
-          }
-        } else if (check.lastSession) {
-          currentSession = { ...check.lastSession, status: 'closed' };
-        }
-        
-        if (!currentSession) {
-          currentSession = { status: 'closed' };
-        }
-        
         if (!isMounted) return;
-        setSession(currentSession);
 
-        // 3. Carrega histórico de todas as sessões do cliente
-        const { data: allSessions } = await supabase
-          .from('chat_sessions')
-          .select('id, status, created_at, closed_at')
-          .eq('client_id', client.id);
-
+        const allSessions = sessionsRes.data || [];
         const sessionIds = new Set<string>();
-        if (allSessions) {
-          allSessions.forEach((s: any) => sessionIds.add(s.id));
-        }
+        allSessions.forEach((s: any) => sessionIds.add(s.id));
+
+        let currentSession = check.activeSession || allSessions.find((s: any) => s.status === 'open') || check.lastSession || allSessions[0] || { status: 'closed' };
         if (currentSession?.id) {
           sessionIds.add(currentSession.id);
         }
         clientSessionIdsRef.current = sessionIds;
+        setSession(currentSession);
 
-        // 4. Carrega as mensagens de forma assíncrona
-        await fetchAllClientMessages(sessionIds);
+        // 3. Carrega todas as mensagens de todas as sessões do cliente
+        if (sessionIds.size > 0) {
+          const { data: loadedMsgs, error: msgsErr } = await supabase
+            .from('chat_messages')
+            .select('*')
+            .in('session_id', Array.from(sessionIds))
+            .order('created_at', { ascending: true });
 
+          if (msgsErr) {
+            console.error('[ChatModal] Erro ao carregar mensagens:', msgsErr);
+          } else if (isMounted && loadedMsgs) {
+            mergeMessages(loadedMsgs);
+          }
+        }
       } catch (err) {
         console.error('[ChatModal] Erro na configuração do chat:', err);
       } finally {
