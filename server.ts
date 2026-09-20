@@ -418,6 +418,23 @@ async function processPayment(paymentId, adminId) {
   }
 
   // Webhook for WAME / Meta API
+  const recentProcessedMsgIds = new Map<string, number>();
+
+  function isDuplicateIncomingMsg(uniqueKey: string): boolean {
+    const now = Date.now();
+    // Limpar chaves antigas (> 30s)
+    for (const [k, time] of recentProcessedMsgIds.entries()) {
+      if (now - time > 30000) {
+        recentProcessedMsgIds.delete(k);
+      }
+    }
+    if (recentProcessedMsgIds.has(uniqueKey)) {
+      return true;
+    }
+    recentProcessedMsgIds.set(uniqueKey, now);
+    return false;
+  }
+
   app.get("/api/webhook/wame", (req, res) => {
     const mode = req.query["hub.mode"];
     const challenge = req.query["hub.challenge"];
@@ -438,15 +455,58 @@ async function processPayment(paymentId, adminId) {
         return res.status(200).send("EVENT_RECEIVED");
       }
 
+      // Check if message was sent by us (fromMe = true) - DO NOT treat as client message!
+      const isFromMe = Boolean(
+        body.fromMe === true ||
+        body.key?.fromMe === true ||
+        body.data?.fromMe === true ||
+        body.data?.key?.fromMe === true ||
+        (Array.isArray(body.data) && body.data.some((d: any) => d?.key?.fromMe === true || d?.fromMe === true)) ||
+        (body.entry && body.entry.some((e: any) => e?.changes?.some((c: any) => c?.value?.messages?.some((m: any) => m?.from_me === true))))
+      );
+
+      if (isFromMe) {
+        return res.status(200).send("EVENT_RECEIVED");
+      }
+
       let phone = "";
       let content = "";
       let mediaUrl = "";
+      let externalMsgId = "";
       
-      if ((body.object === "whatsapp_business_account" || body.object === "wame") && body.entry && body.entry[0].changes) {
+      // Native WAME format: { event: "messages.upsert", data: { key: { remoteJid, id }, message: { conversation } } }
+      const nativeItem = Array.isArray(body.data) ? body.data[0] : (body.data || body);
+      if (nativeItem && (nativeItem.key || nativeItem.message)) {
+        if (nativeItem.key?.fromMe) {
+          return res.status(200).send("EVENT_RECEIVED");
+        }
+        if (nativeItem.key?.remoteJid) {
+          phone = String(nativeItem.key.remoteJid).split('@')[0];
+        }
+        if (nativeItem.key?.id) {
+          externalMsgId = String(nativeItem.key.id);
+        }
+        if (nativeItem.message?.conversation) {
+          content = nativeItem.message.conversation;
+        } else if (nativeItem.message?.extendedTextMessage?.text) {
+          content = nativeItem.message.extendedTextMessage.text;
+        } else if (nativeItem.message?.audioMessage) {
+          content = "🎵 Mensagem de Áudio";
+        } else if (nativeItem.message?.imageMessage) {
+          content = "📷 Imagem";
+        }
+      }
+
+      // Meta Cloud API format
+      if (!phone && (body.object === "whatsapp_business_account" || body.object === "wame") && body.entry && body.entry[0]?.changes) {
          const value = body.entry[0].changes[0].value;
          if (value.messages && value.messages.length > 0) {
             const msg = value.messages[0];
+            if (msg.from_me) {
+              return res.status(200).send("EVENT_RECEIVED");
+            }
             phone = msg.from;
+            externalMsgId = msg.id || "";
             if (msg.type === "text" && msg.text) {
                content = msg.text.body;
             } else if (msg.type === "audio") {
@@ -454,29 +514,34 @@ async function processPayment(paymentId, adminId) {
             } else if (msg.type === "image") {
                content = "📷 Imagem";
             }
-         } else {
-            return res.status(200).send("EVENT_RECEIVED");
          }
-      } else if (body.phone && body.message) {
+      } else if (!phone && body.phone && body.message) {
           phone = body.phone;
           content = body.message;
-      } else if (body.contact && body.message) {
+      } else if (!phone && body.contact && body.message) {
           phone = body.contact;
           content = body.message;
-      } else if (body.from && body.body) {
+      } else if (!phone && body.from && body.body) {
           phone = body.from;
           content = body.body;
       }
       
       if (!phone || !content) return res.status(200).send("EVENT_RECEIVED");
       phone = phone.replace(/\D/g, '');
+
+      // Deduplicação de mensagens recebidas
+      const dedupKey = externalMsgId ? `msg_${externalMsgId}` : `txt_${phone}_${content}`;
+      if (isDuplicateIncomingMsg(dedupKey)) {
+        console.log("Ignorando mensagem duplicada recebida no webhook:", dedupKey);
+        return res.status(200).send("EVENT_RECEIVED");
+      }
       
-      const { data: clients, error: clientsErr } = await supabaseAdmin.from('clients').select('id, phone, local_phone, admin_id, employee_id');
+      const { data: clients } = await supabaseAdmin.from('clients').select('id, phone, local_phone, admin_id, employee_id');
       const matchedClient = clients?.find(c => {
          const cp = (c.phone || '').replace(/\D/g, '');
          const lp = (c.local_phone || '').replace(/\D/g, '');
          if (!cp && !lp) return false;
-         const getCore = (num) => num.length >= 8 ? num.slice(-8) : num;
+         const getCore = (num: string) => num.length >= 8 ? num.slice(-8) : num;
          const webhookCore = getCore(phone);
          let matchPhone = false;
          if (cp.length > 5) matchPhone = cp.includes(phone) || phone.includes(cp) || getCore(cp) === webhookCore;
@@ -502,7 +567,6 @@ async function processPayment(paymentId, adminId) {
       
       const now = new Date().getTime();
       const createdTime = new Date(activeSession.created_at).getTime();
-      console.log("TIMER CHECK EVOLUTION:", { now, createdTime, diff: now - createdTime, limit: 30 * 60 * 1000 });
       // If session is older than 30 minutes, close it and discard message
       if (now - createdTime > 30 * 60 * 1000) {
           await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
@@ -561,6 +625,7 @@ async function processPayment(paymentId, adminId) {
       if (!remoteJid) return res.status(200).send("OK");
       
       let phone = remoteJid.split('@')[0].replace('55', '');
+      let externalMsgId = msgData.key.id || "";
       
       let content = "";
       if (msgData.message.conversation) content = msgData.message.conversation;
@@ -571,6 +636,13 @@ async function processPayment(paymentId, adminId) {
       else if (msgData.message.imageMessage) content = "📷 Imagem";
 
       if (!content && !mediaUrl) return res.status(200).send("OK");
+
+      // Deduplicação
+      const dedupKey = externalMsgId ? `evo_${externalMsgId}` : `evo_txt_${phone}_${content}`;
+      if (isDuplicateIncomingMsg(dedupKey)) {
+        console.log("Ignorando mensagem duplicada Evolution:", dedupKey);
+        return res.status(200).send("OK");
+      }
 
       const { data: clients } = await supabaseAdmin.from('clients').select('id, phone, local_phone, admin_id, employee_id');
       if (!clients) return res.status(200).send("OK");
