@@ -9,6 +9,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { openMap, openRouteMap, openWaze } from '../lib/maps';
 import { openWhatsApp, sendEvolutionMessage, sendMetaMessage } from '../lib/whatsapp';
 import { notifyAdminAttendanceFinished } from '../lib/pushNotifications';
+import { getLocalDayUtcRange, checkDailyChatAvailability } from '../lib/chatSessionUtils';
 import EmployeeMap from '../components/EmployeeMap';
 import exifr from 'exifr';
 
@@ -706,53 +707,35 @@ export default function RoutesPage() {
       e.preventDefault();
     }
 
-    const now = new Date();
-    const todayStr = new Date(now.getTime() - (now.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
+    const { localDateStr } = getLocalDayUtcRange();
     
-    if (routeDate && routeDate !== todayStr) {
-       alert('O chat não pode ser iniciado. A data da visita não é a data de hoje.');
+    if (routeDate && routeDate !== localDateStr) {
+       alert('O chat não pode ser iniciado. A data da rota visualizada não é a data de hoje.');
        return;
     }
 
     if (isCompleted) {
-       alert('A visita já foi finalizada. O chat está inativo.');
+       alert('A visita já foi finalizada. O chat está inativo para esta data.');
        return;
     }
 
-    const { data: existingSessions } = await supabase.from('chat_sessions')
-        .select('id, status, created_at, closed_at')
-        .eq('client_id', client.id)
-        .order('created_at', { ascending: false });
+    // Validação de Limite Diário Estrito (30 min por dia civil local)
+    const check = await checkDailyChatAvailability(client.id, supabase);
 
-    let hasActiveOpenSession = false;
-    if (existingSessions && existingSessions.length > 0) {
-        for (const sess of existingSessions) {
-            if (sess.status === 'open') {
-                const sessTime = new Date(sess.created_at).getTime();
-                const isExpired = (now.getTime() - sessTime > 30 * 60 * 1000) || (sess.closed_at && (now.getTime() - new Date(sess.closed_at).getTime() > 30 * 60 * 1000));
-                if (isExpired) {
-                    // Fechar sessão expirada no banco para não travar o cliente
-                    await supabase.from('chat_sessions').update({ 
-                        status: 'closed', 
-                        closed_at: sess.closed_at || new Date().toISOString() 
-                    }).eq('id', sess.id);
-                } else if (!hasActiveOpenSession) {
-                    hasActiveOpenSession = true;
-                }
-            }
-        }
+    if (check.dailyLimitReached) {
+      alert(check.message || 'O limite diário de atendimento (30 minutos) já foi atingido para este cliente hoje. Um novo chat poderá ser aberto amanhã a partir das 00:00.');
+      return;
     }
 
-    if (!hasActiveOpenSession) {
-        if (!window.confirm(`Gostaria de iniciar o chat com o cliente ${client.name}?`)) {
-            return;
-        }
+    // Se nenhuma sessão foi criada hoje, pede confirmação para iniciar o atendimento de 30 min
+    if (check.canStartNewSession) {
+      if (!window.confirm(`Gostaria de iniciar o chat com o cliente ${client.name}? O atendimento terá duração de 30 minutos (limite diário).`)) {
+        return;
+      }
     }
 
-    setActiveChatClient(client);
-    setChatModalOpen(true);
-    
     let visitId = null;
+    let visitStatus = 'agendada';
     const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
     
     try {
@@ -762,11 +745,10 @@ export default function RoutesPage() {
         .or(`time.eq.${routeDate},date.gte.${routeDate}T00:00:00.000Z`)
         .order('created_at', { ascending: false })
         .limit(1);
-        
 
       if (existingVisit && existingVisit.length > 0) {
          visitId = existingVisit[0].id;
-         var visitStatus = existingVisit[0].status;
+         visitStatus = existingVisit[0].status;
          console.log("Found existing visit:", visitId);
       } else {
          const { data: newVisit, error: newVisitErr } = await supabase.from('visits').insert({
@@ -779,12 +761,11 @@ export default function RoutesPage() {
          console.log("Created new visit:", newVisit, "Err:", newVisitErr);
          if (newVisit) visitId = newVisit.id;
       }
-
     } catch(err) {
       console.error(err);
     }
 
-    setActiveChatVisit({ id: visitId, status: typeof visitStatus !== 'undefined' ? visitStatus : 'agendada', isCompleted });
+    setActiveChatVisit({ id: visitId, status: visitStatus, isCompleted });
     setActiveChatClient(client);
     setChatModalOpen(true);
   };

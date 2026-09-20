@@ -3,6 +3,7 @@ import { X, Send, User, MessageCircle, Clock } from 'lucide-react';
 import { MediaViewer, AudioViewer } from './chat/MediaViewer';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import { evaluateSessionExpiry, checkDailyChatAvailability } from '../lib/chatSessionUtils';
 
 export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const { userProfile } = useAuth();
@@ -16,14 +17,18 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   useEffect(() => {
     if (session?.status === 'open' && session.created_at) {
       const updateTimer = () => {
-        const now = new Date().getTime();
-        const createdTime = new Date(session.created_at).getTime();
-        const diffMs = (30 * 60 * 1000) - (now - createdTime);
+        const evaluation = evaluateSessionExpiry(session);
         
-        if (diffMs <= 0) {
+        if (evaluation.isExpired) {
           setTimeLeft(0);
+          setSession((prev: any) => prev ? { ...prev, status: 'closed' } : null);
+          supabase
+            .from('chat_sessions')
+            .update({ status: 'closed', closed_at: new Date().toISOString() })
+            .eq('id', session.id)
+            .then(() => {}, () => {});
         } else {
-          setTimeLeft(Math.floor(diffMs / 1000));
+          setTimeLeft(evaluation.secondsRemaining);
         }
       };
 
@@ -57,43 +62,15 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const loadOrCreateSession = async () => {
     setLoading(true);
     try {
-      // Find active session
-            let { data: sessions, error } = await supabase
-        .from('chat_sessions')
-        .select('*')
-        .eq('client_id', client.id)
-        .eq('status', 'open')
-        .order('created_at', { ascending: false });
+      // Verifica disponibilidade segundo a regra de Limite Diário Estrito (30 min por dia civil local)
+      const check = await checkDailyChatAvailability(client.id, supabase);
 
       let currentSession = null;
-      let validSession = null;
 
-      if (sessions && sessions.length > 0) {
-        currentSession = sessions[0];
-        
-        // Verificação de expiração: se já passaram mais de 30 min desde a criação ou fechamento
-        const createdTime = currentSession.created_at ? new Date(currentSession.created_at).getTime() : 0;
-        const closedTime = currentSession.closed_at ? new Date(currentSession.closed_at).getTime() : 0;
-        const now = new Date().getTime();
-        
-        const isExpired = (now - createdTime > 30 * 60 * 1000) || (closedTime > 0 && now - closedTime > 30 * 60 * 1000);
-
-        if (isExpired) {
-           // Expirou! Fecha no banco e não usa mais
-           await supabase.from('chat_sessions').update({ 
-              status: 'closed',
-              closed_at: currentSession.closed_at || new Date().toISOString()
-           }).eq('id', currentSession.id);
-           validSession = null;
-        } else {
-           validSession = currentSession;
-        }
-      }
-
-      if (validSession) {
-        currentSession = validSession;
-      } else if (!visit?.isCompleted && visit?.status !== 'finalizada') {
-        // Create new session if none exists AND visit is not finalized
+      if (check.activeSession) {
+        currentSession = check.activeSession;
+      } else if (check.canStartNewSession && !visit?.isCompleted && visit?.status !== 'finalizada') {
+        // Cria nova sessão apenas se não houver sessão hoje e visita não estiver finalizada
         const adminId = userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId;
         
         const { data: newSession, error: createError } = await supabase
@@ -112,10 +89,13 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         if (!createError && newSession) {
           currentSession = newSession;
         }
+      } else if (check.lastSession) {
+        // Limite diário atingido ou visita finalizada: carrega a sessão anterior como fechada para leitura do histórico
+        currentSession = { ...check.lastSession, status: 'closed' };
       }
       
       if (!currentSession) {
-          currentSession = { status: 'closed' };
+        currentSession = { status: 'closed' };
       }
       
       setSession(currentSession);
@@ -273,7 +253,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
           <div ref={messagesEndRef} />
         </div>
 
-        {session?.status === 'open' && timeLeft !== 0 && (
+        {session?.status === 'open' && timeLeft !== 0 ? (
           <div className="p-4 bg-white border-t rounded-b-xl">
             {/* Quick Actions */}
             <div className="flex gap-2 mb-3 overflow-x-auto pb-2 scrollbar-hide">
@@ -302,6 +282,12 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
                 <Send size={18} />
               </button>
             </div>
+          </div>
+        ) : (
+          <div className="p-3 bg-gray-100 border-t rounded-b-xl text-center">
+            <p className="text-xs text-gray-500 font-medium">
+              Sessão encerrada (Limite diário estrito). Novo atendimento disponível amanhã a partir das 00:00.
+            </p>
           </div>
         )}
       </div>
