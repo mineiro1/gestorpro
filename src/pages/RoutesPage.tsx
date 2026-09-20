@@ -50,9 +50,15 @@ export default function RoutesPage() {
   useEffect(() => {
     chatModalOpenRef.current = chatModalOpen;
     if (chatModalOpen && activeChatClientRef.current) {
+      const cid = activeChatClientRef.current.id;
+      try {
+        localStorage.setItem(`chat_last_read_${cid}`, new Date().toISOString());
+      } catch (e) {
+        console.error(e);
+      }
       setUnreadCounts(prev => {
         const nc = {...prev};
-        delete nc[activeChatClientRef.current.id];
+        delete nc[cid];
         return nc;
       });
     }
@@ -349,6 +355,7 @@ export default function RoutesPage() {
       const { startUtcIso, endUtcIso } = getLocalDayUtcRange();
       const clientIds = mergedClients.map((c: any) => c.id).filter(Boolean);
       const chatStatusByClient: Record<string, { hasSessionToday: boolean; isActive: boolean; isExpiredOrClosed: boolean }> = {};
+      const unreadMap: Record<string, number> = {};
 
       if (clientIds.length > 0) {
         const { data: todaySessions } = await supabase
@@ -359,6 +366,8 @@ export default function RoutesPage() {
           .lte('created_at', endUtcIso);
 
         const nowMs = Date.now();
+        const activeSessions: { id: string; client_id: string }[] = [];
+
         (todaySessions || []).forEach((sess: any) => {
           const cid = sess.client_id;
           if (!chatStatusByClient[cid]) {
@@ -366,8 +375,9 @@ export default function RoutesPage() {
           }
           if (sess.status === 'open') {
             const exp = evaluateSessionExpiry(sess, nowMs);
-            if (!exp.isExpired) {
+            if (!exp.isExpired && !completedIds.has(cid)) {
               chatStatusByClient[cid].isActive = true;
+              activeSessions.push({ id: sess.id, client_id: cid });
             } else {
               chatStatusByClient[cid].isExpiredOrClosed = true;
             }
@@ -375,15 +385,53 @@ export default function RoutesPage() {
             chatStatusByClient[cid].isExpiredOrClosed = true;
           }
         });
+
+        // Contagem real de mensagens não lidas para sessões ativas
+        if (activeSessions.length > 0) {
+          const sessionIds = activeSessions.map(s => s.id);
+          const { data: clientMessages } = await supabase
+            .from('chat_messages')
+            .select('id, session_id, sender_type, created_at')
+            .in('session_id', sessionIds)
+            .eq('sender_type', 'client');
+
+          if (clientMessages && clientMessages.length > 0) {
+            const sessionToClientMap: Record<string, string> = {};
+            activeSessions.forEach(s => {
+              sessionToClientMap[s.id] = s.client_id;
+            });
+            for (const msg of clientMessages) {
+              const cid = sessionToClientMap[msg.session_id];
+              if (cid) {
+                const lastRead = localStorage.getItem(`chat_last_read_${cid}`);
+                if (!lastRead || new Date(msg.created_at).getTime() > new Date(lastRead).getTime()) {
+                  unreadMap[cid] = (unreadMap[cid] || 0) + 1;
+                }
+              }
+            }
+          }
+        }
       }
 
-      return { clients: mergedClients, completed: completedIds, chatStatusByClient };
+      return { clients: mergedClients, completed: completedIds, chatStatusByClient, unreadMap };
     }
   });
 
   const routeClients = queryData?.clients || [];
   const completedVisitsOnRouteDate = queryData?.completed || new Set();
   const chatStatusByClient = queryData?.chatStatusByClient || {};
+
+  // Sincroniza automaticamente as mensagens não lidas reais
+  useEffect(() => {
+    if (queryData?.unreadMap !== undefined) {
+      setUnreadCounts(queryData.unreadMap);
+      try {
+        localStorage.setItem('unreadCounts', JSON.stringify(queryData.unreadMap));
+      } catch (e) {
+        console.error(e);
+      }
+    }
+  }, [queryData?.unreadMap]);
 
   useEffect(() => {
     if (!generated || !userProfile || !routeDate) return;
@@ -824,6 +872,17 @@ export default function RoutesPage() {
       }
     } catch(err) {
       console.error(err);
+    }
+
+    try {
+      localStorage.setItem(`chat_last_read_${client.id}`, new Date().toISOString());
+      setUnreadCounts(prev => {
+        const next = { ...prev };
+        delete next[client.id];
+        return next;
+      });
+    } catch (e) {
+      console.error(e);
     }
 
     setActiveChatVisit({ id: visitId, status: visitStatus, isCompleted });

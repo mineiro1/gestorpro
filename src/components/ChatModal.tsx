@@ -99,6 +99,13 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       }
       
       setSession(currentSession);
+      if (client?.id) {
+        try {
+          localStorage.setItem(`chat_last_read_${client.id}`, new Date().toISOString());
+        } catch (e) {
+          console.error(e);
+        }
+      }
       if (currentSession) {
         loadMessages(currentSession.id);
         
@@ -113,6 +120,11 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
             (async () => {
               const { data } = await supabase.from('chat_sessions').select('client_id').eq('id', payload.new.session_id).single();
               if (data && data.client_id === client.id) {
+                 try {
+                   localStorage.setItem(`chat_last_read_${client.id}`, new Date().toISOString());
+                 } catch (e) {
+                   console.error(e);
+                 }
                  setMessages(prev => {
                     if (prev.find(m => m.id === payload.new.id)) return prev;
                     return [...prev, payload.new];
