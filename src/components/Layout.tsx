@@ -11,6 +11,7 @@ import { PushNotifications } from '@capacitor/push-notifications';
 import { initCapacitorPushNotifications, requestPushPermissions } from '../lib/pushNotifications';
 import EmployeeLocationTracker from './EmployeeLocationTracker';
 import SmsGatewayListener from './SmsGatewayListener';
+import { evaluateSessionExpiry } from '../lib/chatSessionUtils';
 
 
 const NotificationBanner = () => {
@@ -319,8 +320,26 @@ export default function Layout() {
          // Se a mensagem for do cliente
          if (payload.new.sender_type === 'client') {
             try {
-              const { data: sessionData } = await supabase.from('chat_sessions').select('client_id').eq('id', payload.new.session_id).single();
-              if (sessionData && sessionData.client_id) {
+              const { data: sessionData } = await supabase
+                .from('chat_sessions')
+                .select('id, client_id, status, created_at, closed_at')
+                .eq('id', payload.new.session_id)
+                .single();
+
+              // Se a sessão estiver encerrada ou expirada (passou dos 30 minutos), não emite notificação nem som
+              if (!sessionData || sessionData.status === 'closed') {
+                return;
+              }
+              const expiry = evaluateSessionExpiry(sessionData);
+              if (expiry.isExpired) {
+                // Atualiza para closed se ainda não estava
+                await supabase.from('chat_sessions')
+                  .update({ status: 'closed', closed_at: new Date().toISOString() })
+                  .eq('id', sessionData.id);
+                return;
+              }
+
+              if (sessionData.client_id) {
                  const { data: clientData } = await supabase.from('clients').select('name').eq('id', sessionData.client_id).single();
                  const cName = clientData?.name || 'Cliente';
                  showNotification(cName, 'Você acaba de receber uma nova mensagem.');
@@ -328,8 +347,7 @@ export default function Layout() {
                  showNotification('Nova Mensagem', 'Você recebeu uma nova mensagem no chat.');
               }
             } catch(e) {
-               showNotification('Nova Mensagem', 'Você recebeu uma nova mensagem no chat.');
-            try { const audio = new Audio('/notificacao.mp3'); audio.play().catch(e => {}); } catch(err){}
+               console.warn('[Layout] Chat message notification check warning:', e);
             }
          }
       }

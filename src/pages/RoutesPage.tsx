@@ -9,7 +9,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { openMap, openRouteMap, openWaze } from '../lib/maps';
 import { openWhatsApp, sendEvolutionMessage, sendMetaMessage } from '../lib/whatsapp';
 import { notifyAdminAttendanceFinished } from '../lib/pushNotifications';
-import { getLocalDayUtcRange, checkDailyChatAvailability } from '../lib/chatSessionUtils';
+import { getLocalDayUtcRange, checkDailyChatAvailability, evaluateSessionExpiry } from '../lib/chatSessionUtils';
 import EmployeeMap from '../components/EmployeeMap';
 import exifr from 'exifr';
 
@@ -345,12 +345,45 @@ export default function RoutesPage() {
         }
       });
       
-      return { clients: mergedClients, completed: completedIds };
+      // Busca sessões de chat de hoje para os clientes da rota para saber se o chat está ativo ou se expirou os 30 min
+      const { startUtcIso, endUtcIso } = getLocalDayUtcRange();
+      const clientIds = mergedClients.map((c: any) => c.id).filter(Boolean);
+      const chatStatusByClient: Record<string, { hasSessionToday: boolean; isActive: boolean; isExpiredOrClosed: boolean }> = {};
+
+      if (clientIds.length > 0) {
+        const { data: todaySessions } = await supabase
+          .from('chat_sessions')
+          .select('id, client_id, status, created_at, closed_at')
+          .in('client_id', clientIds)
+          .gte('created_at', startUtcIso)
+          .lte('created_at', endUtcIso);
+
+        const nowMs = Date.now();
+        (todaySessions || []).forEach((sess: any) => {
+          const cid = sess.client_id;
+          if (!chatStatusByClient[cid]) {
+            chatStatusByClient[cid] = { hasSessionToday: true, isActive: false, isExpiredOrClosed: false };
+          }
+          if (sess.status === 'open') {
+            const exp = evaluateSessionExpiry(sess, nowMs);
+            if (!exp.isExpired) {
+              chatStatusByClient[cid].isActive = true;
+            } else {
+              chatStatusByClient[cid].isExpiredOrClosed = true;
+            }
+          } else {
+            chatStatusByClient[cid].isExpiredOrClosed = true;
+          }
+        });
+      }
+
+      return { clients: mergedClients, completed: completedIds, chatStatusByClient };
     }
   });
 
   const routeClients = queryData?.clients || [];
   const completedVisitsOnRouteDate = queryData?.completed || new Set();
+  const chatStatusByClient = queryData?.chatStatusByClient || {};
 
   useEffect(() => {
     if (!generated || !userProfile || !routeDate) return;
@@ -399,9 +432,29 @@ export default function RoutesPage() {
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, async (payload) => {
         const newMsg = payload.new;
         if (newMsg.sender_type === 'client') {
-          const { data: session } = await supabase.from('chat_sessions').select('client_id').eq('id', newMsg.session_id).single();
+          const { data: session } = await supabase
+            .from('chat_sessions')
+            .select('id, client_id, status, created_at, closed_at')
+            .eq('id', newMsg.session_id)
+            .single();
+
           if (session && session.client_id) {
              const cid = session.client_id;
+             
+             // Se a visita já estiver finalizada para este cliente, não incrementa bolinha verde de não lidas
+             if (completedVisitsOnRouteDate.has(cid)) {
+                return;
+             }
+
+             // Se a sessão estiver fechada ou os 30 minutos tiverem expirado, não incrementa bolinha verde de não lidas
+             if (session.status === 'closed') {
+                return;
+             }
+             const exp = evaluateSessionExpiry(session);
+             if (exp.isExpired) {
+                return;
+             }
+
              if (activeChatClientRef.current && activeChatClientRef.current.id === cid && chatModalOpenRef.current) {
                 // Open, do nothing
              } else {
@@ -409,6 +462,13 @@ export default function RoutesPage() {
              }
           }
         }
+      })
+      .subscribe();
+
+    const channelChatSessions = supabase.channel(`${channelPrefix}-chat-sessions`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_sessions' }, () => {
+        queryClient.invalidateQueries({ queryKey: ['routeData'] });
+        refetch();
       })
       .subscribe();
 
@@ -446,6 +506,7 @@ export default function RoutesPage() {
     return () => {
       supabase.removeChannel(channel1);
       supabase.removeChannel(channelChat);
+      supabase.removeChannel(channelChatSessions);
       supabase.removeChannel(channel2);
     };
   }, [generated, routeDate, selectedEmployee, selectedDay, userProfile, isAdmin, isManager, queryClient]);
@@ -1512,15 +1573,43 @@ export default function RoutesPage() {
                           
                           {/* Botão Estou a caminho / Chat */}
                           {(() => {
-                            const unread = unreadCounts[client.id] || 0;
+                            const chatStatus = chatStatusByClient[client.id];
+                            const isChatInactive = isCompleted || (chatStatus?.isExpiredOrClosed && !chatStatus?.isActive);
+                            const unread = isChatInactive ? 0 : (unreadCounts[client.id] || 0);
+
                             return (
                               <button
-                                onClick={(e) => handleOpenChat(client, isCompleted, e)}
-                                className={`relative p-1 rounded-md transition-colors ${unread > 0 ? 'text-green-600 bg-green-100 hover:bg-green-200' : 'text-blue-600 hover:bg-blue-100'}`}
-                                title="Avisar chegada / Chat"
+                                onClick={(e) => {
+                                  if (isChatInactive) {
+                                    e.stopPropagation();
+                                    e.preventDefault();
+                                    if (isCompleted) {
+                                      alert('A visita já foi finalizada. O chat está inativo para este cliente.');
+                                    } else {
+                                      alert('O limite diário de 30 minutos já foi atingido para este cliente. O chat está inativo e poderá ser reaberto amanhã às 00:00.');
+                                    }
+                                    return;
+                                  }
+                                  handleOpenChat(client, isCompleted, e);
+                                }}
+                                disabled={isChatInactive}
+                                className={`relative p-1 rounded-md transition-colors ${
+                                  isChatInactive
+                                    ? 'text-gray-300 bg-gray-50 cursor-not-allowed opacity-50'
+                                    : unread > 0
+                                      ? 'text-green-600 bg-green-100 hover:bg-green-200 cursor-pointer'
+                                      : 'text-blue-600 hover:bg-blue-100 cursor-pointer'
+                                }`}
+                                title={
+                                  isCompleted
+                                    ? 'Atendimento finalizado - Chat inativo'
+                                    : chatStatus?.isExpiredOrClosed && !chatStatus?.isActive
+                                      ? 'Limite de 30 min atingido - Chat inativo até as 00:00'
+                                      : 'Avisar chegada / Chat'
+                                }
                               >
                                 <MessageCircle size={20} />
-                                {unread > 0 && (
+                                {unread > 0 && !isChatInactive && (
                                   <span className="absolute -top-2 -right-2 flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-[9px] font-bold text-white shadow-sm ring-1 ring-white">
                                     {unread > 9 ? '9+' : unread}
                                   </span>

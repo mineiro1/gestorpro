@@ -179,3 +179,23 @@ export async function checkDailyChatAvailability(
     message: 'A sessão de chat de hoje (30 minutos) já foi finalizada ou expirou. Por política de limite diário estrito, um novo chat poderá ser iniciado amanhã a partir das 00:00.'
   };
 }
+
+/**
+ * Verifica de forma síncrona/rápida a partir das sessões carregadas se um cliente tem chat ativo.
+ * Retorna true se houver sessão 'open' criada hoje com menos de 30 minutos decorridos.
+ */
+export function isClientChatActive(
+  sessionsForClient?: Array<{ created_at?: string; closed_at?: string | null; status?: string }> | null
+): boolean {
+  if (!sessionsForClient || sessionsForClient.length === 0) return false;
+  const nowMs = Date.now();
+  for (const sess of sessionsForClient) {
+    if (sess.status === 'open') {
+      const evaluation = evaluateSessionExpiry(sess, nowMs);
+      if (!evaluation.isExpired) {
+        return true;
+      }
+    }
+  }
+  return false;
+}

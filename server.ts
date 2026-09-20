@@ -785,7 +785,26 @@ app.all("/api/sync-payment", async (req, res) => {
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, async (payload) => {
        const newMsg = payload.new as any;
        if (newMsg.sender_type === 'client') {
-          const { data: session } = await supabaseAdmin.from('chat_sessions').select('admin_id, client_id, client_name').eq('id', newMsg.session_id).single();
+          const { data: session } = await supabaseAdmin
+            .from('chat_sessions')
+            .select('id, admin_id, client_id, client_name, status, created_at, closed_at')
+            .eq('id', newMsg.session_id)
+            .single();
+
+          if (!session || session.status === 'closed') {
+            return; // Sessão encerrada: não envia notificação push
+          }
+
+          const now = Date.now();
+          const createdMs = session.created_at ? new Date(session.created_at).getTime() : 0;
+          if (createdMs > 0 && now - createdMs > 30 * 60 * 1000) {
+            // Janela de 30 minutos já expirada: encerra no banco e não envia push
+            await supabaseAdmin.from('chat_sessions')
+              .update({ status: 'closed', closed_at: new Date().toISOString() })
+              .eq('id', session.id);
+            return;
+          }
+
           if (session && session.admin_id) {
              await sendPushToAdmin(
                session.admin_id,
@@ -802,6 +821,72 @@ app.all("/api/sync-payment", async (req, res) => {
        }
     })
     .subscribe();
+
+  /**
+   * Rotina de limpeza diária: às 00:00 (e ao iniciar),
+   * deleta todas as mensagens de chat dos dias anteriores e finaliza/remove sessões antigas.
+   */
+  async function purgeOldChatMessages() {
+    try {
+      // Início do dia civil local (meia-noite)
+      const now = new Date();
+      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+      const startOfTodayIso = startOfToday.toISOString();
+
+      console.log(`[Midnight Chat Cleaner] Executando limpeza de mensagens anteriores a ${startOfTodayIso}...`);
+
+      // Deleta mensagens gravadas antes de hoje
+      const { error: msgErr, count: msgCount } = await supabaseAdmin
+        .from('chat_messages')
+        .delete({ count: 'exact' })
+        .lt('created_at', startOfTodayIso);
+
+      if (msgErr) {
+        console.error('[Midnight Chat Cleaner] Erro ao deletar mensagens antigas:', msgErr.message);
+      } else {
+        console.log(`[Midnight Chat Cleaner] Mensagens antigas deletadas com sucesso: ${msgCount ?? 'todas anteriores'}`);
+      }
+
+      // Fecha sessões abertas anteriores a hoje
+      await supabaseAdmin
+        .from('chat_sessions')
+        .update({ status: 'closed', closed_at: startOfTodayIso })
+        .eq('status', 'open')
+        .lt('created_at', startOfTodayIso);
+
+    } catch (e: any) {
+      console.error('[Midnight Chat Cleaner] Exceção na rotina de limpeza:', e.message);
+    }
+  }
+
+  // Agenda a execução da limpeza pontualmente às 00:00:00 diariamente
+  function scheduleMidnightPurge() {
+    const now = new Date();
+    const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5, 0);
+    const msUntilMidnight = nextMidnight.getTime() - now.getTime();
+
+    console.log(`[Midnight Chat Cleaner] Próxima limpeza agendada para ${nextMidnight.toISOString()} (em ${Math.round(msUntilMidnight / 60000)} minutos).`);
+
+    setTimeout(() => {
+      purgeOldChatMessages();
+      // Repete a cada 24 horas a partir de então
+      setInterval(purgeOldChatMessages, 24 * 60 * 60 * 1000);
+    }, msUntilMidnight);
+  }
+
+  // Executa uma limpeza ao inicializar para expurgar mensagens órfãs anteriores e agenda para 00:00
+  purgeOldChatMessages();
+  scheduleMidnightPurge();
+
+  // Endpoint manual caso o admin deseje forçar a limpeza ou chamar via cron webhook
+  app.post("/api/chat/purge-midnight", async (req, res) => {
+    try {
+      await purgeOldChatMessages();
+      return res.json({ success: true, message: "Mensagens anteriores à meia-noite de hoje foram deletadas." });
+    } catch (e: any) {
+      return res.status(500).json({ error: e.message });
+    }
+  });
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
