@@ -886,13 +886,6 @@ export default function RoutesPage() {
       return;
     }
 
-    // Se nenhuma sessão foi criada hoje, pede confirmação para iniciar o atendimento de 30 min
-    if (check.canStartNewSession) {
-      if (!window.confirm(`Gostaria de iniciar o chat com o cliente ${client.name}? O atendimento terá duração de 30 minutos (limite diário).`)) {
-        return;
-      }
-    }
-
     let visitId = null;
     let visitStatus = 'agendada';
     const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
@@ -922,6 +915,35 @@ export default function RoutesPage() {
       }
     } catch(err) {
       console.error(err);
+    }
+
+    // Se nenhuma sessão foi criada hoje, pede confirmação para iniciar o atendimento de 30 min
+    if (check.canStartNewSession) {
+      if (!window.confirm(`Gostaria de iniciar o chat com o cliente ${client.name}? O atendimento terá duração de 30 minutos (limite diário).`)) {
+        return;
+      }
+
+      // CRIA A SESSÃO IMEDIATAMENTE NO SUPABASE PARA PROPAGAR A TODOS OS APARELHOS
+      try {
+        const { data: newSess, error: newSessErr } = await supabase
+          .from('chat_sessions')
+          .insert({
+            visit_id: visitId || null,
+            admin_id: adminId,
+            client_id: client.id,
+            employee_id: userProfile?.uid,
+            status: 'open',
+            created_at: new Date().toISOString()
+          }).select().single();
+
+        if (newSessErr) {
+          console.error("Erro ao registrar início do chat:", newSessErr);
+        } else if (newSess) {
+          queryClient.invalidateQueries({ queryKey: ['routeData'] });
+        }
+      } catch (sessError) {
+        console.error("Erro ao criar sessão de chat:", sessError);
+      }
     }
 
     try {
@@ -1707,22 +1729,28 @@ export default function RoutesPage() {
                                     ? 'text-gray-300 bg-gray-50 cursor-not-allowed opacity-50'
                                     : unread > 0
                                       ? 'text-green-600 bg-green-100 hover:bg-green-200 cursor-pointer'
-                                      : 'text-blue-600 hover:bg-blue-100 cursor-pointer'
+                                      : chatStatus?.isActive
+                                        ? 'text-blue-700 bg-blue-100 hover:bg-blue-200 ring-2 ring-blue-400 cursor-pointer'
+                                        : 'text-blue-600 hover:bg-blue-100 cursor-pointer'
                                 }`}
                                 title={
                                   isCompleted
                                     ? 'Atendimento finalizado - Chat inativo'
-                                    : chatStatus?.isExpiredOrClosed && !chatStatus?.isActive
-                                      ? 'Limite de 30 min atingido - Chat inativo até as 00:00'
-                                      : 'Avisar chegada / Chat'
+                                    : chatStatus?.isActive
+                                      ? 'Chat em andamento (Iniciado) - Clique para abrir'
+                                      : chatStatus?.isExpiredOrClosed
+                                        ? 'Limite de 30 min atingido - Chat inativo até as 00:00'
+                                        : 'Iniciar chat (30 min)'
                                 }
                               >
                                 <MessageCircle size={20} />
-                                {unread > 0 && !isChatInactive && (
+                                {unread > 0 && !isChatInactive ? (
                                   <span className="absolute -top-2 -right-2 flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-[9px] font-bold text-white shadow-sm ring-1 ring-white">
                                     {unread > 9 ? '9+' : unread}
                                   </span>
-                                )}
+                                ) : chatStatus?.isActive && !isChatInactive ? (
+                                  <span className="absolute -top-1 -right-1 flex h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-white animate-pulse" title="Chat em andamento" />
+                                ) : null}
                               </button>
                             );
                           })()}
