@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { X, Send, User, MessageCircle, Clock } from 'lucide-react';
+import { X, Send, User, MessageCircle, Clock, Check, CheckCheck } from 'lucide-react';
 import { MediaViewer, AudioViewer } from './chat/MediaViewer';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
@@ -202,23 +202,23 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       }
     };
 
-    // 5. Inscrição em tempo real imediata para novas mensagens e atualizações de sessões
+    // 5. Inscrição em tempo real imediata para novas mensagens e atualizações de status
     const channelName = `chat-modal-${client.id}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     channel = supabase
       .channel(channelName)
       .on('postgres_changes', {
-        event: 'INSERT',
+        event: '*',
         schema: 'public',
         table: 'chat_messages'
       }, async (payload) => {
         if (!isMounted) return;
-        const newMsg = payload.new as any;
+        const newMsg = (payload.new || payload.old) as any;
         if (!newMsg || newMsg.sender_type === 'read') return;
 
         // Verifica se a mensagem pertence a uma sessão conhecida deste cliente
         if (clientSessionIdsRef.current.has(newMsg.session_id) || newMsg.session_id === session?.id) {
           mergeMessages([newMsg]);
-          if (newMsg.sender_type === 'client') {
+          if (payload.eventType === 'INSERT' && newMsg.sender_type === 'client') {
             markClientChatAsRead(client.id, supabase);
           }
         } else {
@@ -233,7 +233,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
             if (sess && sess.client_id === client.id) {
               clientSessionIdsRef.current.add(sess.id);
               mergeMessages([newMsg]);
-              if (newMsg.sender_type === 'client') {
+              if (payload.eventType === 'INSERT' && newMsg.sender_type === 'client') {
                 markClientChatAsRead(client.id, supabase);
               }
             }
@@ -292,10 +292,12 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     
     try {
       // 1. Insert into Supabase from the client (authenticated)
+      const initialMetadata = { status: 'sending' };
       const { data: insertedMsg } = await supabase.from('chat_messages').insert({
         session_id: session.id,
         sender_type: 'tech',
-        content: text
+        content: text,
+        media_url: JSON.stringify(initialMetadata)
       }).select().single();
 
       if (insertedMsg) {
@@ -331,19 +333,24 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       const clientPhone = client.local_phone || client.phone || '';
       if (clientPhone) {
         let sentDirectly = false;
+        let externalId = '';
 
         // Disparo direto (funciona nativamente no APK Android e navegadores com suporte a fetch direto)
         if (currentSettings.useMetaApi && currentSettings.metaToken) {
           try {
-            await sendMetaMessage(clientPhone, text, currentSettings);
+            const res = await sendMetaMessage(clientPhone, text, currentSettings);
             sentDirectly = true;
+            if (res?.messages?.[0]?.id) externalId = res.messages[0].id;
+            else if (res?.id) externalId = res.id;
           } catch (metaErr) {
             console.warn('[ChatModal] Envio direto via Meta falhou, tentando fallback do backend:', metaErr);
           }
         } else if (currentSettings.useEvolutionApi && currentSettings.evolutionApiKey) {
           try {
-            await sendEvolutionMessage(clientPhone, text, currentSettings);
+            const res = await sendEvolutionMessage(clientPhone, text, currentSettings);
             sentDirectly = true;
+            if (res?.key?.id) externalId = res.key.id;
+            else if (res?.messageId) externalId = res.messageId;
           } catch (evoErr) {
             console.warn('[ChatModal] Envio direto via Evolution falhou, tentando fallback do backend:', evoErr);
           }
@@ -352,7 +359,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         // Se não foi enviado diretamente (ex: CORS no ambiente web), tenta via rota /api/chat/send
         if (!sentDirectly) {
           try {
-            await fetch('/api/chat/send', {
+            const apiRes = await fetch('/api/chat/send', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -361,9 +368,22 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
                 waSettings: currentSettings
               })
             });
+            if (apiRes.ok) {
+              const apiData = await apiRes.json().catch(() => null);
+              if (apiData?.externalId) externalId = apiData.externalId;
+            }
           } catch (apiErr) {
             console.error('[ChatModal] Erro ao enviar mensagem pelo backend:', apiErr);
           }
+        }
+
+        // Atualiza status da mensagem para 'sent' com o externalId
+        if (insertedMsg?.id) {
+          const finalMetadata = { status: 'sent', external_id: externalId || undefined };
+          await supabase
+            .from('chat_messages')
+            .update({ media_url: JSON.stringify(finalMetadata) })
+            .eq('id', insertedMsg.id);
         }
       }
     } catch (e) {
@@ -411,43 +431,77 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
               Nenhuma mensagem ainda. Use os botões abaixo para avisar o cliente.
             </div>
           ) : (
-            messages.map((msg, idx) => (
-              <div key={msg.id || idx} className={`flex ${msg.sender_type === 'tech' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[80%] rounded-2xl px-4 py-2 shadow-sm ${
-                  msg.sender_type === 'tech' 
-                    ? 'bg-blue-600 text-white rounded-br-none' 
-                    : 'bg-white text-gray-800 border border-gray-100 rounded-bl-none'
-                }`}>
-                  {msg.sender_type !== 'tech' && (
-                    <div className="text-xs font-bold text-gray-500 mb-1 flex items-center">
-                      <User size={10} className="mr-1"/> Cliente
-                    </div>
-                  )}
-                  
-                  {msg.media_url ? (
-                    (msg.media_url.includes('audio') || msg.content.includes('Áudio') || msg.media_url.includes('.ogg') || msg.media_url.includes('.mp3')) && !msg.media_url.includes('image') ? (
-                      <div>
-                        <p className="text-sm text-gray-500 mb-1">{msg.content}</p>
-                        <AudioViewer url={msg.media_url} className="max-w-[220px] md:max-w-[300px]" />
+            messages.map((msg, idx) => {
+              const parsedMedia = (() => {
+                if (!msg.media_url) return null;
+                if (typeof msg.media_url === 'string' && msg.media_url.trim().startsWith('{') && msg.media_url.trim().endsWith('}')) {
+                  try {
+                    return JSON.parse(msg.media_url);
+                  } catch (e) {}
+                }
+                return { url: msg.media_url };
+              })();
+
+              const realMediaUrl = parsedMedia?.url;
+              const deliveryStatus = parsedMedia?.status || msg.status || 'sent';
+
+              return (
+                <div key={msg.id || idx} className={`flex ${msg.sender_type === 'tech' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[80%] rounded-2xl px-4 py-2 shadow-sm ${
+                    msg.sender_type === 'tech' 
+                      ? 'bg-blue-600 text-white rounded-br-none' 
+                      : 'bg-white text-gray-800 border border-gray-100 rounded-bl-none'
+                  }`}>
+                    {msg.sender_type !== 'tech' && (
+                      <div className="text-xs font-bold text-gray-500 mb-1 flex items-center">
+                        <User size={10} className="mr-1"/> Cliente
                       </div>
+                    )}
+                    
+                    {realMediaUrl ? (
+                      (realMediaUrl.includes('audio') || msg.content.includes('Áudio') || realMediaUrl.includes('.ogg') || realMediaUrl.includes('.mp3')) && !realMediaUrl.includes('image') ? (
+                        <div>
+                          <p className="text-sm text-gray-500 mb-1">{msg.content}</p>
+                          <AudioViewer url={realMediaUrl} className="max-w-[220px] md:max-w-[300px]" />
+                        </div>
+                      ) : (
+                        <MediaViewer 
+                          url={realMediaUrl} 
+                          alt="Mídia" 
+                          onLoad={() => scrollToBottom(false)}
+                          className="max-w-full md:max-w-[300px] max-h-[300px] object-cover rounded-lg cursor-pointer hover:opacity-90" 
+                        />
+                      )
                     ) : (
-                      <MediaViewer 
-                        url={msg.media_url} 
-                        alt="Mídia" 
-                        onLoad={() => scrollToBottom(false)}
-                        className="max-w-full md:max-w-[300px] max-h-[300px] object-cover rounded-lg cursor-pointer hover:opacity-90" 
-                      />
-                    )
-                  ) : (
-                    <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
-                  )}
-                  
-                  <span className={`text-[10px] block mt-1 ${msg.sender_type === 'tech' ? 'text-blue-200 text-right' : 'text-gray-400'}`}>
-                    {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </span>
+                      <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                    )}
+                    
+                    <div className={`text-[10px] mt-1 flex items-center gap-1 ${msg.sender_type === 'tech' ? 'text-blue-200 justify-end' : 'text-gray-400 justify-start'}`}>
+                      <span>{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                      {msg.sender_type === 'tech' && (
+                        deliveryStatus === 'read' ? (
+                          <span title="Visualizada pelo cliente" className="inline-flex items-center">
+                            <CheckCheck size={14} className="text-cyan-300 ml-0.5" />
+                          </span>
+                        ) : deliveryStatus === 'delivered' ? (
+                          <span title="Entregue ao cliente" className="inline-flex items-center">
+                            <CheckCheck size={14} className="text-blue-200 opacity-90 ml-0.5" />
+                          </span>
+                        ) : deliveryStatus === 'sending' ? (
+                          <span title="Enviando..." className="inline-flex items-center">
+                            <Clock size={11} className="text-blue-200 opacity-70 ml-0.5" />
+                          </span>
+                        ) : (
+                          <span title="Enviada" className="inline-flex items-center">
+                            <Check size={14} className="text-blue-200 opacity-80 ml-0.5" />
+                          </span>
+                        )
+                      )}
+                    </div>
+                  </div>
                 </div>
-              </div>
-            ))
+              );
+            })
           )}
           <div ref={messagesEndRef} />
         </div>
