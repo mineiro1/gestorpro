@@ -4,6 +4,7 @@ import { MediaViewer, AudioViewer } from './chat/MediaViewer';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { evaluateSessionExpiry, checkDailyChatAvailability, markClientChatAsRead } from '../lib/chatSessionUtils';
+import { sendMetaMessage, sendEvolutionMessage } from '../lib/whatsapp';
 
 export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const { userProfile } = useAuth();
@@ -308,16 +309,63 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       // 2. Marca como lido no sistema
       markClientChatAsRead(client.id, supabase);
 
-      // 3. Dispatch to backend to send via Evolution (bypasses CORS)
-      await fetch('/api/chat/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text,
-          clientPhone: client.local_phone || client.phone,
-          waSettings
-        })
-      });
+      // 3. Resolve configurações de WhatsApp (inclusive para colaboradores/funcionários)
+      let currentSettings = { ...(waSettings || {}) };
+      const adminId = userProfile?.role === 'admin' ? userProfile?.uid : userProfile?.adminId;
+
+      if (adminId && (!currentSettings.metaToken && !currentSettings.evolutionApiKey)) {
+        try {
+          const { data: adminData } = await supabase
+            .from('users')
+            .select('whatsapp_settings')
+            .eq('id', adminId)
+            .single();
+          if (adminData?.whatsapp_settings) {
+            currentSettings = { ...currentSettings, ...adminData.whatsapp_settings };
+          }
+        } catch (adminErr) {
+          console.error('Erro ao buscar whatsapp_settings do administrador:', adminErr);
+        }
+      }
+
+      const clientPhone = client.local_phone || client.phone || '';
+      if (clientPhone) {
+        let sentDirectly = false;
+
+        // Disparo direto (funciona nativamente no APK Android e navegadores com suporte a fetch direto)
+        if (currentSettings.useMetaApi && currentSettings.metaToken) {
+          try {
+            await sendMetaMessage(clientPhone, text, currentSettings);
+            sentDirectly = true;
+          } catch (metaErr) {
+            console.warn('[ChatModal] Envio direto via Meta falhou, tentando fallback do backend:', metaErr);
+          }
+        } else if (currentSettings.useEvolutionApi && currentSettings.evolutionApiKey) {
+          try {
+            await sendEvolutionMessage(clientPhone, text, currentSettings);
+            sentDirectly = true;
+          } catch (evoErr) {
+            console.warn('[ChatModal] Envio direto via Evolution falhou, tentando fallback do backend:', evoErr);
+          }
+        }
+
+        // Se não foi enviado diretamente (ex: CORS no ambiente web), tenta via rota /api/chat/send
+        if (!sentDirectly) {
+          try {
+            await fetch('/api/chat/send', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                text,
+                clientPhone,
+                waSettings: currentSettings
+              })
+            });
+          } catch (apiErr) {
+            console.error('[ChatModal] Erro ao enviar mensagem pelo backend:', apiErr);
+          }
+        }
+      }
     } catch (e) {
       console.error('Error sending msg', e);
     }
