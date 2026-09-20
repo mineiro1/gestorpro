@@ -1,17 +1,51 @@
+export const getWhatsAppNumbersToTry = (phone: string): string[] => {
+  if (!phone) return [];
+  const cleanPhone = phone.replace(/\D/g, '');
+  if (!cleanPhone) return [];
+
+  let rawNumber = cleanPhone.startsWith('55') ? cleanPhone : `55${cleanPhone}`;
+  const numbers: string[] = [];
+
+  if (rawNumber.startsWith('55')) {
+    if (rawNumber.length === 13 && rawNumber[4] === '9') {
+      // 1ª opção: com o nono dígito (padrão atual)
+      numbers.push(rawNumber);
+      // 2ª opção (fallback se o primeiro falhar): sem o nono dígito (contas antigas do WhatsApp)
+      numbers.push(rawNumber.substring(0, 4) + rawNumber.substring(5));
+    } else if (rawNumber.length === 12) {
+      // 1ª opção: injeta o nono dígito
+      numbers.push(rawNumber.substring(0, 4) + '9' + rawNumber.substring(4));
+      // 2ª opção (fallback se o primeiro falhar): formato original sem o 9
+      numbers.push(rawNumber);
+    } else {
+      numbers.push(rawNumber);
+    }
+  } else {
+    numbers.push(rawNumber);
+  }
+
+  return numbers;
+};
+
+export const formatWhatsAppNumber = (phone: string): string => {
+  const numbers = getWhatsAppNumbersToTry(phone);
+  return numbers.length > 0 ? numbers[0] : '';
+};
+
 export const openWhatsApp = (phone: string, text: string = "") => {
   if (!phone) return;
-  const cleanPhone = phone.replace(/\D/g, '');
+  const targetNumber = formatWhatsAppNumber(phone);
   const encodedMessage = encodeURIComponent(text);
   
   if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
-    const mobileUrl = `whatsapp://send?phone=55${cleanPhone}&text=${encodedMessage}`;
+    const mobileUrl = `whatsapp://send?phone=${targetNumber}&text=${encodedMessage}`;
     window.location.href = mobileUrl;
     setTimeout(() => {
-      const webUrl = `https://wa.me/55${cleanPhone}?text=${encodedMessage}`;
+      const webUrl = `https://wa.me/${targetNumber}?text=${encodedMessage}`;
       window.open(webUrl, '_blank');
     }, 500);
   } else {
-    const webUrl = `https://wa.me/55${cleanPhone}?text=${encodedMessage}`;
+    const webUrl = `https://wa.me/${targetNumber}?text=${encodedMessage}`;
     window.open(webUrl, '_blank');
   }
 };
@@ -21,27 +55,9 @@ export const sendEvolutionMessage = async (phone: string, text: string, waSettin
     throw new Error("Credenciais da Evolution API incompletas nas configurações.");
   }
   
-  const cleanPhone = phone.replace(/\D/g, '');
-  let originalNumber = cleanPhone.startsWith('55') ? cleanPhone : `55${cleanPhone}`;
-  
-  let numbersToTry = [originalNumber];
-  if (originalNumber.length >= 12 && originalNumber.startsWith('55')) {
-    const ddd = parseInt(originalNumber.substring(2, 4), 10);
-    if (ddd <= 28) {
-      // DDD <= 28: WhatsApp exige o 9º dígito obrigatoriamente.
-      // Se tiver 12 caracteres (falta o 9), nós injetamos o 9 automaticamente.
-      if (originalNumber.length === 12) {
-        originalNumber = originalNumber.substring(0, 4) + '9' + originalNumber.substring(4);
-        numbersToTry = [originalNumber]; // Tenta apenas com o 9
-      }
-    } else {
-      // DDD > 28: Fazemos o duplo disparo
-      if (originalNumber.length === 13 && originalNumber[4] === '9') {
-        numbersToTry.push(originalNumber.substring(0, 4) + originalNumber.substring(5));
-      } else if (originalNumber.length === 12) {
-        numbersToTry.push(originalNumber.substring(0, 4) + '9' + originalNumber.substring(4));
-      }
-    }
+  const numbersToTry = getWhatsAppNumbersToTry(phone);
+  if (numbersToTry.length === 0) {
+    throw new Error("Número de telefone inválido.");
   }
 
   let baseUrl = waSettings.evolutionApiUrl.trim().replace(/\/$/, '');
@@ -50,41 +66,47 @@ export const sendEvolutionMessage = async (phone: string, text: string, waSettin
   }
   const url = `${baseUrl}/message/sendText/${waSettings.evolutionInstanceName}`;
   
-  let lastResponse;
-  for (const num of numbersToTry) {
-      try {
-        lastResponse = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'apikey': waSettings.evolutionApiKey
-          },
-          body: JSON.stringify({
-            number: num,
-            text: text,
-            textMessage: { text: text },
-            options: { delay: 1000, presence: "composing" }
-          })
-        });
-      } catch (e: any) {
-        if (e.message === 'Failed to fetch') {
-          throw new Error(`Falha de conexão. Verifique se o seu servidor Evolution API (${baseUrl}) possui o CORS habilitado. O navegador bloqueou a requisição (Failed to fetch).`);
-        }
-        throw e;
-      }
-  }
-  
-  if (!lastResponse || !lastResponse.ok) {
-    let errDesc = 'Desconhecido';
+  let lastError: any = null;
+  let lastResponse: any = null;
+
+  for (let i = 0; i < numbersToTry.length; i++) {
+    const targetNumber = numbersToTry[i];
     try {
-      if (lastResponse) {
-          const errData = await lastResponse.json();
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': waSettings.evolutionApiKey
+        },
+        body: JSON.stringify({
+          number: targetNumber,
+          text: text,
+          textMessage: { text: text },
+          options: { delay: 1000, presence: "composing" }
+        })
+      });
+
+      if (response.ok) {
+        // Envio bem-sucedido na primeira tentativa! Retorna imediatamente sem duplicar
+        return await response.json();
+      } else {
+        lastResponse = response;
+        let errDesc = 'Desconhecido';
+        try {
+          const errData = await response.json();
           errDesc = JSON.stringify(errData);
+        } catch(e) {}
+        lastError = new Error(`Erro na Evolution API (${response.status}): ${errDesc}`);
       }
-    } catch(e) {}
-    throw new Error(`Erro na Evolution API (${lastResponse ? lastResponse.status : 'Network'}): ${errDesc}`);
+    } catch (e: any) {
+      if (e.message === 'Failed to fetch') {
+        throw new Error(`Falha de conexão. Verifique se o seu servidor Evolution API (${baseUrl}) possui o CORS habilitado. O navegador bloqueou a requisição (Failed to fetch).`);
+      }
+      lastError = e;
+    }
   }
-  return await lastResponse.json();
+
+  throw lastError || new Error("Falha ao enviar mensagem via Evolution API.");
 };
 
 export const sendMetaMessage = async (phone: string, text: string, waSettings: any) => {
@@ -92,8 +114,10 @@ export const sendMetaMessage = async (phone: string, text: string, waSettings: a
     throw new Error("O Token/Key da API Oficial (Meta) é obrigatório.");
   }
   
-  const cleanPhone = phone.replace(/\D/g, '');
-  let originalNumber = cleanPhone.startsWith('55') ? cleanPhone : `55${cleanPhone}`;
+  const numbersToTry = getWhatsAppNumbersToTry(phone);
+  if (numbersToTry.length === 0) {
+    throw new Error("Número de telefone inválido.");
+  }
   
   let baseUrl = (waSettings.metaServerUrl || 'https://graph.facebook.com/v19.0').trim().replace(/\/$/, '');
   if (baseUrl && !baseUrl.startsWith('http')) {
@@ -101,90 +125,84 @@ export const sendMetaMessage = async (phone: string, text: string, waSettings: a
   }
   const isWame = baseUrl && !baseUrl.includes('graph.facebook.com');
 
-  let numbersToTry = [originalNumber];
-  if (isWame && originalNumber.length >= 12 && originalNumber.startsWith('55')) {
-    const ddd = parseInt(originalNumber.substring(2, 4), 10);
-    if (ddd > 28) {
-      if (originalNumber.length === 13 && originalNumber[4] === '9') {
-        numbersToTry.push(originalNumber.substring(0, 4) + originalNumber.substring(5));
-      } else if (originalNumber.length === 12) {
-        numbersToTry.push(originalNumber.substring(0, 4) + '9' + originalNumber.substring(4));
+  let lastError: any = null;
+
+  for (let i = 0; i < numbersToTry.length; i++) {
+    const targetNumber = numbersToTry[i];
+
+    if (isWame) {
+      const url = `${baseUrl}/${waSettings.metaToken}/message/text`;
+      const headers = { 'Content-Type': 'application/json' };
+      
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ to: targetNumber, text: text })
+        });
+
+        if (response.ok) {
+          // Sucesso! Retorna imediatamente sem duplicar
+          return await response.json();
+        }
+
+        let errDesc = 'Desconhecido';
+        try {
+          const errData = await response.json();
+          errDesc = errData.message || errData.error?.message || JSON.stringify(errData);
+        } catch(e) {}
+        lastError = new Error(`Erro na API WAME (${response.status}): ${errDesc}`);
+      } catch (e: any) {
+        if (e.message === 'Failed to fetch') {
+          throw new Error('Falha de conexão com a API WAME. (Failed to fetch)');
+        }
+        lastError = e;
+      }
+    } else {
+      const phoneId = waSettings.metaPhoneNumberId ? `/${waSettings.metaPhoneNumberId}` : '';
+      const url = `${baseUrl}${phoneId}/messages`;
+      const headers = {
+        'Authorization': `Bearer ${waSettings.metaToken}`,
+        'Content-Type': 'application/json'
+      };
+      const body = JSON.stringify({
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        to: targetNumber,
+        type: "text",
+        text: { preview_url: false, body: text }
+      });
+      
+      try {
+        const response = await fetch(url, { method: 'POST', headers, body });
+
+        if (response.ok) {
+          // Sucesso! Retorna imediatamente sem duplicar
+          return await response.json();
+        }
+
+        let errDesc = 'Desconhecido';
+        try {
+          const errData = await response.json();
+          errDesc = errData.message || errData.error?.message || JSON.stringify(errData);
+        } catch(e) {}
+        
+        if (response.status === 409 || errDesc.includes('24h') || errDesc.includes('Janela')) {
+          throw new Error("Janela de 24h fechada. A Meta (WhatsApp) bloqueou esta mensagem. Para iniciar a conversa, o cliente deve te enviar uma mensagem primeiro ou você deve usar Templates aprovados.");
+        }
+        lastError = new Error(`Erro na API Meta (${response.status}): ${errDesc}`);
+      } catch (e: any) {
+        if (e.message === 'Failed to fetch') {
+          throw new Error('Falha de conexão com a API da Meta. (Failed to fetch)');
+        }
+        lastError = e;
       }
     }
   }
 
-  if (isWame) {
-     const url = `${baseUrl}/${waSettings.metaToken}/message/text`;
-     const headers = { 'Content-Type': 'application/json' };
-     
-     let lastResponse;
-     for (const num of numbersToTry) {
-        try {
-           lastResponse = await fetch(url, {
-              method: 'POST',
-              headers,
-              body: JSON.stringify({ to: num, text: text })
-           });
-        } catch (e: any) {
-           if (e.message === 'Failed to fetch') {
-             throw new Error('Falha de conexão com a API WAME. (Failed to fetch)');
-           }
-           throw e;
-        }
-     }
-     
-     if (!lastResponse || !lastResponse.ok) {
-        let errDesc = 'Desconhecido';
-        try {
-          if (lastResponse) {
-             const errData = await lastResponse.json();
-             errDesc = errData.message || errData.error?.message || JSON.stringify(errData);
-          }
-        } catch(e) {}
-        throw new Error(`Erro na API WAME (${lastResponse ? lastResponse.status : 'Network'}): ${errDesc}`);
-     }
-     return await lastResponse.json();
-  } else {
-     const number = originalNumber; // Meta usa o que foi digitado? Ou tira o 9? Para Meta é melhor usar original
-     const phoneId = waSettings.metaPhoneNumberId ? `/${waSettings.metaPhoneNumberId}` : '';
-     const url = `${baseUrl}${phoneId}/messages`;
-     const headers = {
-        'Authorization': `Bearer ${waSettings.metaToken}`,
-        'Content-Type': 'application/json'
-     };
-     const body = JSON.stringify({
-        messaging_product: "whatsapp",
-        recipient_type: "individual",
-        to: number,
-        type: "text",
-        text: { preview_url: false, body: text }
-     });
-     
-     let response;
-     try {
-       response = await fetch(url, { method: 'POST', headers, body });
-     } catch (e: any) {
-       if (e.message === 'Failed to fetch') {
-         throw new Error('Falha de conexão com a API da Meta. (Failed to fetch)');
-       }
-       throw e;
-     }
-     
-     if (!response.ok) {
-       let errDesc = 'Desconhecido';
-       try {
-         const errData = await response.json();
-         errDesc = errData.message || errData.error?.message || JSON.stringify(errData);
-       } catch(e) {}
-       
-       if (response.status === 409 || errDesc.includes('24h') || errDesc.includes('Janela')) {
-           throw new Error("Janela de 24h fechada. A Meta (WhatsApp) bloqueou esta mensagem. Para iniciar a conversa, o cliente deve te enviar uma mensagem primeiro ou você deve usar Templates aprovados.");
-       }
-       throw new Error(`Erro na API Meta (${response.status}): ${errDesc}`);
-     }
-     return await response.json();
-  }
+  throw lastError || new Error("Falha ao enviar mensagem via API Meta/WAME.");
 };
+
 export const normalizePhoneNumber = (phone: string) => {
   if (!phone) return phone;
   const digits = phone.replace(/\D/g, '');

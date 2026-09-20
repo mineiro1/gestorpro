@@ -203,69 +203,88 @@ async function processPayment(paymentId, adminId) {
       const { text, clientPhone, waSettings } = req.body;
       if (!text || !clientPhone) return res.status(400).json({error: "Missing fields"});
 
+      const cleanDigits = clientPhone.replace(/\D/g, '');
+      let rawNumber = cleanDigits.startsWith('55') ? cleanDigits : `55${cleanDigits}`;
+      const numbersToTry: string[] = [];
+
+      if (rawNumber.startsWith('55')) {
+        if (rawNumber.length === 13 && rawNumber[4] === '9') {
+          numbersToTry.push(rawNumber);
+          numbersToTry.push(rawNumber.substring(0, 4) + rawNumber.substring(5));
+        } else if (rawNumber.length === 12) {
+          numbersToTry.push(rawNumber.substring(0, 4) + '9' + rawNumber.substring(4));
+          numbersToTry.push(rawNumber);
+        } else {
+          numbersToTry.push(rawNumber);
+        }
+      } else {
+        numbersToTry.push(rawNumber);
+      }
+
       // Now send via Evolution API
       if (waSettings?.useEvolutionApi && waSettings?.evolutionApiUrl && waSettings?.evolutionApiKey && waSettings?.evolutionInstanceName) {
-        const cleanPhone = clientPhone.replace(/\D/g, '');
-        const response = await fetch(`${waSettings.evolutionApiUrl}/message/sendText/${waSettings.evolutionInstanceName}`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'apikey': waSettings.evolutionApiKey
-          },
-          body: JSON.stringify({
-            number: `55${cleanPhone}`,
-            text: text,
-            options: { delay: 1200, presence: 'composing' },
-            textMessage: { text: text }
-          })
-        });
-        if (!response.ok) {
-           const errText = await response.text();
-           console.error("Evolution Send Error:", errText);
+        let sent = false;
+        for (const targetNumber of numbersToTry) {
+          const response = await fetch(`${waSettings.evolutionApiUrl}/message/sendText/${waSettings.evolutionInstanceName}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'apikey': waSettings.evolutionApiKey
+            },
+            body: JSON.stringify({
+              number: targetNumber,
+              text: text,
+              options: { delay: 1000, presence: 'composing' },
+              textMessage: { text: text }
+            })
+          });
+          if (response.ok) {
+            sent = true;
+            break; // Retorna imediatamente no primeiro sucesso
+          }
         }
       } else if (waSettings?.useMetaApi) {
         if (!waSettings.metaToken) throw new Error("Token Meta obrigatório");
         
-        const cleanPhone = clientPhone.replace(/\D/g, '');
-        const number = cleanPhone.startsWith('55') ? cleanPhone : `55${cleanPhone}`;
-        
         let baseUrl = (waSettings.metaServerUrl || 'https://graph.facebook.com/v19.0').trim().replace(/\/$/, '');
-        if (baseUrl && !baseUrl.startsWith('http')) {
+        if (!baseUrl.startsWith('http')) {
           baseUrl = 'https://' + baseUrl;
         }
         const isWame = baseUrl && !baseUrl.includes('graph.facebook.com');
         
-        let url, headers, body;
-        if (isWame) {
-           url = `${baseUrl}/${waSettings.metaToken}/message/text`;
-           headers = { 'Content-Type': 'application/json' };
-           body = JSON.stringify({ to: number, text: text });
-        } else {
-           const phoneId = waSettings.metaPhoneNumberId ? `/${waSettings.metaPhoneNumberId}` : '';
-           url = `${baseUrl}${phoneId}/messages`;
-           headers = {
-              'Authorization': `Bearer ${waSettings.metaToken}`,
-              'Content-Type': 'application/json'
-           };
-           body = JSON.stringify({
-              messaging_product: "whatsapp",
-              recipient_type: "individual",
-              to: number,
-              type: "text",
-              text: { preview_url: false, body: text }
-           });
-        }
-        
-        const response = await fetch(url, { method: 'POST', headers, body });
-        if (!response.ok) {
-           const errText = await response.text();
-           console.error("Meta/Wame Send Error:", errText);
-           return res.status(500).json({ error: "Erro na API Meta/WAME", details: errText });
+        let sent = false;
+        for (const targetNumber of numbersToTry) {
+          let url, headers, body;
+          if (isWame) {
+             url = `${baseUrl}/${waSettings.metaToken}/message/text`;
+             headers = { 'Content-Type': 'application/json' };
+             body = JSON.stringify({ to: targetNumber, text: text });
+          } else {
+             const phoneId = waSettings.metaPhoneNumberId ? `/${waSettings.metaPhoneNumberId}` : '';
+             url = `${baseUrl}${phoneId}/messages`;
+             headers = {
+                'Authorization': `Bearer ${waSettings.metaToken}`,
+                'Content-Type': 'application/json'
+             };
+             body = JSON.stringify({
+                messaging_product: "whatsapp",
+                recipient_type: "individual",
+                to: targetNumber,
+                type: "text",
+                text: { preview_url: false, body: text }
+             });
+          }
+          
+          const response = await fetch(url, { method: 'POST', headers, body });
+          if (response.ok) {
+            sent = true;
+            break; // Retorna imediatamente no primeiro sucesso
+          }
         }
       }
       
       res.json({ success: true });
-    } catch(e) {
+    } catch(e: any) {
       console.error(e);
       res.status(500).json({ error: e.message });
     }
