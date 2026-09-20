@@ -101,35 +101,22 @@ export default async function handler(req, res) {
       
     let activeSession = sessions && sessions.length > 0 ? sessions[0] : null;
     
-    // Auto-close if older than 30 mins, or if no session exists, create a new one!
-    const now = new Date().getTime();
-    if (activeSession) {
-       const createdTime = new Date(activeSession.created_at).getTime();
-       if (now - createdTime > 30 * 60 * 1000) {
-          await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
-          activeSession = null;
-       }
-    }
-
+    // If no active session, ignore message (rule: admin/collaborator must initiate chat)
     if (!activeSession) {
-       // Auto-create a session so we don't lose the incoming message
-       const { data: newSession, error: newSessionError } = await supabaseAdmin
-         .from('chat_sessions')
-         .insert({
-            client_id: matchedClient.id,
-            admin_id: matchedClient.admin_id,
-            employee_id: matchedClient.admin_id, // Defaulting to admin since we don't know which employee
-            status: 'open'
-         }).select().single();
-         
-       if (newSessionError) {
-          console.error("Failed to create new session:", newSessionError);
-          return res.status(200).send("OK");
-       }
-       activeSession = newSession;
+       console.log("No active chat session initiated by collaborator/admin for client:", matchedClient.id);
+       return res.status(200).send("OK");
     }
 
-    // Save the message
+    // Auto-close if older than 30 mins
+    const now = new Date().getTime();
+    const createdTime = new Date(activeSession.created_at).getTime();
+    if (now - createdTime > 30 * 60 * 1000) {
+       await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
+       console.log("Chat session expired (>30m). Discarding message for client:", matchedClient.id);
+       return res.status(200).send("OK");
+    }
+
+    // Save the message only if session is actively open
     const { error: insertError } = await supabaseAdmin.from('chat_messages').insert({
        session_id: activeSession.id,
        sender_type: 'client',

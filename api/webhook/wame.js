@@ -266,16 +266,19 @@ export default async function handler(req, res) {
       
     let activeSession = sessions && sessions.length > 0 ? sessions[0] : null;
     
+    // Regra Estrita: A mensagem não deve ser processada se colaborador/admin não iniciou o chat
     if (!activeSession) {
-       const { data: newSession } = await supabaseAdmin
-         .from('chat_sessions')
-         .insert({
-            client_id: matchedClient.id,
-            admin_id: matchedClient.admin_id,
-            employee_id: matchedClient.admin_id,
-            status: 'open'
-         }).select().single();
-       activeSession = newSession;
+       console.log("Nenhuma sessão ativa aberta por colaborador/admin para o cliente:", matchedClient.id);
+       return res.status(200).send("EVENT_RECEIVED");
+    }
+
+    // Verifica se a sessão passou dos 30 minutos
+    const now = new Date().getTime();
+    const createdTime = new Date(activeSession.created_at).getTime();
+    if (now - createdTime > 30 * 60 * 1000) {
+       await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
+       console.log("Sessão expirada (>30m). Descartando mensagem para o cliente:", matchedClient.id);
+       return res.status(200).send("EVENT_RECEIVED");
     }
     
     // Fetch mediaUrl immediately to bypass CORS and get the base64 for the frontend (Global catch-all)

@@ -524,8 +524,8 @@ export default function RoutesPage() {
             // Se a visita já estiver finalizada para este cliente, não incrementa bolinha verde de não lidas
             if (completedVisitsOnRouteDate.has(cid)) return;
 
-            // Se a sessão estiver fechada ou os 30 minutos tiverem expirado, não incrementa bolinha verde de não lidas
-            if (session.status === 'closed') return;
+            // Se o colaborador/admin NÃO iniciou o chat, ou a sessão não estiver 'open', ou expirada, não incrementa
+            if (session.status !== 'open') return;
             const exp = evaluateSessionExpiry(session);
             if (exp.isExpired) return;
 

@@ -326,8 +326,8 @@ export default function Layout() {
                 .eq('id', payload.new.session_id)
                 .single();
 
-              // Se a sessão estiver encerrada ou expirada (passou dos 30 minutos), não emite notificação nem som
-              if (!sessionData || sessionData.status === 'closed') {
+              // Se o colaborador/admin NÃO iniciou o chat, ou a sessão não estiver 'open', ou expirou, NÃO emite notificação nem som
+              if (!sessionData || sessionData.status !== 'open') {
                 return;
               }
               const expiry = evaluateSessionExpiry(sessionData);
