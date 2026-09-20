@@ -272,8 +272,8 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       }
     };
 
-    // Polling ativo a cada 3 segundos para sincronizar confirmações de entrega/leitura do WhatsApp
-    const syncStatusInterval = setInterval(async () => {
+    // Polling ativo a cada 2 segundos para sincronizar confirmações de entrega/leitura do WhatsApp
+    const runSyncStatus = async () => {
       if (!isMounted || clientSessionIdsRef.current.size === 0) return;
       try {
         const { data: currentMsgs } = await supabase
@@ -289,7 +289,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
             if (m.sender_type !== 'tech') return false;
             let status = 'sent';
             try {
-              const meta = JSON.parse(m.media_url);
+              const meta = typeof m.media_url === 'string' && m.media_url.startsWith('{') ? JSON.parse(m.media_url) : {};
               status = meta.status || 'sent';
             } catch(e) {}
             return status !== 'read';
@@ -318,7 +318,14 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
           }
         }
       } catch (e) {}
-    }, 3000);
+    };
+
+    // Executa sincronização inicial após carregamento
+    setTimeout(() => {
+      runSyncStatus();
+    }, 500);
+
+    const syncStatusInterval = setInterval(runSyncStatus, 2000);
 
     window.addEventListener('focus', handleVisibilityOrFocus);
     document.addEventListener('visibilitychange', handleVisibilityOrFocus);
@@ -389,7 +396,9 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
           try {
             const res = await sendMetaMessage(clientPhone, text, currentSettings);
             sentDirectly = true;
-            if (res?.messages?.[0]?.id) externalId = res.messages[0].id;
+            if (res?.key?.id) externalId = res.key.id;
+            else if (res?.data?.key?.id) externalId = res.data.key.id;
+            else if (res?.messages?.[0]?.id) externalId = res.messages[0].id;
             else if (res?.id) externalId = res.id;
           } catch (metaErr) {
             console.warn('[ChatModal] Envio direto via Meta falhou, tentando fallback do backend:', metaErr);

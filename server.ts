@@ -288,6 +288,7 @@ async function processPayment(paymentId, adminId) {
             try {
               const metaData = await response.json();
               if (metaData?.key?.id) externalId = metaData.key.id;
+              else if (metaData?.data?.key?.id) externalId = metaData.data.key.id;
               else if (metaData?.messages?.[0]?.id) externalId = metaData.messages[0].id;
               else if (metaData?.id) externalId = metaData.id;
             } catch (e) {}
@@ -305,9 +306,21 @@ async function processPayment(paymentId, adminId) {
 
   app.post("/api/chat/sync-status", async (req, res) => {
     try {
-      const { messageIds, waSettings } = req.body;
+      let { messageIds, waSettings } = req.body;
       if (!Array.isArray(messageIds) || messageIds.length === 0) {
         return res.json({ updated: 0 });
+      }
+
+      // Se waSettings não veio ou está vazio (ex: usuário colaborador), buscar as configurações do admin no banco
+      if (!waSettings?.metaToken && !waSettings?.evolutionApiKey) {
+        const { data: adminUsers } = await supabaseAdmin
+          .from('users')
+          .select('whatsapp_settings')
+          .not('whatsapp_settings', 'is', null);
+        const validAdmin = adminUsers?.find(u => u.whatsapp_settings?.metaToken || u.whatsapp_settings?.evolutionApiKey);
+        if (validAdmin?.whatsapp_settings) {
+          waSettings = validAdmin.whatsapp_settings;
+        }
       }
 
       const { data: msgs } = await supabaseAdmin
@@ -331,7 +344,7 @@ async function processPayment(paymentId, adminId) {
         const externalId = meta.external_id;
         let remoteStatus: 'sent' | 'delivered' | 'read' | null = null;
 
-        // Check with WAME API
+        // 1. Consulta na API WAME
         if (waSettings?.useMetaApi && waSettings?.metaToken) {
           let baseUrl = (waSettings.metaServerUrl || 'https://graph.facebook.com/v19.0').trim().replace(/\/$/, '');
           if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
@@ -343,18 +356,24 @@ async function processPayment(paymentId, adminId) {
               const checkRes = await fetch(checkUrl);
               if (checkRes.ok) {
                 const msgDetails = await checkRes.json();
-                const rawStatus = msgDetails?.status ?? msgDetails?.update?.status ?? msgDetails?.ack;
-                const str = String(rawStatus || '').toUpperCase();
-                if (str === '4' || str === '5' || str === 'READ' || str === 'PLAYED' || str === 'READ_RECEIPT') {
+                const label = String(msgDetails?.data?.statusLabel || msgDetails?.statusLabel || '').toLowerCase().trim();
+                const numStatus = msgDetails?.data?.status ?? msgDetails?.update?.status;
+                const ack = msgDetails?.data?.ack ?? msgDetails?.ack;
+
+                if (label === 'read' || label === 'played' || label === 'viewed' || numStatus === 4 || numStatus === 5 || ack === 4 || ack === 5) {
                   remoteStatus = 'read';
-                } else if (str === '3' || str === 'DELIVERY_ACK' || str === 'DELIVERED') {
+                } else if (label === 'delivered' || numStatus === 3 || ack === 3) {
                   remoteStatus = 'delivered';
+                } else if (label === 'sent' || numStatus === 2 || ack === 2) {
+                  remoteStatus = 'sent';
                 }
               }
-            } catch(e) {}
+            } catch(e) {
+              console.error("Erro ao sincronizar status WAME:", e);
+            }
           }
         } else if (waSettings?.useEvolutionApi && waSettings?.evolutionApiUrl && waSettings?.evolutionApiKey && waSettings?.evolutionInstanceName) {
-          // Check with Evolution API
+          // 2. Consulta na Evolution API
           try {
             let baseUrl = waSettings.evolutionApiUrl.trim().replace(/\/$/, '');
             if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
@@ -384,7 +403,9 @@ async function processPayment(paymentId, adminId) {
                 remoteStatus = 'delivered';
               }
             }
-          } catch(e) {}
+          } catch(e) {
+            console.error("Erro ao sincronizar status Evolution:", e);
+          }
         }
 
         if (remoteStatus && remoteStatus !== meta.status) {
@@ -407,7 +428,6 @@ async function processPayment(paymentId, adminId) {
       res.status(500).json({ error: e.message });
     }
   });
-
 
   // Helper to extract message status updates across Meta, WAME and Evolution formats
   function extractStatusUpdates(body: any): Array<{ id: string; status: 'sent' | 'delivered' | 'read' }> {
