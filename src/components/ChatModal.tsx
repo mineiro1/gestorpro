@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { X, Send, User, MessageCircle, Clock, Check, CheckCheck } from 'lucide-react';
 import { MediaViewer, AudioViewer } from './chat/MediaViewer';
+import { MessageStatus, parseMessageStatus } from './chat/MessageStatus';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { evaluateSessionExpiry, checkDailyChatAvailability, markClientChatAsRead } from '../lib/chatSessionUtils';
@@ -507,18 +508,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
               })();
 
               const realMediaUrl = parsedMedia?.url;
-              
-              // Se o cliente já enviou alguma mensagem posterior no chat, esta mensagem foi visualizada
-              const hasClientReplyAfter = messages.some(
-                (other) =>
-                  other.sender_type === 'client' &&
-                  new Date(other.created_at).getTime() >= new Date(msg.created_at).getTime()
-              );
-
-              let deliveryStatus = parsedMedia?.status || msg.status || 'sent';
-              if (hasClientReplyAfter) {
-                deliveryStatus = 'read';
-              }
+              const deliveryStatus = parseMessageStatus(msg, messages);
 
               return (
                 <div key={msg.id || idx} className={`flex ${msg.sender_type === 'tech' ? 'justify-end' : 'justify-start'}`}>
@@ -554,23 +544,11 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
                     <div className={`text-[10px] mt-1 flex items-center gap-1 ${msg.sender_type === 'tech' ? 'text-blue-100 justify-end' : 'text-gray-400 justify-start'}`}>
                       <span>{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                       {msg.sender_type === 'tech' && (
-                        deliveryStatus === 'read' ? (
-                          <span title="Visualizada pelo cliente" className="inline-flex items-center">
-                            <CheckCheck size={15} className="text-[#53bdeb] font-bold ml-0.5" />
-                          </span>
-                        ) : deliveryStatus === 'delivered' ? (
-                          <span title="Entregue ao cliente" className="inline-flex items-center">
-                            <CheckCheck size={15} className="text-white/80 ml-0.5" />
-                          </span>
-                        ) : deliveryStatus === 'sending' ? (
-                          <span title="Enviando..." className="inline-flex items-center">
-                            <Clock size={12} className="text-white/60 ml-0.5" />
-                          </span>
-                        ) : (
-                          <span title="Enviada" className="inline-flex items-center">
-                            <Check size={15} className="text-white/70 ml-0.5" />
-                          </span>
-                        )
+                        <MessageStatus
+                          status={deliveryStatus}
+                          size={15}
+                          isBubbleOnPrimary={true}
+                        />
                       )}
                     </div>
                   </div>
