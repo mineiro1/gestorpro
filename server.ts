@@ -334,12 +334,18 @@ async function processPayment(paymentId, adminId) {
       }
 
       let updatedCount = 0;
+      const statusMap: Record<string, string> = {};
 
       for (const msg of msgs) {
         let meta: any = {};
         try { meta = JSON.parse(msg.media_url); } catch(e) {}
         
-        if (meta.status === 'read' || !meta.external_id) continue;
+        if (meta.status === 'read' || !meta.external_id) {
+          if (meta.status === 'read') {
+            statusMap[msg.id] = 'read';
+          }
+          continue;
+        }
 
         const externalId = meta.external_id;
         let remoteStatus: 'sent' | 'delivered' | 'read' | null = null;
@@ -356,9 +362,9 @@ async function processPayment(paymentId, adminId) {
               const checkRes = await fetch(checkUrl);
               if (checkRes.ok) {
                 const msgDetails = await checkRes.json();
-                const label = String(msgDetails?.data?.statusLabel || msgDetails?.statusLabel || '').toLowerCase().trim();
-                const numStatus = msgDetails?.data?.status ?? msgDetails?.update?.status;
-                const ack = msgDetails?.data?.ack ?? msgDetails?.ack;
+                const label = String(msgDetails?.data?.statusLabel || msgDetails?.statusLabel || msgDetails?.data?.status_label || '').toLowerCase().trim();
+                const numStatus = msgDetails?.data?.status ?? msgDetails?.status ?? msgDetails?.update?.status;
+                const ack = msgDetails?.data?.ack ?? msgDetails?.ack ?? msgDetails?.update?.ack;
 
                 if (label === 'read' || label === 'played' || label === 'viewed' || numStatus === 4 || numStatus === 5 || ack === 4 || ack === 5) {
                   remoteStatus = 'read';
@@ -408,22 +414,25 @@ async function processPayment(paymentId, adminId) {
           }
         }
 
-        if (remoteStatus && remoteStatus !== meta.status) {
-          await supabaseAdmin
-            .from('chat_messages')
-            .update({
-              media_url: JSON.stringify({
-                ...meta,
-                status: remoteStatus,
-                status_updated_at: new Date().toISOString()
+        if (remoteStatus) {
+          statusMap[msg.id] = remoteStatus;
+          if (remoteStatus !== meta.status) {
+            await supabaseAdmin
+              .from('chat_messages')
+              .update({
+                media_url: JSON.stringify({
+                  ...meta,
+                  status: remoteStatus,
+                  status_updated_at: new Date().toISOString()
+                })
               })
-            })
-            .eq('id', msg.id);
-          updatedCount++;
+              .eq('id', msg.id);
+            updatedCount++;
+          }
         }
       }
 
-      res.json({ updated: updatedCount });
+      res.json({ updated: updatedCount, statusMap });
     } catch(e: any) {
       res.status(500).json({ error: e.message });
     }

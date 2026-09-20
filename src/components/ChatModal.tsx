@@ -18,6 +18,8 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const clientSessionIdsRef = useRef<Set<string>>(new Set());
   const isInitialScrollDoneRef = useRef(false);
+  const messagesRef = useRef<any[]>(messages);
+  messagesRef.current = messages;
 
   const scrollToBottom = useCallback((smooth = true) => {
     if (messagesContainerRef.current) {
@@ -274,46 +276,50 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
 
     // Polling ativo a cada 2 segundos para sincronizar confirmações de entrega/leitura do WhatsApp
     const runSyncStatus = async () => {
-      if (!isMounted || clientSessionIdsRef.current.size === 0) return;
+      if (!isMounted) return;
       try {
-        const { data: currentMsgs } = await supabase
-          .from('chat_messages')
-          .select('*')
-          .in('session_id', Array.from(clientSessionIdsRef.current))
-          .order('created_at', { ascending: true });
+        // Obter mensagens que ainda não foram marcadas como 'read'
+        const currentMsgs = messagesRef.current || [];
+        const currentTechMsgs = currentMsgs.filter((m) => {
+          if (m.sender_type !== 'tech') return false;
+          let status = 'sent';
+          try {
+            const meta = typeof m.media_url === 'string' && m.media_url.startsWith('{') ? JSON.parse(m.media_url) : {};
+            status = meta.status || m.status || 'sent';
+          } catch(e) {}
+          return status !== 'read';
+        });
 
-        if (currentMsgs && currentMsgs.length > 0) {
-          if (isMounted) mergeMessages(currentMsgs);
-
-          const unreadTechMsgs = currentMsgs.filter((m) => {
-            if (m.sender_type !== 'tech') return false;
-            let status = 'sent';
-            try {
-              const meta = typeof m.media_url === 'string' && m.media_url.startsWith('{') ? JSON.parse(m.media_url) : {};
-              status = meta.status || 'sent';
-            } catch(e) {}
-            return status !== 'read';
+        if (currentTechMsgs.length > 0) {
+          const msgIds = currentTechMsgs.map((m) => m.id).filter(Boolean);
+          const syncRes = await fetch('/api/chat/sync-status', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messageIds: msgIds, waSettings })
           });
 
-          if (unreadTechMsgs.length > 0) {
-            const msgIds = unreadTechMsgs.map((m) => m.id);
-            const syncRes = await fetch('/api/chat/sync-status', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ messageIds: msgIds, waSettings })
-            });
-            if (syncRes.ok) {
-              const resData = await syncRes.json();
-              if (resData.updated > 0) {
-                const { data: updatedMsgs } = await supabase
-                  .from('chat_messages')
-                  .select('*')
-                  .in('session_id', Array.from(clientSessionIdsRef.current))
-                  .order('created_at', { ascending: true });
-                if (isMounted && updatedMsgs) {
-                  mergeMessages(updatedMsgs);
-                }
-              }
+          if (syncRes.ok) {
+            const resData = await syncRes.json();
+            if (resData?.statusMap && Object.keys(resData.statusMap).length > 0) {
+              setMessages((prev) =>
+                prev.map((m) => {
+                  const newStatus = resData.statusMap[m.id];
+                  if (newStatus) {
+                    let meta: any = {};
+                    try {
+                      meta = typeof m.media_url === 'string' && m.media_url.startsWith('{') ? JSON.parse(m.media_url) : {};
+                    } catch (e) {}
+                    if (meta.status !== newStatus) {
+                      return {
+                        ...m,
+                        media_url: JSON.stringify({ ...meta, status: newStatus }),
+                        status: newStatus
+                      };
+                    }
+                  }
+                  return m;
+                })
+              );
             }
           }
         }
@@ -323,7 +329,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     // Executa sincronização inicial após carregamento
     setTimeout(() => {
       runSyncStatus();
-    }, 500);
+    }, 400);
 
     const syncStatusInterval = setInterval(runSyncStatus, 2000);
 
@@ -550,7 +556,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
                       {msg.sender_type === 'tech' && (
                         deliveryStatus === 'read' ? (
                           <span title="Visualizada pelo cliente" className="inline-flex items-center">
-                            <CheckCheck size={15} className="text-sky-300 font-bold ml-0.5" />
+                            <CheckCheck size={15} className="text-[#53bdeb] font-bold ml-0.5" />
                           </span>
                         ) : deliveryStatus === 'delivered' ? (
                           <span title="Entregue ao cliente" className="inline-flex items-center">
