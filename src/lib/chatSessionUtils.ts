@@ -199,3 +199,23 @@ export function isClientChatActive(
   }
   return false;
 }
+
+/**
+ * Marca o chat do cliente como lido globalmente no banco de dados (tabela settings) e localmente.
+ * Dispara evento em tempo real via Supabase para que todos os dispositivos (celulares, web, etc.)
+ * removam o balão verde de mensagens não lidas instantaneamente.
+ */
+export async function markClientChatAsRead(clientId: string, supabase: SupabaseClient) {
+  if (!clientId) return;
+  try {
+    const nowIso = new Date().toISOString();
+    localStorage.setItem(`chat_last_read_${clientId}`, nowIso);
+    await supabase.from('settings').upsert({
+      id: `chat_read_${clientId}`,
+      updated_at: nowIso
+    });
+  } catch (e) {
+    console.error('[chatSessionUtils] Erro ao marcar chat como lido:', e);
+  }
+}
+

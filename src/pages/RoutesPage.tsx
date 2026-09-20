@@ -9,7 +9,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { openMap, openRouteMap, openWaze } from '../lib/maps';
 import { openWhatsApp, sendEvolutionMessage, sendMetaMessage } from '../lib/whatsapp';
 import { notifyAdminAttendanceFinished } from '../lib/pushNotifications';
-import { getLocalDayUtcRange, checkDailyChatAvailability, evaluateSessionExpiry } from '../lib/chatSessionUtils';
+import { getLocalDayUtcRange, checkDailyChatAvailability, evaluateSessionExpiry, markClientChatAsRead } from '../lib/chatSessionUtils';
 import EmployeeMap from '../components/EmployeeMap';
 import exifr from 'exifr';
 
@@ -386,6 +386,21 @@ export default function RoutesPage() {
           }
         });
 
+        // Carrega registros de leitura global da tabela settings para sincronia multi-dispositivo
+        const settingKeys = clientIds.map((cid: string) => `chat_read_${cid}`);
+        const { data: readSettings } = await supabase
+          .from('settings')
+          .select('id, updated_at')
+          .in('id', settingKeys);
+
+        const globalReadTimeByClient: Record<string, number> = {};
+        (readSettings || []).forEach((s: any) => {
+          if (s.id && s.updated_at) {
+            const cid = s.id.replace('chat_read_', '');
+            globalReadTimeByClient[cid] = new Date(s.updated_at).getTime();
+          }
+        });
+
         // Contagem real de mensagens não lidas para sessões ativas
         if (activeSessions.length > 0) {
           const sessionIds = activeSessions.map(s => s.id);
@@ -403,8 +418,12 @@ export default function RoutesPage() {
             for (const msg of clientMessages) {
               const cid = sessionToClientMap[msg.session_id];
               if (cid) {
-                const lastRead = localStorage.getItem(`chat_last_read_${cid}`);
-                if (!lastRead || new Date(msg.created_at).getTime() > new Date(lastRead).getTime()) {
+                const localReadStr = localStorage.getItem(`chat_last_read_${cid}`);
+                const localReadTime = localReadStr ? new Date(localReadStr).getTime() : 0;
+                const globalReadTime = globalReadTimeByClient[cid] || 0;
+                const lastReadTime = Math.max(localReadTime, globalReadTime);
+
+                if (new Date(msg.created_at).getTime() > lastReadTime) {
                   unreadMap[cid] = (unreadMap[cid] || 0) + 1;
                 }
               }
@@ -478,37 +497,67 @@ export default function RoutesPage() {
 
     const channelChat = supabase.channel(`${channelPrefix}-chat`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, async (payload) => {
-        const newMsg = payload.new;
-        if (newMsg.sender_type === 'client') {
-          const { data: session } = await supabase
-            .from('chat_sessions')
-            .select('id, client_id, status, created_at, closed_at')
-            .eq('id', newMsg.session_id)
-            .single();
+        const newMsg = payload.new as any;
+        if (!newMsg) return;
 
-          if (session && session.client_id) {
-             const cid = session.client_id;
-             
-             // Se a visita já estiver finalizada para este cliente, não incrementa bolinha verde de não lidas
-             if (completedVisitsOnRouteDate.has(cid)) {
-                return;
-             }
+        const { data: session } = await supabase
+          .from('chat_sessions')
+          .select('id, client_id, status, created_at, closed_at')
+          .eq('id', newMsg.session_id)
+          .single();
 
-             // Se a sessão estiver fechada ou os 30 minutos tiverem expirado, não incrementa bolinha verde de não lidas
-             if (session.status === 'closed') {
-                return;
-             }
-             const exp = evaluateSessionExpiry(session);
-             if (exp.isExpired) {
-                return;
-             }
-
-             if (activeChatClientRef.current && activeChatClientRef.current.id === cid && chatModalOpenRef.current) {
-                // Open, do nothing
-             } else {
-                setUnreadCounts(prev => ({ ...prev, [cid]: (prev[cid] || 0) + 1 }));
-             }
+        if (session && session.client_id) {
+          const cid = session.client_id;
+          
+          if (newMsg.sender_type === 'tech') {
+            // Colaborador ou admin respondeu em algum dispositivo -> limpa não lidas
+            setUnreadCounts(prev => {
+              if (!prev[cid]) return prev;
+              const next = { ...prev };
+              delete next[cid];
+              return next;
+            });
+            return;
           }
+
+          if (newMsg.sender_type === 'client') {
+            // Se a visita já estiver finalizada para este cliente, não incrementa bolinha verde de não lidas
+            if (completedVisitsOnRouteDate.has(cid)) return;
+
+            // Se a sessão estiver fechada ou os 30 minutos tiverem expirado, não incrementa bolinha verde de não lidas
+            if (session.status === 'closed') return;
+            const exp = evaluateSessionExpiry(session);
+            if (exp.isExpired) return;
+
+            if (activeChatClientRef.current && activeChatClientRef.current.id === cid && chatModalOpenRef.current) {
+              // Chat está aberto neste momento na tela -> marca como lido globalmente
+              markClientChatAsRead(cid, supabase);
+            } else {
+              setUnreadCounts(prev => ({ ...prev, [cid]: (prev[cid] || 0) + 1 }));
+            }
+          }
+        }
+      })
+      .subscribe();
+
+    const channelSettings = supabase.channel(`${channelPrefix}-settings-chat-read`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'settings' }, (payload) => {
+        const newRecord = payload.new as any;
+        if (newRecord?.id && typeof newRecord.id === 'string' && newRecord.id.startsWith('chat_read_')) {
+          const cid = newRecord.id.replace('chat_read_', '');
+          if (newRecord.updated_at) {
+            try {
+              localStorage.setItem(`chat_last_read_${cid}`, newRecord.updated_at);
+            } catch (e) {
+              // ignore
+            }
+          }
+          setUnreadCounts(prev => {
+            if (!prev[cid]) return prev;
+            const next = { ...prev };
+            delete next[cid];
+            return next;
+          });
         }
       })
       .subscribe();
@@ -554,6 +603,7 @@ export default function RoutesPage() {
     return () => {
       supabase.removeChannel(channel1);
       supabase.removeChannel(channelChat);
+      supabase.removeChannel(channelSettings);
       supabase.removeChannel(channelChatSessions);
       supabase.removeChannel(channel2);
     };
@@ -875,7 +925,7 @@ export default function RoutesPage() {
     }
 
     try {
-      localStorage.setItem(`chat_last_read_${client.id}`, new Date().toISOString());
+      markClientChatAsRead(client.id, supabase);
       setUnreadCounts(prev => {
         const next = { ...prev };
         delete next[client.id];

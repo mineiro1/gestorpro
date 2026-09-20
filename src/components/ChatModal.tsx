@@ -3,7 +3,7 @@ import { X, Send, User, MessageCircle, Clock } from 'lucide-react';
 import { MediaViewer, AudioViewer } from './chat/MediaViewer';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
-import { evaluateSessionExpiry, checkDailyChatAvailability } from '../lib/chatSessionUtils';
+import { evaluateSessionExpiry, checkDailyChatAvailability, markClientChatAsRead } from '../lib/chatSessionUtils';
 
 export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const { userProfile } = useAuth();
@@ -13,7 +13,9 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const [loading, setLoading] = useState(true);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const clientSessionIdsRef = useRef<Set<string>>(new Set());
 
+  // Timer countdown for active session
   useEffect(() => {
     if (session?.status === 'open' && session.created_at) {
       const updateTimer = () => {
@@ -46,138 +48,165 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     return `${m}:${s}`;
   };
 
-  useEffect(() => {
-    if (isOpen && visit && visit.id) {
-      loadOrCreateSession();
-    } else if (isOpen && visit && !visit.id) {
-      // Waiting for visitId to be resolved
-      setLoading(true);
-    }
-  }, [isOpen, visit]);
-
+  // Scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const loadOrCreateSession = async () => {
-    setLoading(true);
-    try {
-      // Verifica disponibilidade segundo a regra de Limite Diário Estrito (30 min por dia civil local)
-      const check = await checkDailyChatAvailability(client.id, supabase);
+  // Main lifecycle: load session, load messages, mark as read, subscribe in real-time
+  useEffect(() => {
+    if (!isOpen || !client?.id) {
+      setMessages([]);
+      setSession(null);
+      setLoading(false);
+      clientSessionIdsRef.current = new Set();
+      return;
+    }
 
-      let currentSession = null;
+    let isMounted = true;
+    let channel: any = null;
 
-      if (check.activeSession) {
-        currentSession = check.activeSession;
-      } else if (check.canStartNewSession && !visit?.isCompleted && visit?.status !== 'finalizada') {
-        // Cria nova sessão apenas se não houver sessão hoje e visita não estiver finalizada
-        const adminId = userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId;
-        
-        const { data: newSession, error: createError } = await supabase
-          .from('chat_sessions')
-          .insert({
-            visit_id: visit ? visit.id : null,
-            admin_id: adminId,
-            client_id: client.id,
-            employee_id: userProfile?.uid,
-            status: 'open',
-            created_at: new Date().toISOString()
-          }).select().single();
+    const setupChat = async () => {
+      setLoading(true);
+      setMessages([]);
+      
+      try {
+        // 1. Marca imediatamente como lido em todos os dispositivos
+        markClientChatAsRead(client.id, supabase);
+
+        // 2. Busca disponibilidade diária e sessão ativa
+        const check = await checkDailyChatAvailability(client.id, supabase);
+        if (!isMounted) return;
+
+        let currentSession = null;
+
+        if (check.activeSession) {
+          currentSession = check.activeSession;
+        } else if (check.canStartNewSession && !visit?.isCompleted && visit?.status !== 'finalizada') {
+          const adminId = userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId;
           
-        console.log("CREATE SESSION RESULT:", newSession, "ERROR:", createError, "PARAMS:", { visit_id: visit ? visit.id : null, admin_id: adminId, client_id: client.id, employee_id: userProfile?.uid });
+          const { data: newSession, error: createError } = await supabase
+            .from('chat_sessions')
+            .insert({
+              visit_id: visit?.id || null,
+              admin_id: adminId,
+              client_id: client.id,
+              employee_id: userProfile?.uid,
+              status: 'open',
+              created_at: new Date().toISOString()
+            }).select().single();
 
-        if (!createError && newSession) {
-          currentSession = newSession;
+          if (!createError && newSession) {
+            currentSession = newSession;
+          }
+        } else if (check.lastSession) {
+          currentSession = { ...check.lastSession, status: 'closed' };
         }
-      } else if (check.lastSession) {
-        // Limite diário atingido ou visita finalizada: carrega a sessão anterior como fechada para leitura do histórico
-        currentSession = { ...check.lastSession, status: 'closed' };
-      }
-      
-      if (!currentSession) {
-        currentSession = { status: 'closed' };
-      }
-      
-      setSession(currentSession);
-      if (client?.id) {
-        try {
-          localStorage.setItem(`chat_last_read_${client.id}`, new Date().toISOString());
-        } catch (e) {
-          console.error(e);
-        }
-      }
-      if (currentSession) {
-        loadMessages(currentSession.id);
         
-        // Subscribe to new messages
-        const subscription = supabase
-          .channel(`chat_${client.id}`)
-          .on('postgres_changes', { 
-            event: 'INSERT', 
-            schema: 'public', 
+        if (!currentSession) {
+          currentSession = { status: 'closed' };
+        }
+        
+        if (!isMounted) return;
+        setSession(currentSession);
+
+        // 3. Carrega histórico de mensagens de todas as sessões do cliente
+        const { data: allSessions } = await supabase
+          .from('chat_sessions')
+          .select('id')
+          .eq('client_id', client.id);
+
+        const sessionIds = new Set<string>();
+        if (allSessions) {
+          allSessions.forEach((s: any) => sessionIds.add(s.id));
+        }
+        if (currentSession?.id) {
+          sessionIds.add(currentSession.id);
+        }
+        clientSessionIdsRef.current = sessionIds;
+
+        if (sessionIds.size > 0) {
+          const { data: loadedMsgs } = await supabase
+            .from('chat_messages')
+            .select('*')
+            .in('session_id', Array.from(sessionIds))
+            .order('created_at', { ascending: true });
+
+          if (isMounted && loadedMsgs) {
+            setMessages(loadedMsgs.filter((m: any) => m.sender_type !== 'read'));
+          }
+        }
+
+        // 4. Cria inscrição em tempo real dedicada para novas mensagens
+        const channelName = `chat-modal-${client.id}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+        channel = supabase
+          .channel(channelName)
+          .on('postgres_changes', {
+            event: 'INSERT',
+            schema: 'public',
             table: 'chat_messages'
           }, (payload) => {
-            (async () => {
-              const { data } = await supabase.from('chat_sessions').select('client_id').eq('id', payload.new.session_id).single();
-              if (data && data.client_id === client.id) {
-                 try {
-                   localStorage.setItem(`chat_last_read_${client.id}`, new Date().toISOString());
-                 } catch (e) {
-                   console.error(e);
-                 }
-                 setMessages(prev => {
-                    if (prev.find(m => m.id === payload.new.id)) return prev;
-                    return [...prev, payload.new];
-                 });
-                 // Force a small delay to ensure ref scrolls after render
-                 setTimeout(() => {
-                   messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-                 }, 100);
+            if (!isMounted) return;
+            const newMsg = payload.new as any;
+            if (!newMsg) return;
+
+            // Verifica se a mensagem pertence a alguma sessão do cliente aberto
+            if (clientSessionIdsRef.current.has(newMsg.session_id) || newMsg.session_id === currentSession?.id) {
+              if (newMsg.sender_type !== 'read') {
+                setMessages((prev) => {
+                  if (prev.some((m) => m.id === newMsg.id)) return prev;
+                  return [...prev, newMsg];
+                });
               }
-            })();
+              // Marca como lido globalmente se for mensagem de cliente
+              if (newMsg.sender_type === 'client') {
+                markClientChatAsRead(client.id, supabase);
+              }
+            }
           })
           .subscribe();
-          
-        return () => {
-          supabase.removeChannel(subscription);
-        };
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
-  };
 
-  const loadMessages = async (sessionId: string) => {
-    // Carregar histórico de TODAS as sessões do cliente, para não perder mensagens
-    const { data: allSessions } = await supabase.from('chat_sessions').select('id').eq('client_id', client.id);
-    if (allSessions && allSessions.length > 0) {
-       const sessionIds = allSessions.map(s => s.id);
-       const { data } = await supabase
-         .from('chat_messages')
-         .select('*')
-         .in('session_id', sessionIds)
-         .order('created_at', { ascending: true });
-       if (data) setMessages(data);
-    }
-  };
+      } catch (err) {
+        console.error('[ChatModal] Erro ao carregar mensagens:', err);
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    };
+
+    setupChat();
+
+    return () => {
+      isMounted = false;
+      if (channel) {
+        supabase.removeChannel(channel);
+      }
+    };
+  }, [isOpen, client?.id, visit?.id]);
 
   const sendMessage = async (text: string) => {
     if (!text.trim() || !session || session.status === 'closed' || timeLeft === 0) return;
     
     setNewMessage('');
     
-    // Actually send to API endpoint which will forward to Meta/Evolution and save
     try {
       // 1. Insert into Supabase from the client (authenticated)
-      await supabase.from('chat_messages').insert({
+      const { data: insertedMsg } = await supabase.from('chat_messages').insert({
         session_id: session.id,
         sender_type: 'tech',
         content: text
-      });
+      }).select().single();
 
-      // 2. Dispatch to backend to send via Evolution (bypasses CORS)
+      if (insertedMsg) {
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === insertedMsg.id)) return prev;
+          return [...prev, insertedMsg];
+        });
+      }
+
+      // 2. Marca como lido no sistema
+      markClientChatAsRead(client.id, supabase);
+
+      // 3. Dispatch to backend to send via Evolution (bypasses CORS)
       await fetch('/api/chat/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
