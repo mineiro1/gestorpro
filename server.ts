@@ -303,6 +303,120 @@ async function processPayment(paymentId, adminId) {
   });
 
 
+  // Helper to extract message status updates across Meta, WAME and Evolution formats
+  function extractStatusUpdates(body: any): Array<{ id: string; status: 'sent' | 'delivered' | 'read' }> {
+    const results: Array<{ id: string; status: 'sent' | 'delivered' | 'read' }> = [];
+    if (!body) return results;
+
+    const mapStatus = (raw: any): 'sent' | 'delivered' | 'read' | null => {
+      if (raw === undefined || raw === null) return null;
+      const str = String(raw).toUpperCase().trim();
+      if (str === '4' || str === '5' || str === 'READ' || str === 'PLAYED' || str === 'READ_RECEIPT' || str === 'VIEWED') {
+        return 'read';
+      }
+      if (str === '3' || str === 'DELIVERY_ACK' || str === 'DELIVERED' || str === 'RECEIVED') {
+        return 'delivered';
+      }
+      if (str === '2' || str === 'SERVER_ACK' || str === 'SENT') {
+        return 'sent';
+      }
+      return null;
+    };
+
+    if (body.entry && Array.isArray(body.entry)) {
+      for (const entry of body.entry) {
+        if (entry.changes && Array.isArray(entry.changes)) {
+          for (const change of entry.changes) {
+            const val = change.value;
+            if (val?.statuses && Array.isArray(val.statuses)) {
+              for (const st of val.statuses) {
+                const mapped = mapStatus(st.status);
+                if (st.id && mapped) {
+                  results.push({ id: String(st.id), status: mapped });
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (body.statuses && Array.isArray(body.statuses)) {
+      for (const st of body.statuses) {
+        const mapped = mapStatus(st.status);
+        if (st.id && mapped) {
+          results.push({ id: String(st.id), status: mapped });
+        }
+      }
+    }
+
+    const candidates: any[] = [];
+    if (Array.isArray(body)) {
+      candidates.push(...body);
+    } else {
+      if (Array.isArray(body.data)) {
+        candidates.push(...body.data);
+      } else if (body.data && typeof body.data === 'object') {
+        candidates.push(body.data);
+      }
+      candidates.push(body);
+    }
+
+    for (const item of candidates) {
+      if (!item || typeof item !== 'object') continue;
+      const id = item?.key?.id || item?.id || item?.keyId || item?.messageId || item?.update?.key?.id;
+      const rawStatus = item?.update?.status ?? item?.status ?? item?.ack ?? item?.update?.ack;
+      const mapped = mapStatus(rawStatus);
+      if (id && mapped) {
+        results.push({ id: String(id), status: mapped });
+      }
+    }
+
+    return results;
+  }
+
+  async function processStatusUpdates(body: any): Promise<boolean> {
+    const updates = extractStatusUpdates(body);
+    if (updates.length === 0) return false;
+
+    for (const update of updates) {
+      const { id: externalId, status: newStatus } = update;
+      if (!externalId) continue;
+
+      const { data: foundMsgs } = await supabaseAdmin
+        .from('chat_messages')
+        .select('id, media_url, sender_type')
+        .eq('sender_type', 'tech')
+        .ilike('media_url', `%${externalId}%`);
+
+      if (foundMsgs && foundMsgs.length > 0) {
+        for (const fm of foundMsgs) {
+          let existing: any = {};
+          try {
+            existing = JSON.parse(fm.media_url);
+          } catch(e) {}
+
+          if (existing.status === 'read' && newStatus !== 'read') {
+            continue;
+          }
+
+          await supabaseAdmin
+            .from('chat_messages')
+            .update({
+              media_url: JSON.stringify({
+                ...existing,
+                status: newStatus,
+                external_id: externalId,
+                status_updated_at: new Date().toISOString()
+              })
+            })
+            .eq('id', fm.id);
+        }
+      }
+    }
+    return true;
+  }
+
   // Webhook for WAME / Meta API
   app.get("/api/webhook/wame", (req, res) => {
     const mode = req.query["hub.mode"];
@@ -316,69 +430,11 @@ async function processPayment(paymentId, adminId) {
   app.post("/api/webhook/wame", async (req, res) => {
     try {
       console.log("Wame/Meta Webhook Received:", JSON.stringify(req.body));
-
       const body = req.body;
 
-      // Status updates from Meta
-      if ((body.object === "whatsapp_business_account" || body.object === "wame") && body.entry && body.entry[0]?.changes) {
-        const changeValue = body.entry[0].changes[0]?.value;
-        if (changeValue?.statuses && changeValue.statuses.length > 0) {
-          for (const st of changeValue.statuses) {
-            const wamid = st.id;
-            const rawStatus = st.status;
-            let newStatus = 'sent';
-            if (rawStatus === 'read') newStatus = 'read';
-            else if (rawStatus === 'delivered') newStatus = 'delivered';
-            else if (rawStatus === 'sent') newStatus = 'sent';
-
-            if (wamid) {
-              const { data: foundMsgs } = await supabaseAdmin
-                .from('chat_messages')
-                .select('id, media_url')
-                .eq('sender_type', 'tech')
-                .ilike('media_url', `%${wamid}%`);
-              
-              if (foundMsgs && foundMsgs.length > 0) {
-                for (const fm of foundMsgs) {
-                  let existing: any = {};
-                  try { existing = JSON.parse(fm.media_url); } catch(e) {}
-                  await supabaseAdmin.from('chat_messages').update({
-                    media_url: JSON.stringify({ ...existing, status: newStatus, external_id: wamid })
-                  }).eq('id', fm.id);
-                }
-              }
-            }
-          }
-          return res.status(200).send("EVENT_RECEIVED");
-        }
-      }
-
-      // Status updates from WAME
-      if (body.event === 'messages.update' || body.event === 'messages-update' || body.event === 'message.update') {
-        const updateData = body.data || body;
-        const keyId = updateData?.key?.id || updateData?.id;
-        const rawStatus = updateData?.status || updateData?.update?.status;
-        let newStatus = 'sent';
-        if (rawStatus === 'READ' || rawStatus === 'PLAYED' || rawStatus === 4 || rawStatus === 5 || rawStatus === 'read') newStatus = 'read';
-        else if (rawStatus === 'DELIVERY_ACK' || rawStatus === 3 || rawStatus === 'delivered') newStatus = 'delivered';
-        else if (rawStatus === 'SERVER_ACK' || rawStatus === 2 || rawStatus === 'sent') newStatus = 'sent';
-
-        if (keyId) {
-          const { data: foundMsgs } = await supabaseAdmin
-            .from('chat_messages')
-            .select('id, media_url')
-            .eq('sender_type', 'tech')
-            .ilike('media_url', `%${keyId}%`);
-          if (foundMsgs && foundMsgs.length > 0) {
-            for (const fm of foundMsgs) {
-              let existing: any = {};
-              try { existing = JSON.parse(fm.media_url); } catch(e) {}
-              await supabaseAdmin.from('chat_messages').update({
-                media_url: JSON.stringify({ ...existing, status: newStatus, external_id: keyId })
-              }).eq('id', fm.id);
-            }
-          }
-        }
+      // 1. Process status updates (delivered / read / sent)
+      const hadStatus = await processStatusUpdates(body);
+      if (hadStatus) {
         return res.status(200).send("EVENT_RECEIVED");
       }
 
@@ -490,36 +546,10 @@ async function processPayment(paymentId, adminId) {
       console.log("Evolution Webhook Received:", JSON.stringify(req.body));
       const body = req.body;
 
-      // Status updates from Evolution API (messages.update / MESSAGES_UPDATE)
-      const eventName = body.event || body.type;
-      if (eventName === 'messages.update' || eventName === 'message.update' || eventName === 'MESSAGES_UPDATE' || body.data?.[0]?.update) {
-         const items = Array.isArray(body.data) ? body.data : [body.data || body];
-         for (const item of items) {
-            const keyId = item?.key?.id || item?.id;
-            const rawStatus = item?.update?.status || item?.status;
-            let newStatus = 'sent';
-            if (rawStatus === 'READ' || rawStatus === 'PLAYED' || rawStatus === 4 || rawStatus === 5 || rawStatus === 'read') newStatus = 'read';
-            else if (rawStatus === 'DELIVERY_ACK' || rawStatus === 3 || rawStatus === 'delivered') newStatus = 'delivered';
-            else if (rawStatus === 'SERVER_ACK' || rawStatus === 2 || rawStatus === 'sent') newStatus = 'sent';
-
-            if (keyId) {
-               const { data: foundMsgs } = await supabaseAdmin
-                  .from('chat_messages')
-                  .select('id, media_url')
-                  .eq('sender_type', 'tech')
-                  .ilike('media_url', `%${keyId}%`);
-               if (foundMsgs && foundMsgs.length > 0) {
-                  for (const fm of foundMsgs) {
-                     let existing: any = {};
-                     try { existing = JSON.parse(fm.media_url); } catch(e) {}
-                     await supabaseAdmin.from('chat_messages').update({
-                        media_url: JSON.stringify({ ...existing, status: newStatus, external_id: keyId })
-                     }).eq('id', fm.id);
-                  }
-               }
-            }
-         }
-         return res.status(200).send("OK");
+      // 1. Process status updates (delivered / read / sent)
+      const hadStatus = await processStatusUpdates(body);
+      if (hadStatus) {
+        return res.status(200).send("OK");
       }
 
       const msgData = body.data || body;
