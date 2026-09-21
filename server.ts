@@ -187,6 +187,19 @@ async function processPayment(paymentId, adminId) {
 
 
   
+// In-memory idempotency cache (stores client message IDs for deduplication within 30-120 seconds)
+const processedMessageClientIds = new Map<string, { timestamp: number; externalId: string; messageId?: string }>();
+
+// Clean up stale idempotency records periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, val] of processedMessageClientIds.entries()) {
+    if (now - val.timestamp > 120000) {
+      processedMessageClientIds.delete(key);
+    }
+  }
+}, 60000);
+
   app.post("/api/chat/close", async (req, res) => {
     try {
       const { clientId } = req.body;
@@ -200,8 +213,69 @@ async function processPayment(paymentId, adminId) {
 
   app.post("/api/chat/send", async (req, res) => {
     try {
-      let { text, clientPhone, waSettings, messageId, sessionId, senderName } = req.body;
+      let { text, clientPhone, waSettings, messageId, sessionId, senderName, message_client_id } = req.body;
       if (!text || !clientPhone) return res.status(400).json({ error: "Missing fields" });
+
+      const cleanDigits = String(clientPhone).replace(/\D/g, '');
+      const targetNumber = cleanDigits.startsWith('55') ? cleanDigits : `55${cleanDigits}`;
+
+      // Gerar ou sanitizar message_client_id para controle estrito de idempotência
+      const clientMsgId = String(message_client_id || req.headers['x-idempotency-key'] || (messageId ? `mid_${messageId}` : `txt_${targetNumber}_${text.trim().substring(0, 30)}`));
+      const now = Date.now();
+
+      // 1. Verificação de Idempotência em Memória (< 30 segundos)
+      if (processedMessageClientIds.has(clientMsgId)) {
+        const cached = processedMessageClientIds.get(clientMsgId)!;
+        if (now - cached.timestamp < 30000) {
+          console.log(`[Idempotência] Ignorando envio duplicado (Memória): ${clientMsgId}`);
+          return res.json({
+            success: true,
+            duplicated: true,
+            externalId: cached.externalId || undefined,
+            messageId: cached.messageId || messageId,
+            message_client_id: clientMsgId
+          });
+        }
+      }
+
+      // 2. Verificação de Idempotência no Banco de Dados (< 30 segundos)
+      const thirtySecondsAgo = new Date(now - 30000).toISOString();
+      try {
+        const { data: recentMatching } = await supabaseAdmin
+          .from('chat_messages')
+          .select('id, media_url, created_at')
+          .gte('created_at', thirtySecondsAgo)
+          .eq('sender_type', 'tech')
+          .ilike('media_url', `%"message_client_id":"${clientMsgId}"%`)
+          .limit(1);
+
+        if (recentMatching && recentMatching.length > 0) {
+          let existingMeta: any = {};
+          try { existingMeta = JSON.parse(recentMatching[0].media_url); } catch(e) {}
+          console.log(`[Idempotência] Ignorando envio duplicado (Banco de Dados): ${clientMsgId}`);
+          processedMessageClientIds.set(clientMsgId, {
+            timestamp: now,
+            externalId: existingMeta.external_id || '',
+            messageId: recentMatching[0].id
+          });
+          return res.json({
+            success: true,
+            duplicated: true,
+            externalId: existingMeta.external_id || undefined,
+            messageId: recentMatching[0].id,
+            message_client_id: clientMsgId
+          });
+        }
+      } catch (dbCheckErr) {
+        console.warn("[Idempotência] Erro ao consultar duplicidade no banco:", dbCheckErr);
+      }
+
+      // Registra lock provisório para evitar concorrência simultânea (cliques duplos em < 100ms)
+      processedMessageClientIds.set(clientMsgId, {
+        timestamp: now,
+        externalId: '',
+        messageId: messageId || ''
+      });
 
       // Se waSettings não estiver completo, buscar configurações do admin no banco
       if (!waSettings?.evolutionApiKey && !waSettings?.metaToken) {
@@ -214,9 +288,6 @@ async function processPayment(paymentId, adminId) {
           waSettings = validAdmin.whatsapp_settings;
         }
       }
-
-      const cleanDigits = String(clientPhone).replace(/\D/g, '');
-      const targetNumber = cleanDigits.startsWith('55') ? cleanDigits : `55${cleanDigits}`;
 
       let externalId = '';
 
@@ -297,6 +368,7 @@ async function processPayment(paymentId, adminId) {
       const mediaPayload = {
         status: 'sent',
         external_id: externalId || undefined,
+        message_client_id: clientMsgId,
         sent_at: new Date().toISOString()
       };
 
@@ -345,7 +417,14 @@ async function processPayment(paymentId, adminId) {
         }
       }
 
-      res.json({ success: true, externalId, messageId });
+      // Atualiza o cache com a resposta definitiva
+      processedMessageClientIds.set(clientMsgId, {
+        timestamp: Date.now(),
+        externalId: externalId || '',
+        messageId: messageId || ''
+      });
+
+      res.json({ success: true, externalId, messageId, message_client_id: clientMsgId });
     } catch(e: any) {
       console.error("[/api/chat/send] Erro:", e);
       res.status(500).json({ error: e.message });

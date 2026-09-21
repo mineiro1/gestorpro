@@ -18,6 +18,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const isInitialScrollDoneRef = useRef(false);
   const isSyncingRef = useRef(false);
   const isSendingRef = useRef(false);
+  const recentSentTextRef = useRef<Map<string, number>>(new Map());
 
   const clientId = client?.id;
 
@@ -301,9 +302,9 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     }
   }, [messages, scrollToBottom]);
 
-  // 5. React Query Mutation: Envio Otimista e Estável de Mensagens
+  // 5. React Query Mutation: Envio Otimista e Estável de Mensagens com Idempotência
   const sendMutation = useMutation({
-    mutationFn: async (text: string) => {
+    mutationFn: async ({ text, message_client_id }: { text: string; message_client_id: string }) => {
       let currentSession = session;
       if (!currentSession || currentSession.status === 'closed') {
         const { data: newSess } = await supabase
@@ -327,7 +328,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       const sessionId = currentSession?.id;
       if (!sessionId) throw new Error('Não foi possível iniciar a sessão de chat');
 
-      const initialMetadata = { status: 'sending' };
+      const initialMetadata = { status: 'sending', message_client_id };
       const { data: insertedMsg, error: insertErr } = await supabase
         .from('chat_messages')
         .insert({
@@ -371,7 +372,8 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
               clientPhone,
               waSettings: currentSettings,
               messageId: insertedMsg.id,
-              senderName: userProfile?.name || 'Colaborador'
+              senderName: userProfile?.name || 'Colaborador',
+              message_client_id
             })
           });
           if (apiRes.ok) {
@@ -383,17 +385,17 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         }
       }
 
-      return { ...insertedMsg, media_url: JSON.stringify({ status: 'sent', external_id: externalId || undefined, sent_at: new Date().toISOString() }) };
+      return { ...insertedMsg, media_url: JSON.stringify({ status: 'sent', external_id: externalId || undefined, message_client_id, sent_at: new Date().toISOString() }) };
     },
-    onMutate: async (text: string) => {
+    onMutate: async ({ text, message_client_id }: { text: string; message_client_id: string }) => {
       // Atualização Otimista Instantânea (0ms)
-      const tempId = `temp-${Date.now()}`;
+      const tempId = `temp-${message_client_id}`;
       const optimisticMsg = {
         id: tempId,
         session_id: session?.id || 'temp-sess',
         sender_type: 'tech',
         content: text,
-        media_url: JSON.stringify({ status: 'sending' }),
+        media_url: JSON.stringify({ status: 'sending', message_client_id }),
         created_at: new Date().toISOString()
       };
 
@@ -404,7 +406,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       requestAnimationFrame(() => scrollToBottom(true));
       return { tempId };
     },
-    onSuccess: (newInsertedMsg, _text, context) => {
+    onSuccess: (newInsertedMsg, _vars, context) => {
       // Atualiza o cache local substituindo o tempId pelo registro real
       queryClient.setQueryData(['chat-messages', clientId], (prev: any[] | undefined) => {
         if (!prev) return [newInsertedMsg];
@@ -433,9 +435,20 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const handleSendMessage = (textToSend: string) => {
     const trimmed = textToSend.trim();
     if (!trimmed || isSendingRef.current || sendMutation.isPending) return;
+
+    // Proteção de Idempotência no frontend: previne múltiplos envios idênticos em menos de 3s
+    const now = Date.now();
+    const lastTime = recentSentTextRef.current.get(trimmed) || 0;
+    if (now - lastTime < 3000) {
+      console.warn('[ChatModal] Ignorando envio repetido no cliente:', trimmed);
+      return;
+    }
+    recentSentTextRef.current.set(trimmed, now);
+
     isSendingRef.current = true;
     setNewMessage('');
-    sendMutation.mutate(trimmed);
+    const message_client_id = `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    sendMutation.mutate({ text: trimmed, message_client_id });
   };
 
   const formatTime = (seconds: number) => {

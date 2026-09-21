@@ -1104,6 +1104,7 @@ export default function RoutesPage() {
               }
             }
 
+            const reportMsgClientId = `visit_rep_${selectedVisit?.id || cleanPhone}`;
             if (currentSettings.useSmsForReports) {
               // Envia para a fila de SMS (Gateway)
               await supabase.from('sms_queue').insert({
@@ -1113,10 +1114,10 @@ export default function RoutesPage() {
               });
               console.log('Mensagem de relatório adicionada à fila de SMS.');
             } else if (currentSettings.useMetaApi) {
-              await sendMetaMessage(clientPhone, message, currentSettings);
+              await sendMetaMessage(clientPhone, message, currentSettings, reportMsgClientId);
               // Não bloqueia a tela com alert
             } else if (currentSettings.useEvolutionApi) {
-              await sendEvolutionMessage(clientPhone, message, currentSettings);
+              await sendEvolutionMessage(clientPhone, message, currentSettings, reportMsgClientId);
               // Não bloqueia a tela com alert
             } else {
               openWhatsApp(clientPhone, message);

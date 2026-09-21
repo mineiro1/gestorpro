@@ -331,9 +331,10 @@ export default function Billing() {
       ? processMessageTemplate(waSettings.delayedMessage, client)
       : processMessageTemplate(waSettings.reminderMessage, client);
 
+    const billingMsgClientId = `billing_${client.id}_${isDelayed ? 'delayed' : 'reminder'}_${new Date().toISOString().slice(0, 10)}`;
     if (currentSettings.useMetaApi) {
       try {
-        await sendMetaMessage(client.phone, message, currentSettings);
+        await sendMetaMessage(client.phone, message, currentSettings, billingMsgClientId);
         setSentClients(prev => ({ ...prev, [client.id]: 'success' }));
         alert(`Mensagem enviada com sucesso para ${client.name} (via WhatsApp Oficial Meta)!`);
       } catch (error: any) {
@@ -343,7 +344,7 @@ export default function Billing() {
       }
     } else if (currentSettings.useEvolutionApi) {
       try {
-        await sendEvolutionMessage(client.phone, message, currentSettings);
+        await sendEvolutionMessage(client.phone, message, currentSettings, billingMsgClientId);
         setSentClients(prev => ({ ...prev, [client.id]: 'success' }));
         alert(`Mensagem enviada com sucesso para ${client.name}!`);
       } catch (error: any) {

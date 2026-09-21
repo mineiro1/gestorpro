@@ -1,3 +1,6 @@
+// Client-side idempotency cache to prevent duplicate dispatches within 30 seconds
+const clientRecentSends = new Map<string, { timestamp: number; result: any }>();
+
 export const getWhatsAppNumbersToTry = (phone: string): string[] => {
   if (!phone) return [];
   const cleanPhone = phone.replace(/\D/g, '');
@@ -32,7 +35,7 @@ export const openWhatsApp = (phone: string, text: string = "") => {
   }
 };
 
-export const sendEvolutionMessage = async (phone: string, text: string, waSettings: any) => {
+export const sendEvolutionMessage = async (phone: string, text: string, waSettings: any, message_client_id?: string) => {
   if (!waSettings.evolutionApiUrl || !waSettings.evolutionApiKey || !waSettings.evolutionInstanceName) {
     throw new Error("Credenciais da Evolution API incompletas nas configurações.");
   }
@@ -40,6 +43,17 @@ export const sendEvolutionMessage = async (phone: string, text: string, waSettin
   const targetNumber = formatWhatsAppNumber(phone);
   if (!targetNumber) {
     throw new Error("Número de telefone inválido.");
+  }
+
+  // Idempotency check: key based on message_client_id or target + text
+  const idempotencyKey = message_client_id || `evo_${targetNumber}_${text.trim()}`;
+  const now = Date.now();
+  if (clientRecentSends.has(idempotencyKey)) {
+    const cached = clientRecentSends.get(idempotencyKey)!;
+    if (now - cached.timestamp < 30000) {
+      console.warn(`[Idempotência WhatsApp] Ignorando envio repetido para ${targetNumber} nos últimos 30s.`);
+      return cached.result;
+    }
   }
 
   let baseUrl = waSettings.evolutionApiUrl.trim().replace(/\/$/, '');
@@ -63,7 +77,9 @@ export const sendEvolutionMessage = async (phone: string, text: string, waSettin
     });
 
     if (response.ok) {
-      return await response.json();
+      const result = await response.json();
+      clientRecentSends.set(idempotencyKey, { timestamp: Date.now(), result });
+      return result;
     } else {
       let errDesc = 'Desconhecido';
       try {
@@ -80,7 +96,7 @@ export const sendEvolutionMessage = async (phone: string, text: string, waSettin
   }
 };
 
-export const sendMetaMessage = async (phone: string, text: string, waSettings: any) => {
+export const sendMetaMessage = async (phone: string, text: string, waSettings: any, message_client_id?: string) => {
   if (!waSettings.metaToken) {
     throw new Error("O Token/Key da API Oficial (Meta) é obrigatório.");
   }
@@ -88,6 +104,17 @@ export const sendMetaMessage = async (phone: string, text: string, waSettings: a
   const targetNumber = formatWhatsAppNumber(phone);
   if (!targetNumber) {
     throw new Error("Número de telefone inválido.");
+  }
+
+  // Idempotency check
+  const idempotencyKey = message_client_id || `meta_${targetNumber}_${text.trim()}`;
+  const now = Date.now();
+  if (clientRecentSends.has(idempotencyKey)) {
+    const cached = clientRecentSends.get(idempotencyKey)!;
+    if (now - cached.timestamp < 30000) {
+      console.warn(`[Idempotência WhatsApp] Ignorando envio repetido para ${targetNumber} nos últimos 30s.`);
+      return cached.result;
+    }
   }
   
   let baseUrl = (waSettings.metaServerUrl || 'https://graph.facebook.com/v19.0').trim().replace(/\/$/, '');
@@ -108,7 +135,9 @@ export const sendMetaMessage = async (phone: string, text: string, waSettings: a
       });
 
       if (response.ok) {
-        return await response.json();
+        const result = await response.json();
+        clientRecentSends.set(idempotencyKey, { timestamp: Date.now(), result });
+        return result;
       }
 
       let errDesc = 'Desconhecido';
@@ -142,7 +171,9 @@ export const sendMetaMessage = async (phone: string, text: string, waSettings: a
       const response = await fetch(url, { method: 'POST', headers, body });
 
       if (response.ok) {
-        return await response.json();
+        const result = await response.json();
+        clientRecentSends.set(idempotencyKey, { timestamp: Date.now(), result });
+        return result;
       }
 
       let errDesc = 'Desconhecido';
