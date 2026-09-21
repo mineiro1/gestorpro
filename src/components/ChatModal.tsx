@@ -1,26 +1,23 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { X, Send, User, MessageCircle, Clock, Check, CheckCheck } from 'lucide-react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { MediaViewer, AudioViewer } from './chat/MediaViewer';
 import { MessageStatus, parseMessageStatus } from './chat/MessageStatus';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { evaluateSessionExpiry, checkDailyChatAvailability, markClientChatAsRead } from '../lib/chatSessionUtils';
-import { sendMetaMessage, sendEvolutionMessage } from '../lib/whatsapp';
 
 export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const { userProfile } = useAuth();
-  const [messages, setMessages] = useState<any[]>([]);
+  const queryClient = useQueryClient();
   const [newMessage, setNewMessage] = useState('');
-  const [session, setSession] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
 
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const clientSessionIdsRef = useRef<Set<string>>(new Set());
   const isInitialScrollDoneRef = useRef(false);
-  const messagesRef = useRef<any[]>(messages);
-  messagesRef.current = messages;
+
+  const clientId = client?.id;
 
   const scrollToBottom = useCallback((smooth = true) => {
     if (messagesContainerRef.current) {
@@ -41,404 +38,100 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     }
   }, []);
 
-  // Timer countdown for active session
-  useEffect(() => {
-    if (session?.status === 'open' && session.created_at) {
-      const updateTimer = () => {
-        const evaluation = evaluateSessionExpiry(session);
-        
-        if (evaluation.isExpired) {
-          setTimeLeft(0);
-          setSession((prev: any) => prev ? { ...prev, status: 'closed' } : null);
-          supabase
-            .from('chat_sessions')
-            .update({ status: 'closed', closed_at: new Date().toISOString() })
-            .eq('id', session.id)
-            .then(() => {}, () => {});
-        } else {
-          setTimeLeft(evaluation.secondsRemaining);
-        }
-      };
-
-      updateTimer();
-      const interval = setInterval(updateTimer, 1000);
-      return () => clearInterval(interval);
-    } else {
-      setTimeLeft(null);
-    }
-  }, [session]);
-
-  const formatTime = (seconds: number) => {
-    const m = Math.floor(seconds / 60).toString().padStart(2, '0');
-    const s = (seconds % 60).toString().padStart(2, '0');
-    return `${m}:${s}`;
-  };
-
-  // Trigger auto-scroll on messages change
-  useEffect(() => {
-    if (messages.length === 0) return;
-
-    if (!isInitialScrollDoneRef.current) {
-      // Instant scroll immediately on first batch of messages
-      scrollToBottom(false);
-      const t1 = setTimeout(() => scrollToBottom(false), 50);
-      const t2 = setTimeout(() => {
-        scrollToBottom(false);
-        isInitialScrollDoneRef.current = true;
-      }, 200);
-      return () => {
-        clearTimeout(t1);
-        clearTimeout(t2);
-      };
-    } else {
-      // Smooth scroll for subsequent messages
-      scrollToBottom(true);
-      const t = setTimeout(() => scrollToBottom(true), 80);
-      return () => clearTimeout(t);
-    }
-  }, [messages, scrollToBottom]);
-
-  // Ref para evitar requisições concorrentes de sincronização
-  const isSyncingRef = useRef(false);
-  const [isSending, setIsSending] = useState(false);
-
-  // Main lifecycle: load session, load messages asynchronously, mark as read, real-time subscription
-  useEffect(() => {
-    if (!isOpen || !client?.id) {
-      setMessages([]);
-      setSession(null);
-      setLoading(false);
-      clientSessionIdsRef.current = new Set();
-      isInitialScrollDoneRef.current = false;
-      return;
-    }
-
-    let isMounted = true;
-    let channel: any = null;
-    isInitialScrollDoneRef.current = false;
-
-    // Helper to merge and sort messages without unnecessary state updates
-    const mergeMessages = (incoming: any[]) => {
-      setMessages((prev) => {
-        const map = new Map<string, any>();
-        prev.forEach((m) => {
-          if (m && m.id) map.set(m.id, m);
-        });
-
-        let hasChanges = false;
-        incoming.forEach((m) => {
-          if (m && m.id && m.sender_type !== 'read') {
-            const existing = map.get(m.id);
-            if (!existing) {
-              hasChanges = true;
-              map.set(m.id, m);
-            } else if (existing.media_url !== m.media_url || existing.content !== m.content || existing.status !== m.status) {
-              hasChanges = true;
-              map.set(m.id, m);
-            }
-          }
-        });
-
-        if (!hasChanges && map.size === prev.length) {
-          return prev; // Retorna a mesma referência para evitar re-renderização desnecessária
-        }
-
-        return Array.from(map.values()).sort(
-          (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-        );
-      });
-    };
-
-    const fetchAllClientMessages = async (sessionIds?: Set<string>) => {
-      try {
-        let currentIds = sessionIds || clientSessionIdsRef.current;
-        
-        // Se ainda não temos sessões mapeadas, busca todas as sessões do cliente
-        if (!currentIds || currentIds.size === 0) {
-          const { data: sData } = await supabase
-            .from('chat_sessions')
-            .select('id')
-            .eq('client_id', client.id);
-          if (sData && sData.length > 0) {
-            currentIds = new Set(sData.map((s) => s.id));
-            clientSessionIdsRef.current = currentIds;
-          }
-        }
-
-        if (currentIds && currentIds.size > 0) {
-          const { data: loadedMsgs } = await supabase
-            .from('chat_messages')
-            .select('*')
-            .in('session_id', Array.from(currentIds))
-            .order('created_at', { ascending: true });
-
-          if (isMounted && loadedMsgs && loadedMsgs.length > 0) {
-            mergeMessages(loadedMsgs);
-          }
-        }
-      } catch (err) {
-        console.error('[ChatModal] Erro ao carregar mensagens:', err);
-      }
-    };
-
-    const setupChat = async () => {
-      setLoading(true);
-
-      try {
-        // 1. Marca imediatamente como lido em todos os dispositivos
-        markClientChatAsRead(client.id, supabase);
-
-        // 2. Busca sessões e disponibilidade em paralelo para carregamento instantâneo
-        const [check, sessionsRes] = await Promise.all([
-          checkDailyChatAvailability(client.id, supabase),
-          supabase
-            .from('chat_sessions')
-            .select('id, status, created_at, closed_at')
-            .eq('client_id', client.id)
-            .order('created_at', { ascending: false })
-        ]);
-
-        if (!isMounted) return;
-
-        const allSessions = sessionsRes.data || [];
-        const sessionIds = new Set<string>();
-        allSessions.forEach((s: any) => sessionIds.add(s.id));
-
-        let currentSession = check.activeSession || allSessions.find((s: any) => s.status === 'open' || s.status === 'active') || check.lastSession || allSessions[0] || { status: 'closed' };
-        if (currentSession?.id) {
-          sessionIds.add(currentSession.id);
-        }
-        clientSessionIdsRef.current = sessionIds;
-        setSession(currentSession);
-
-        // 3. Carrega todas as mensagens de todas as sessões do cliente
-        if (sessionIds.size > 0) {
-          const { data: loadedMsgs, error: msgsErr } = await supabase
-            .from('chat_messages')
-            .select('*')
-            .in('session_id', Array.from(sessionIds))
-            .order('created_at', { ascending: true });
-
-          if (msgsErr) {
-            console.error('[ChatModal] Erro ao carregar mensagens:', msgsErr);
-          } else if (isMounted && loadedMsgs) {
-            mergeMessages(loadedMsgs);
-          }
-        }
-      } catch (err) {
-        console.error('[ChatModal] Erro na configuração do chat:', err);
-      } finally {
-        if (isMounted) {
-          setLoading(false);
-          requestAnimationFrame(() => {
-            scrollToBottom(false);
-          });
-        }
-      }
-    };
-
-    // 5. Inscrição em tempo real imediata para novas mensagens e atualizações de status
-    const channelName = `chat-modal-${client.id}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-    channel = supabase
-      .channel(channelName)
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'chat_messages'
-      }, async (payload) => {
-        if (!isMounted) return;
-        const newMsg = (payload.new || payload.old) as any;
-        if (!newMsg || newMsg.sender_type === 'read') return;
-
-        // Se a mensagem pertence a uma sessão conhecida deste cliente
-        if (clientSessionIdsRef.current.has(newMsg.session_id) || newMsg.session_id === session?.id) {
-          mergeMessages([newMsg]);
-          if (payload.eventType === 'INSERT' && newMsg.sender_type === 'client') {
-            markClientChatAsRead(client.id, supabase);
-            scrollToBottom(true);
-          }
-        } else {
-          // Se a sessão ainda não está no Set, busca para verificar se pertence a este cliente
-          try {
-            const { data: sess } = await supabase
-              .from('chat_sessions')
-              .select('id, client_id')
-              .eq('id', newMsg.session_id)
-              .single();
-
-            if (sess && sess.client_id === client.id) {
-              clientSessionIdsRef.current.add(sess.id);
-              mergeMessages([newMsg]);
-              if (payload.eventType === 'INSERT' && newMsg.sender_type === 'client') {
-                markClientChatAsRead(client.id, supabase);
-                scrollToBottom(true);
-              }
-            }
-          } catch (e) {}
-        }
-      })
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'chat_sessions',
-        filter: `client_id=eq.${client.id}`
-      }, (payload) => {
-        if (!isMounted) return;
-        const updatedSession = payload.new as any;
-        if (updatedSession) {
-          clientSessionIdsRef.current.add(updatedSession.id);
-          setSession((prev: any) => {
-            if (!prev || prev.id === updatedSession.id) {
-              return updatedSession;
-            }
-            return prev;
-          });
-          fetchAllClientMessages(clientSessionIdsRef.current);
-        }
-      })
-      .subscribe();
-
-    setupChat();
-
-    // Sincronização ao focar novamente na janela ou mudar aba
-    const handleVisibilityOrFocus = () => {
-      if (document.visibilityState === 'visible' && isMounted) {
-        markClientChatAsRead(client.id, supabase);
-        fetchAllClientMessages();
-      }
-    };
-
-    // Polling controlado com lock para evitar travamento e sobrecarga
-    const runSyncStatus = async () => {
-      if (!isMounted || isSyncingRef.current) return;
-      isSyncingRef.current = true;
-      try {
-        const currentMsgs = messagesRef.current || [];
-        const currentTechMsgs = currentMsgs.filter((m) => {
-          if (m.sender_type !== 'tech') return false;
-          let status = 'sent';
-          try {
-            const meta = typeof m.media_url === 'string' && m.media_url.startsWith('{') ? JSON.parse(m.media_url) : {};
-            status = meta.status || m.status || 'sent';
-          } catch(e) {}
-          return status !== 'read';
-        });
-
-        if (currentTechMsgs.length > 0) {
-          const msgIds = currentTechMsgs.map((m) => m.id).filter(Boolean);
-          const syncRes = await fetch('/api/chat/sync-status', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ messageIds: msgIds, waSettings })
-          });
-
-          if (syncRes.ok && isMounted) {
-            const resData = await syncRes.json();
-            if (resData?.statusMap && Object.keys(resData.statusMap).length > 0) {
-              setMessages((prev) => {
-                let changed = false;
-                const next = prev.map((m) => {
-                  const newStatus = resData.statusMap[m.id];
-                  if (newStatus) {
-                    let meta: any = {};
-                    try {
-                      meta = typeof m.media_url === 'string' && m.media_url.startsWith('{') ? JSON.parse(m.media_url) : {};
-                    } catch (e) {}
-                    if (meta.status !== newStatus) {
-                      changed = true;
-                      return {
-                        ...m,
-                        media_url: JSON.stringify({ ...meta, status: newStatus }),
-                        status: newStatus
-                      };
-                    }
-                  }
-                  return m;
-                });
-                return changed ? next : prev;
-              });
-            }
-          }
-        }
-      } catch (e) {
-      } finally {
-        isSyncingRef.current = false;
-      }
-    };
-
-    const syncStatusInterval = setInterval(runSyncStatus, 2000);
-
-    window.addEventListener('focus', handleVisibilityOrFocus);
-    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
-
-    return () => {
-      isMounted = false;
-      clearInterval(syncStatusInterval);
-      window.removeEventListener('focus', handleVisibilityOrFocus);
-      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
-      if (channel) {
-        supabase.removeChannel(channel);
-      }
-    };
-  }, [isOpen, client?.id, visit?.id, scrollToBottom, waSettings]);
-
-  const sendMessage = async (text: string) => {
-    if (!text.trim() || isSending) return;
-    
-    setIsSending(true);
-    setNewMessage('');
-    
-    try {
-      // Garante uma sessão aberta para o envio
-      let currentSession = session;
-      if (!currentSession || currentSession.status === 'closed') {
-        const { data: newSess } = await supabase
+  // 1. React Query: Carregar Sessão Ativa e Disponibilidade
+  const { data: sessionData } = useQuery({
+    queryKey: ['chat-session', clientId],
+    queryFn: async () => {
+      if (!clientId) return null;
+      const [check, sessionsRes] = await Promise.all([
+        checkDailyChatAvailability(clientId, supabase),
+        supabase
           .from('chat_sessions')
-          .insert({
-            client_id: client.id,
-            visit_id: visit?.id || null,
-            admin_id: userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId,
-            status: 'open',
-            created_at: new Date().toISOString()
-          })
-          .select()
-          .single();
+          .select('id, status, created_at, closed_at')
+          .eq('client_id', clientId)
+          .order('created_at', { ascending: false })
+      ]);
 
-        if (newSess) {
-          currentSession = newSess;
-          setSession(newSess);
-          clientSessionIdsRef.current.add(newSess.id);
+      const allSessions = sessionsRes.data || [];
+      const session = check.activeSession || allSessions.find((s: any) => s.status === 'open' || s.status === 'active') || check.lastSession || allSessions[0] || { status: 'closed' };
+      const sessionIds = new Set<string>();
+      allSessions.forEach((s: any) => sessionIds.add(s.id));
+      if (session?.id) sessionIds.add(session.id);
+
+      return { session, sessionIds: Array.from(sessionIds) };
+    },
+    enabled: !!isOpen && !!clientId,
+    staleTime: 1000 * 15,
+  });
+
+  const session = sessionData?.session || null;
+
+  // 2. React Query: Carregar Mensagens com Polling Inteligente e Estável
+  const { data: messages = [], isLoading: loadingMessages } = useQuery<any[]>({
+    queryKey: ['chat-messages', clientId],
+    queryFn: async () => {
+      if (!clientId) return [];
+      
+      // Busca todas as sessões do cliente
+      const { data: sData } = await supabase
+        .from('chat_sessions')
+        .select('id')
+        .eq('client_id', clientId);
+
+      if (!sData || sData.length === 0) return [];
+      const sessionIds = sData.map((s) => s.id);
+
+      const { data: loadedMsgs, error } = await supabase
+        .from('chat_messages')
+        .select('*')
+        .in('session_id', sessionIds)
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        console.error('[ChatModal] Erro ao carregar mensagens:', error);
+        return [];
+      }
+
+      // Deduplicação e filtragem
+      const map = new Map<string, any>();
+      (loadedMsgs || []).forEach((m) => {
+        if (m && m.id && m.sender_type !== 'read') {
+          map.set(m.id, m);
         }
-      }
+      });
 
-      const sessionId = currentSession?.id;
-      if (!sessionId) {
-        throw new Error('Não foi possível iniciar a sessão de chat');
-      }
+      return Array.from(map.values()).sort(
+        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      );
+    },
+    enabled: !!isOpen && !!clientId,
+    refetchInterval: 3000, // Polling em segundo plano leve
+    refetchOnWindowFocus: true,
+    staleTime: 1000,
+  });
 
-      // 1. Insert into Supabase from the client
-      const initialMetadata = { status: 'sending' };
-      const { data: insertedMsg, error: insertErr } = await supabase.from('chat_messages').insert({
-        session_id: sessionId,
-        sender_type: 'tech',
-        content: text,
-        media_url: JSON.stringify(initialMetadata)
-      }).select().single();
+  // Mensagens do colaborador que ainda não foram confirmadas como lidas
+  const unreadTechMsgIds = useMemo(() => {
+    return messages
+      .filter((m) => {
+        if (m.sender_type !== 'tech') return false;
+        let status = 'sent';
+        try {
+          const meta = typeof m.media_url === 'string' && m.media_url.startsWith('{') ? JSON.parse(m.media_url) : {};
+          status = meta.status || m.status || 'sent';
+        } catch (e) {}
+        return status !== 'read';
+      })
+      .map((m) => m.id)
+      .filter(Boolean);
+  }, [messages]);
 
-      if (insertErr) throw insertErr;
+  // 3. React Query: Sincronização Periódica de Status de Entrega/Leitura (WhatsApp)
+  useQuery({
+    queryKey: ['chat-status-sync', clientId, unreadTechMsgIds.join(',')],
+    queryFn: async () => {
+      if (unreadTechMsgIds.length === 0) return null;
 
-      if (insertedMsg) {
-        setMessages((prev) => {
-          if (prev.some((m) => m.id === insertedMsg.id)) return prev;
-          return [...prev, insertedMsg];
-        });
-        requestAnimationFrame(() => scrollToBottom(true));
-      }
-
-      // 2. Marca como lido no sistema
-      markClientChatAsRead(client.id, supabase);
-
-      // 3. Resolve configurações de WhatsApp
       let currentSettings = { ...(waSettings || {}) };
       const adminId = userProfile?.role === 'admin' ? userProfile?.uid : userProfile?.adminId;
 
@@ -452,14 +145,209 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
           if (adminData?.whatsapp_settings) {
             currentSettings = { ...currentSettings, ...adminData.whatsapp_settings };
           }
-        } catch (adminErr) {}
+        } catch (e) {}
+      }
+
+      const syncRes = await fetch('/api/chat/sync-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messageIds: unreadTechMsgIds, waSettings: currentSettings })
+      });
+
+      if (!syncRes.ok) return null;
+      const resData = await syncRes.json();
+
+      if (resData?.statusMap && Object.keys(resData.statusMap).length > 0) {
+        // Atualiza atomicamente o cache de mensagens sem re-fetch
+        queryClient.setQueryData(['chat-messages', clientId], (prev: any[] | undefined) => {
+          if (!prev) return prev;
+          let changed = false;
+          const next = prev.map((m) => {
+            const newStatus = resData.statusMap[m.id];
+            if (newStatus) {
+              let meta: any = {};
+              try {
+                meta = typeof m.media_url === 'string' && m.media_url.startsWith('{') ? JSON.parse(m.media_url) : {};
+              } catch (e) {}
+              if (meta.status !== newStatus) {
+                changed = true;
+                return {
+                  ...m,
+                  media_url: JSON.stringify({ ...meta, status: newStatus }),
+                  status: newStatus
+                };
+              }
+            }
+            return m;
+          });
+          return changed ? next : prev;
+        });
+      }
+
+      return resData?.statusMap || null;
+    },
+    enabled: !!isOpen && !!clientId && unreadTechMsgIds.length > 0,
+    refetchInterval: 2500, // Sincroniza status a cada 2.5s sem travar a interface
+    staleTime: 2000,
+  });
+
+  // 4. Inscrição em Tempo Real (Supabase Realtime) com Atualização Atômica do Cache
+  useEffect(() => {
+    if (!isOpen || !clientId) return;
+
+    markClientChatAsRead(clientId, supabase);
+    isInitialScrollDoneRef.current = false;
+
+    const channelName = `chat-modal-rq-${clientId}-${Date.now()}`;
+    const channel = supabase
+      .channel(channelName)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'chat_messages'
+      }, async (payload) => {
+        const newMsg = (payload.new || payload.old) as any;
+        if (!newMsg || newMsg.sender_type === 'read') return;
+
+        // Atualiza diretamente o cache do React Query
+        queryClient.setQueryData(['chat-messages', clientId], (prev: any[] | undefined) => {
+          const list = prev ? [...prev] : [];
+          const idx = list.findIndex((m) => m.id === newMsg.id);
+          if (idx >= 0) {
+            list[idx] = { ...list[idx], ...newMsg };
+          } else {
+            list.push(newMsg);
+          }
+          return list.sort(
+            (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+          );
+        });
+
+        if (payload.eventType === 'INSERT' && newMsg.sender_type === 'client') {
+          markClientChatAsRead(clientId, supabase);
+          scrollToBottom(true);
+        }
+      })
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'chat_sessions',
+        filter: `client_id=eq.${clientId}`
+      }, () => {
+        queryClient.invalidateQueries({ queryKey: ['chat-session', clientId] });
+        queryClient.invalidateQueries({ queryKey: ['chat-messages', clientId] });
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [isOpen, clientId, queryClient, scrollToBottom]);
+
+  // Timer countdown para a sessão ativa
+  useEffect(() => {
+    if (session?.status === 'open' && session.created_at) {
+      const updateTimer = () => {
+        const evaluation = evaluateSessionExpiry(session);
+        if (evaluation.isExpired) {
+          setTimeLeft(0);
+          queryClient.invalidateQueries({ queryKey: ['chat-session', clientId] });
+        } else {
+          setTimeLeft(evaluation.secondsRemaining);
+        }
+      };
+
+      updateTimer();
+      const interval = setInterval(updateTimer, 1000);
+      return () => clearInterval(interval);
+    } else {
+      setTimeLeft(null);
+    }
+  }, [session, clientId, queryClient]);
+
+  // Controle de Rolagem Automática
+  useEffect(() => {
+    if (messages.length === 0) return;
+
+    if (!isInitialScrollDoneRef.current) {
+      scrollToBottom(false);
+      const t1 = setTimeout(() => scrollToBottom(false), 50);
+      const t2 = setTimeout(() => {
+        scrollToBottom(false);
+        isInitialScrollDoneRef.current = true;
+      }, 200);
+      return () => {
+        clearTimeout(t1);
+        clearTimeout(t2);
+      };
+    } else {
+      scrollToBottom(true);
+      const t = setTimeout(() => scrollToBottom(true), 80);
+      return () => clearTimeout(t);
+    }
+  }, [messages, scrollToBottom]);
+
+  // 5. React Query Mutation: Envio Otimista e Estável de Mensagens
+  const sendMutation = useMutation({
+    mutationFn: async (text: string) => {
+      let currentSession = session;
+      if (!currentSession || currentSession.status === 'closed') {
+        const { data: newSess } = await supabase
+          .from('chat_sessions')
+          .insert({
+            client_id: clientId,
+            visit_id: visit?.id || null,
+            admin_id: userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId,
+            status: 'open',
+            created_at: new Date().toISOString()
+          })
+          .select()
+          .single();
+
+        if (newSess) {
+          currentSession = newSess;
+          queryClient.setQueryData(['chat-session', clientId], { session: newSess, sessionIds: [newSess.id] });
+        }
+      }
+
+      const sessionId = currentSession?.id;
+      if (!sessionId) throw new Error('Não foi possível iniciar a sessão de chat');
+
+      const initialMetadata = { status: 'sending' };
+      const { data: insertedMsg, error: insertErr } = await supabase
+        .from('chat_messages')
+        .insert({
+          session_id: sessionId,
+          sender_type: 'tech',
+          content: text,
+          media_url: JSON.stringify(initialMetadata)
+        })
+        .select()
+        .single();
+
+      if (insertErr) throw insertErr;
+
+      // Resolve configurações de WhatsApp
+      let currentSettings = { ...(waSettings || {}) };
+      const adminId = userProfile?.role === 'admin' ? userProfile?.uid : userProfile?.adminId;
+
+      if (adminId && (!currentSettings.metaToken && !currentSettings.evolutionApiKey)) {
+        try {
+          const { data: adminData } = await supabase
+            .from('users')
+            .select('whatsapp_settings')
+            .eq('id', adminId)
+            .single();
+          if (adminData?.whatsapp_settings) {
+            currentSettings = { ...currentSettings, ...adminData.whatsapp_settings };
+          }
+        } catch (e) {}
       }
 
       const clientPhone = client.local_phone || client.phone || '';
-      if (clientPhone) {
-        let externalId = '';
+      let externalId = '';
 
-        // Envio via rota segura do backend (/api/chat/send) que gerencia Meta e Evolution de forma confiável
+      if (clientPhone) {
         try {
           const apiRes = await fetch('/api/chat/send', {
             method: 'POST',
@@ -475,98 +363,149 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
             if (apiData?.externalId) externalId = apiData.externalId;
           }
         } catch (apiErr) {
-          console.error('[ChatModal] Erro ao enviar mensagem pelo backend:', apiErr);
+          console.error('[ChatModal] Erro no envio via backend:', apiErr);
         }
 
-        // Atualiza status da mensagem para 'sent' com o externalId
-        if (insertedMsg?.id) {
-          const finalMetadata = { status: 'sent', external_id: externalId || undefined };
-          
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === insertedMsg.id
-                ? { ...m, media_url: JSON.stringify(finalMetadata), status: 'sent' }
-                : m
-            )
-          );
-
-          await supabase
-            .from('chat_messages')
-            .update({ media_url: JSON.stringify(finalMetadata) })
-            .eq('id', insertedMsg.id);
-        }
+        const finalMetadata = { status: 'sent', external_id: externalId || undefined };
+        await supabase
+          .from('chat_messages')
+          .update({ media_url: JSON.stringify(finalMetadata) })
+          .eq('id', insertedMsg.id);
       }
-    } catch (e) {
-      console.error('Error sending msg', e);
-    } finally {
-      setIsSending(false);
+
+      return insertedMsg;
+    },
+    onMutate: async (text: string) => {
+      // Atualização Otimista Instantânea (0ms)
+      const tempId = `temp-${Date.now()}`;
+      const optimisticMsg = {
+        id: tempId,
+        session_id: session?.id || 'temp-sess',
+        sender_type: 'tech',
+        content: text,
+        media_url: JSON.stringify({ status: 'sending' }),
+        created_at: new Date().toISOString()
+      };
+
+      queryClient.setQueryData(['chat-messages', clientId], (prev: any[] | undefined) => {
+        return [...(prev || []), optimisticMsg];
+      });
+
+      requestAnimationFrame(() => scrollToBottom(true));
+      return { tempId };
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['chat-messages', clientId] });
+      queryClient.invalidateQueries({ queryKey: ['chat-session', clientId] });
+    },
+    onError: (err) => {
+      console.error('[ChatModal] Erro ao enviar mensagem:', err);
+      queryClient.invalidateQueries({ queryKey: ['chat-messages', clientId] });
     }
+  });
+
+  const handleSendMessage = (textToSend: string) => {
+    if (!textToSend.trim() || sendMutation.isPending) return;
+    setNewMessage('');
+    sendMutation.mutate(textToSend);
+  };
+
+  const formatTime = (seconds: number) => {
+    const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+    const s = (seconds % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
   };
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-      <div className="bg-white rounded-xl w-full max-w-lg shadow-2xl flex flex-col h-[600px] max-h-[90vh]">
-        
-        <div className="flex justify-between items-center p-4 border-b">
-          <div>
-            <h2 className="text-lg font-bold text-gray-800 flex items-center">
-              <MessageCircle className="mr-2 text-blue-600" size={20} />
-              Chat: {client?.name}
-            </h2>
-            {session?.status === 'closed' || timeLeft === 0 ? (
-              <span className="text-xs text-red-500 font-semibold flex items-center mt-1">
-                <Clock size={12} className="mr-1"/> Sessão Finalizada
-              </span>
-            ) : (
-              <span className="text-xs text-green-500 font-semibold flex items-center mt-1">
-                <Clock size={12} className="mr-1"/> Sessão Ativa {timeLeft !== null && `(Expira em ${formatTime(timeLeft)})`}
-              </span>
-            )}
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in duration-150">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg flex flex-col h-[600px] max-h-[90vh] overflow-hidden">
+        {/* Header */}
+        <div className="p-4 bg-primary text-white flex justify-between items-center rounded-t-xl shrink-0">
+          <div className="flex items-center space-x-3">
+            <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center text-white font-bold">
+              {client.name ? client.name.charAt(0).toUpperCase() : <User size={20} />}
+            </div>
+            <div>
+              <h3 className="font-bold text-lg leading-tight flex items-center gap-2">
+                {client.name}
+              </h3>
+              <p className="text-xs text-blue-100 font-mono flex items-center gap-1.5 mt-0.5">
+                <span>{client.phone}</span>
+                {session?.status === 'open' && (
+                  <span className="inline-flex items-center gap-1 px-1.5 py-0.2 bg-emerald-500/30 text-emerald-100 rounded-full text-[10px] font-semibold">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-300 animate-pulse" />
+                    Ativo
+                  </span>
+                )}
+              </p>
+            </div>
           </div>
-          <button onClick={onClose} className="text-gray-500 hover:text-red-500 transition-colors">
-            <X size={24} />
-          </button>
+          
+          <div className="flex items-center space-x-2">
+            {session?.status === 'open' && timeLeft !== null && timeLeft > 0 && (
+              <div className="flex items-center space-x-1 bg-white/20 px-2.5 py-1 rounded-full text-xs font-mono">
+                <Clock size={12} className="animate-spin-slow" />
+                <span>{formatTime(timeLeft)}</span>
+              </div>
+            )}
+            <button 
+              onClick={onClose}
+              className="text-white/80 hover:text-white p-1 rounded-lg hover:bg-white/10 transition-colors"
+            >
+              <X size={20} />
+            </button>
+          </div>
         </div>
 
-        <div 
-          ref={messagesContainerRef}
-          className="flex-1 overflow-y-auto p-4 bg-gray-50 space-y-4"
-        >
-          {loading ? (
-            <div className="flex justify-center mt-10">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+        {/* Messages Body */}
+        <div ref={messagesContainerRef} className="flex-1 p-4 overflow-y-auto space-y-3 bg-gray-50/60">
+          {loadingMessages && messages.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-gray-400 gap-2">
+              <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+              <p className="text-xs font-medium">Carregando mensagens...</p>
             </div>
           ) : messages.length === 0 ? (
-            <div className="text-center text-gray-500 mt-10 text-sm">
-              Nenhuma mensagem ainda. Use os botões abaixo para avisar o cliente.
+            <div className="flex flex-col items-center justify-center h-full text-gray-400 space-y-2">
+              <MessageCircle size={40} className="stroke-[1.5] text-gray-300" />
+              <p className="text-sm font-medium">Nenhuma mensagem nesta conversa.</p>
+              <p className="text-xs text-gray-400 text-center max-w-[240px]">
+                Envie uma mensagem abaixo para iniciar o atendimento no WhatsApp.
+              </p>
             </div>
           ) : (
-            messages.map((msg, idx) => {
-              const parsedMedia = (() => {
-                if (!msg.media_url) return null;
-                if (typeof msg.media_url === 'string' && msg.media_url.trim().startsWith('{') && msg.media_url.trim().endsWith('}')) {
-                  try {
-                    return JSON.parse(msg.media_url);
-                  } catch (e) {}
+            messages.map((msg: any) => {
+              const deliveryStatus = parseMessageStatus(msg);
+              let realMediaUrl = '';
+              try {
+                if (typeof msg.media_url === 'string') {
+                  if (msg.media_url.startsWith('{')) {
+                    const parsed = JSON.parse(msg.media_url);
+                    realMediaUrl = parsed.url || '';
+                  } else {
+                    realMediaUrl = msg.media_url;
+                  }
                 }
-                return { url: msg.media_url };
-              })();
-
-              const realMediaUrl = parsedMedia?.url;
-              const deliveryStatus = parseMessageStatus(msg, messages);
+              } catch (e) {
+                realMediaUrl = msg.media_url || '';
+              }
 
               return (
-                <div key={msg.id || idx} className={`flex ${msg.sender_type === 'tech' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[80%] rounded-2xl px-4 py-2 shadow-sm ${
-                    msg.sender_type === 'tech' 
-                      ? 'bg-blue-600 text-white rounded-br-none' 
-                      : 'bg-white text-gray-800 border border-gray-100 rounded-bl-none'
-                  }`}>
-                    {msg.sender_type !== 'tech' && (
-                      <div className="text-xs font-bold text-gray-500 mb-1 flex items-center">
-                        <User size={10} className="mr-1"/> Cliente
+                <div 
+                  key={msg.id} 
+                  className={`flex ${msg.sender_type === 'tech' ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div 
+                    className={`max-w-[80%] rounded-2xl px-3.5 py-2.5 shadow-xs ${
+                      msg.sender_type === 'tech' 
+                        ? 'bg-primary text-white rounded-br-xs' 
+                        : 'bg-white text-gray-800 border border-gray-100 rounded-bl-xs'
+                    }`}
+                  >
+                    {msg.sender_name && (
+                      <div className={`text-[10px] font-semibold mb-1 ${msg.sender_type === 'tech' ? 'text-blue-200' : 'text-primary'}`}>
+                        {msg.sender_name}
                       </div>
                     )}
                     
@@ -606,19 +545,19 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
           <div ref={messagesEndRef} />
         </div>
 
-        <div className="p-4 bg-white border-t rounded-b-xl">
-          {/* Quick Actions */}
-          <div className="flex gap-2 mb-3 overflow-x-auto pb-2 scrollbar-hide">
+        {/* Input & Quick Actions Footer */}
+        <div className="p-4 bg-white border-t border-gray-100 rounded-b-xl shrink-0">
+          <div className="flex gap-2 mb-3 overflow-x-auto pb-1 scrollbar-hide">
             <button 
-              onClick={() => sendMessage("Olá, estou indo realizar a limpeza da sua piscina.")} 
-              disabled={isSending}
+              onClick={() => handleSendMessage("Olá, estou indo realizar a limpeza da sua piscina.")} 
+              disabled={sendMutation.isPending}
               className="whitespace-nowrap px-3 py-1.5 bg-blue-50 text-blue-700 text-xs font-semibold rounded-full hover:bg-blue-100 transition-colors disabled:opacity-50"
             >
               🚗 Estou a caminho
             </button>
             <button 
-              onClick={() => sendMessage("Cheguei, estou aguardando aqui na frente")} 
-              disabled={isSending}
+              onClick={() => handleSendMessage("Cheguei, estou aguardando aqui na frente")} 
+              disabled={sendMutation.isPending}
               className="whitespace-nowrap px-3 py-1.5 bg-blue-50 text-blue-700 text-xs font-semibold rounded-full hover:bg-blue-100 transition-colors disabled:opacity-50"
             >
               📍 Cheguei
@@ -633,19 +572,19 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
-                  sendMessage(newMessage);
+                  handleSendMessage(newMessage);
                 }
               }}
               placeholder="Digite uma mensagem..."
-              disabled={isSending}
-              className="flex-1 bg-gray-100 border-transparent focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-200 rounded-full px-4 py-2 text-sm transition-all disabled:bg-gray-50"
+              disabled={sendMutation.isPending}
+              className="flex-1 bg-gray-100 border-transparent focus:bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 rounded-full px-4 py-2 text-sm transition-all disabled:bg-gray-50"
             />
             <button 
-              onClick={() => sendMessage(newMessage)}
-              disabled={!newMessage.trim() || isSending}
-              className="bg-blue-600 text-white p-2.5 rounded-full hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center min-w-[40px] min-h-[40px]"
+              onClick={() => handleSendMessage(newMessage)}
+              disabled={!newMessage.trim() || sendMutation.isPending}
+              className="bg-primary text-white p-2.5 rounded-full hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center min-w-[40px] min-h-[40px] shadow-sm"
             >
-              <Send size={18} className={isSending ? 'animate-pulse' : ''} />
+              <Send size={18} className={sendMutation.isPending ? 'animate-pulse' : ''} />
             </button>
           </div>
         </div>
@@ -653,5 +592,3 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     </div>
   );
 }
-// Atualização de segurança para renderização de mídia
-
