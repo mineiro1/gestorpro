@@ -98,6 +98,10 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     }
   }, [messages, scrollToBottom]);
 
+  // Ref para evitar requisições concorrentes de sincronização
+  const isSyncingRef = useRef(false);
+  const [isSending, setIsSending] = useState(false);
+
   // Main lifecycle: load session, load messages asynchronously, mark as read, real-time subscription
   useEffect(() => {
     if (!isOpen || !client?.id) {
@@ -113,18 +117,32 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     let channel: any = null;
     isInitialScrollDoneRef.current = false;
 
-    // Helper to merge and sort messages without duplicates
+    // Helper to merge and sort messages without unnecessary state updates
     const mergeMessages = (incoming: any[]) => {
       setMessages((prev) => {
         const map = new Map<string, any>();
         prev.forEach((m) => {
           if (m && m.id) map.set(m.id, m);
         });
+
+        let hasChanges = false;
         incoming.forEach((m) => {
           if (m && m.id && m.sender_type !== 'read') {
-            map.set(m.id, m);
+            const existing = map.get(m.id);
+            if (!existing) {
+              hasChanges = true;
+              map.set(m.id, m);
+            } else if (existing.media_url !== m.media_url || existing.content !== m.content || existing.status !== m.status) {
+              hasChanges = true;
+              map.set(m.id, m);
+            }
           }
         });
+
+        if (!hasChanges && map.size === prev.length) {
+          return prev; // Retorna a mesma referência para evitar re-renderização desnecessária
+        }
+
         return Array.from(map.values()).sort(
           (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
         );
@@ -212,7 +230,6 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       } finally {
         if (isMounted) {
           setLoading(false);
-          // Força rolagem imediata ao final após o término do carregamento
           requestAnimationFrame(() => {
             scrollToBottom(false);
           });
@@ -276,7 +293,6 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
             }
             return prev;
           });
-          // Busca novas mensagens da nova sessão criada
           fetchAllClientMessages(clientSessionIdsRef.current);
         }
       })
@@ -292,14 +308,11 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       }
     };
 
-    // Polling ativo ultra-rápido (1 segundo) para sincronizar novas mensagens recebidas e confirmações de entrega/leitura do WhatsApp
+    // Polling controlado com lock para evitar travamento e sobrecarga
     const runSyncStatus = async () => {
-      if (!isMounted) return;
+      if (!isMounted || isSyncingRef.current) return;
+      isSyncingRef.current = true;
       try {
-        // 1. Sempre busca mensagens recentes do cliente para garantir sincronismo instantâneo
-        await fetchAllClientMessages();
-
-        // 2. Obter mensagens que ainda não foram marcadas como 'read'
         const currentMsgs = messagesRef.current || [];
         const currentTechMsgs = currentMsgs.filter((m) => {
           if (m.sender_type !== 'tech') return false;
@@ -322,8 +335,9 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
           if (syncRes.ok && isMounted) {
             const resData = await syncRes.json();
             if (resData?.statusMap && Object.keys(resData.statusMap).length > 0) {
-              setMessages((prev) =>
-                prev.map((m) => {
+              setMessages((prev) => {
+                let changed = false;
+                const next = prev.map((m) => {
                   const newStatus = resData.statusMap[m.id];
                   if (newStatus) {
                     let meta: any = {};
@@ -331,6 +345,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
                       meta = typeof m.media_url === 'string' && m.media_url.startsWith('{') ? JSON.parse(m.media_url) : {};
                     } catch (e) {}
                     if (meta.status !== newStatus) {
+                      changed = true;
                       return {
                         ...m,
                         media_url: JSON.stringify({ ...meta, status: newStatus }),
@@ -339,20 +354,19 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
                     }
                   }
                   return m;
-                })
-              );
+                });
+                return changed ? next : prev;
+              });
             }
           }
         }
-      } catch (e) {}
+      } catch (e) {
+      } finally {
+        isSyncingRef.current = false;
+      }
     };
 
-    // Executa sincronizações imediatas em rajada após a abertura
-    setTimeout(() => { fetchAllClientMessages(); runSyncStatus(); }, 150);
-    setTimeout(() => { fetchAllClientMessages(); runSyncStatus(); }, 450);
-    setTimeout(() => { fetchAllClientMessages(); runSyncStatus(); }, 1000);
-
-    const syncStatusInterval = setInterval(runSyncStatus, 1000);
+    const syncStatusInterval = setInterval(runSyncStatus, 2000);
 
     window.addEventListener('focus', handleVisibilityOrFocus);
     document.addEventListener('visibilitychange', handleVisibilityOrFocus);
@@ -369,19 +383,49 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   }, [isOpen, client?.id, visit?.id, scrollToBottom, waSettings]);
 
   const sendMessage = async (text: string) => {
-    if (!text.trim() || !session || session.status === 'closed' || timeLeft === 0) return;
+    if (!text.trim() || isSending) return;
     
+    setIsSending(true);
     setNewMessage('');
     
     try {
-      // 1. Insert into Supabase from the client (authenticated)
+      // Garante uma sessão aberta para o envio
+      let currentSession = session;
+      if (!currentSession || currentSession.status === 'closed') {
+        const { data: newSess } = await supabase
+          .from('chat_sessions')
+          .insert({
+            client_id: client.id,
+            visit_id: visit?.id || null,
+            admin_id: userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId,
+            status: 'open',
+            created_at: new Date().toISOString()
+          })
+          .select()
+          .single();
+
+        if (newSess) {
+          currentSession = newSess;
+          setSession(newSess);
+          clientSessionIdsRef.current.add(newSess.id);
+        }
+      }
+
+      const sessionId = currentSession?.id;
+      if (!sessionId) {
+        throw new Error('Não foi possível iniciar a sessão de chat');
+      }
+
+      // 1. Insert into Supabase from the client
       const initialMetadata = { status: 'sending' };
-      const { data: insertedMsg } = await supabase.from('chat_messages').insert({
-        session_id: session.id,
+      const { data: insertedMsg, error: insertErr } = await supabase.from('chat_messages').insert({
+        session_id: sessionId,
         sender_type: 'tech',
         content: text,
         media_url: JSON.stringify(initialMetadata)
       }).select().single();
+
+      if (insertErr) throw insertErr;
 
       if (insertedMsg) {
         setMessages((prev) => {
@@ -394,7 +438,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       // 2. Marca como lido no sistema
       markClientChatAsRead(client.id, supabase);
 
-      // 3. Resolve configurações de WhatsApp (inclusive para colaboradores/funcionários)
+      // 3. Resolve configurações de WhatsApp
       let currentSettings = { ...(waSettings || {}) };
       const adminId = userProfile?.role === 'admin' ? userProfile?.uid : userProfile?.adminId;
 
@@ -408,58 +452,30 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
           if (adminData?.whatsapp_settings) {
             currentSettings = { ...currentSettings, ...adminData.whatsapp_settings };
           }
-        } catch (adminErr) {
-          console.error('Erro ao buscar whatsapp_settings do administrador:', adminErr);
-        }
+        } catch (adminErr) {}
       }
 
       const clientPhone = client.local_phone || client.phone || '';
       if (clientPhone) {
-        let sentDirectly = false;
         let externalId = '';
 
-        // Disparo direto (funciona nativamente no APK Android e navegadores com suporte a fetch direto)
-        if (currentSettings.useMetaApi && currentSettings.metaToken) {
-          try {
-            const res = await sendMetaMessage(clientPhone, text, currentSettings);
-            sentDirectly = true;
-            if (res?.key?.id) externalId = res.key.id;
-            else if (res?.data?.key?.id) externalId = res.data.key.id;
-            else if (res?.messages?.[0]?.id) externalId = res.messages[0].id;
-            else if (res?.id) externalId = res.id;
-          } catch (metaErr) {
-            console.warn('[ChatModal] Envio direto via Meta falhou, tentando fallback do backend:', metaErr);
+        // Envio via rota segura do backend (/api/chat/send) que gerencia Meta e Evolution de forma confiável
+        try {
+          const apiRes = await fetch('/api/chat/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              text,
+              clientPhone,
+              waSettings: currentSettings
+            })
+          });
+          if (apiRes.ok) {
+            const apiData = await apiRes.json().catch(() => null);
+            if (apiData?.externalId) externalId = apiData.externalId;
           }
-        } else if (currentSettings.useEvolutionApi && currentSettings.evolutionApiKey) {
-          try {
-            const res = await sendEvolutionMessage(clientPhone, text, currentSettings);
-            sentDirectly = true;
-            if (res?.key?.id) externalId = res.key.id;
-            else if (res?.messageId) externalId = res.messageId;
-          } catch (evoErr) {
-            console.warn('[ChatModal] Envio direto via Evolution falhou, tentando fallback do backend:', evoErr);
-          }
-        }
-
-        // Se não foi enviado diretamente (ex: CORS no ambiente web), tenta via rota /api/chat/send
-        if (!sentDirectly) {
-          try {
-            const apiRes = await fetch('/api/chat/send', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                text,
-                clientPhone,
-                waSettings: currentSettings
-              })
-            });
-            if (apiRes.ok) {
-              const apiData = await apiRes.json().catch(() => null);
-              if (apiData?.externalId) externalId = apiData.externalId;
-            }
-          } catch (apiErr) {
-            console.error('[ChatModal] Erro ao enviar mensagem pelo backend:', apiErr);
-          }
+        } catch (apiErr) {
+          console.error('[ChatModal] Erro ao enviar mensagem pelo backend:', apiErr);
         }
 
         // Atualiza status da mensagem para 'sent' com o externalId
@@ -478,39 +494,12 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
             .from('chat_messages')
             .update({ media_url: JSON.stringify(finalMetadata) })
             .eq('id', insertedMsg.id);
-
-          // Disparar checagens rápidas pós-envio para entrega e leitura instantâneas
-          const quickCheck = async () => {
-            try {
-              const checkRes = await fetch('/api/chat/sync-status', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ messageIds: [insertedMsg.id], waSettings: currentSettings })
-              });
-              if (checkRes.ok) {
-                const resData = await checkRes.json();
-                if (resData?.statusMap?.[insertedMsg.id]) {
-                  const newSt = resData.statusMap[insertedMsg.id];
-                  setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === insertedMsg.id
-                        ? { ...m, media_url: JSON.stringify({ ...finalMetadata, status: newSt }), status: newSt }
-                        : m
-                    )
-                  );
-                }
-              }
-            } catch (e) {}
-          };
-
-          setTimeout(quickCheck, 300);
-          setTimeout(quickCheck, 800);
-          setTimeout(quickCheck, 1600);
-          setTimeout(quickCheck, 3000);
         }
       }
     } catch (e) {
       console.error('Error sending msg', e);
+    } finally {
+      setIsSending(false);
     }
   };
 
@@ -617,43 +606,49 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
           <div ref={messagesEndRef} />
         </div>
 
-        {session?.status === 'open' && timeLeft !== 0 ? (
-          <div className="p-4 bg-white border-t rounded-b-xl">
-            {/* Quick Actions */}
-            <div className="flex gap-2 mb-3 overflow-x-auto pb-2 scrollbar-hide">
-              <button onClick={() => sendMessage("Olá, estou indo realizar a limpeza da sua piscina.")} className="whitespace-nowrap px-3 py-1.5 bg-blue-50 text-blue-700 text-xs font-semibold rounded-full hover:bg-blue-100 transition-colors">
-                🚗 Estou a caminho
-              </button>
-              <button onClick={() => sendMessage("Cheguei, estou aguardando aqui na frente")} className="whitespace-nowrap px-3 py-1.5 bg-blue-50 text-blue-700 text-xs font-semibold rounded-full hover:bg-blue-100 transition-colors">
-                📍 Cheguei
-              </button>
-            </div>
-            
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                value={newMessage}
-                onChange={(e) => setNewMessage(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && sendMessage(newMessage)}
-                placeholder="Digite uma mensagem..."
-                className="flex-1 bg-gray-100 border-transparent focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-200 rounded-full px-4 py-2 text-sm transition-all"
-              />
-              <button 
-                onClick={() => sendMessage(newMessage)}
-                disabled={!newMessage.trim()}
-                className="bg-blue-600 text-white p-2.5 rounded-full hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                <Send size={18} />
-              </button>
-            </div>
+        <div className="p-4 bg-white border-t rounded-b-xl">
+          {/* Quick Actions */}
+          <div className="flex gap-2 mb-3 overflow-x-auto pb-2 scrollbar-hide">
+            <button 
+              onClick={() => sendMessage("Olá, estou indo realizar a limpeza da sua piscina.")} 
+              disabled={isSending}
+              className="whitespace-nowrap px-3 py-1.5 bg-blue-50 text-blue-700 text-xs font-semibold rounded-full hover:bg-blue-100 transition-colors disabled:opacity-50"
+            >
+              🚗 Estou a caminho
+            </button>
+            <button 
+              onClick={() => sendMessage("Cheguei, estou aguardando aqui na frente")} 
+              disabled={isSending}
+              className="whitespace-nowrap px-3 py-1.5 bg-blue-50 text-blue-700 text-xs font-semibold rounded-full hover:bg-blue-100 transition-colors disabled:opacity-50"
+            >
+              📍 Cheguei
+            </button>
           </div>
-        ) : (
-          <div className="p-3 bg-gray-100 border-t rounded-b-xl text-center">
-            <p className="text-xs text-gray-500 font-medium">
-              Sessão encerrada (Limite diário estrito). Novo atendimento disponível amanhã a partir das 00:00.
-            </p>
+          
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={newMessage}
+              onChange={(e) => setNewMessage(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  sendMessage(newMessage);
+                }
+              }}
+              placeholder="Digite uma mensagem..."
+              disabled={isSending}
+              className="flex-1 bg-gray-100 border-transparent focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-200 rounded-full px-4 py-2 text-sm transition-all disabled:bg-gray-50"
+            />
+            <button 
+              onClick={() => sendMessage(newMessage)}
+              disabled={!newMessage.trim() || isSending}
+              className="bg-blue-600 text-white p-2.5 rounded-full hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center min-w-[40px] min-h-[40px]"
+            >
+              <Send size={18} className={isSending ? 'animate-pulse' : ''} />
+            </button>
           </div>
-        )}
+        </div>
       </div>
     </div>
   );
