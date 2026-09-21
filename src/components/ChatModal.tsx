@@ -131,17 +131,32 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       });
     };
 
-    const fetchAllClientMessages = async (sessionIds: Set<string>) => {
-      if (sessionIds.size === 0) return;
+    const fetchAllClientMessages = async (sessionIds?: Set<string>) => {
       try {
-        const { data: loadedMsgs } = await supabase
-          .from('chat_messages')
-          .select('*')
-          .in('session_id', Array.from(sessionIds))
-          .order('created_at', { ascending: true });
+        let currentIds = sessionIds || clientSessionIdsRef.current;
+        
+        // Se ainda não temos sessões mapeadas, busca todas as sessões do cliente
+        if (!currentIds || currentIds.size === 0) {
+          const { data: sData } = await supabase
+            .from('chat_sessions')
+            .select('id')
+            .eq('client_id', client.id);
+          if (sData && sData.length > 0) {
+            currentIds = new Set(sData.map((s) => s.id));
+            clientSessionIdsRef.current = currentIds;
+          }
+        }
 
-        if (isMounted && loadedMsgs && loadedMsgs.length > 0) {
-          mergeMessages(loadedMsgs);
+        if (currentIds && currentIds.size > 0) {
+          const { data: loadedMsgs } = await supabase
+            .from('chat_messages')
+            .select('*')
+            .in('session_id', Array.from(currentIds))
+            .order('created_at', { ascending: true });
+
+          if (isMounted && loadedMsgs && loadedMsgs.length > 0) {
+            mergeMessages(loadedMsgs);
+          }
         }
       } catch (err) {
         console.error('[ChatModal] Erro ao carregar mensagens:', err);
@@ -171,7 +186,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         const sessionIds = new Set<string>();
         allSessions.forEach((s: any) => sessionIds.add(s.id));
 
-        let currentSession = check.activeSession || allSessions.find((s: any) => s.status === 'open') || check.lastSession || allSessions[0] || { status: 'closed' };
+        let currentSession = check.activeSession || allSessions.find((s: any) => s.status === 'open' || s.status === 'active') || check.lastSession || allSessions[0] || { status: 'closed' };
         if (currentSession?.id) {
           sessionIds.add(currentSession.id);
         }
@@ -218,14 +233,15 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         const newMsg = (payload.new || payload.old) as any;
         if (!newMsg || newMsg.sender_type === 'read') return;
 
-        // Verifica se a mensagem pertence a uma sessão conhecida deste cliente
+        // Se a mensagem pertence a uma sessão conhecida deste cliente
         if (clientSessionIdsRef.current.has(newMsg.session_id) || newMsg.session_id === session?.id) {
           mergeMessages([newMsg]);
           if (payload.eventType === 'INSERT' && newMsg.sender_type === 'client') {
             markClientChatAsRead(client.id, supabase);
+            scrollToBottom(true);
           }
         } else {
-          // Se a sessão ainda não está no Set, verifica se pertence a este cliente
+          // Se a sessão ainda não está no Set, busca para verificar se pertence a este cliente
           try {
             const { data: sess } = await supabase
               .from('chat_sessions')
@@ -238,6 +254,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
               mergeMessages([newMsg]);
               if (payload.eventType === 'INSERT' && newMsg.sender_type === 'client') {
                 markClientChatAsRead(client.id, supabase);
+                scrollToBottom(true);
               }
             }
           } catch (e) {}
@@ -259,27 +276,30 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
             }
             return prev;
           });
+          // Busca novas mensagens da nova sessão criada
+          fetchAllClientMessages(clientSessionIdsRef.current);
         }
       })
       .subscribe();
 
     setupChat();
 
-    // Sincronização ao focar novamente na janela
+    // Sincronização ao focar novamente na janela ou mudar aba
     const handleVisibilityOrFocus = () => {
       if (document.visibilityState === 'visible' && isMounted) {
         markClientChatAsRead(client.id, supabase);
-        if (clientSessionIdsRef.current.size > 0) {
-          fetchAllClientMessages(clientSessionIdsRef.current);
-        }
+        fetchAllClientMessages();
       }
     };
 
-    // Polling ativo ultra-rápido (1 segundo) para sincronizar confirmações de entrega/leitura do WhatsApp
+    // Polling ativo ultra-rápido (1 segundo) para sincronizar novas mensagens recebidas e confirmações de entrega/leitura do WhatsApp
     const runSyncStatus = async () => {
       if (!isMounted) return;
       try {
-        // Obter mensagens que ainda não foram marcadas como 'read'
+        // 1. Sempre busca mensagens recentes do cliente para garantir sincronismo instantâneo
+        await fetchAllClientMessages();
+
+        // 2. Obter mensagens que ainda não foram marcadas como 'read'
         const currentMsgs = messagesRef.current || [];
         const currentTechMsgs = currentMsgs.filter((m) => {
           if (m.sender_type !== 'tech') return false;
@@ -327,9 +347,10 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       } catch (e) {}
     };
 
-    // Executa sincronização inicial imediata após carregamento
-    setTimeout(() => runSyncStatus(), 200);
-    setTimeout(() => runSyncStatus(), 600);
+    // Executa sincronizações imediatas em rajada após a abertura
+    setTimeout(() => { fetchAllClientMessages(); runSyncStatus(); }, 150);
+    setTimeout(() => { fetchAllClientMessages(); runSyncStatus(); }, 450);
+    setTimeout(() => { fetchAllClientMessages(); runSyncStatus(); }, 1000);
 
     const syncStatusInterval = setInterval(runSyncStatus, 1000);
 

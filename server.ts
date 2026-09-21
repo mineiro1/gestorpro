@@ -710,21 +710,47 @@ async function processPayment(paymentId, adminId) {
         .from('chat_sessions')
         .select('*')
         .eq('client_id', matchedClient.id)
-        .eq('status', 'open')
         .order('created_at', { ascending: false });
         
-      if (!sessions || sessions.length === 0) {
-         return res.status(200).send("EVENT_RECEIVED");
-      }
-      
-      let activeSession = sessions[0];
-      
+      let activeSession = sessions && sessions.length > 0 ? sessions[0] : null;
       const now = new Date().getTime();
-      const createdTime = new Date(activeSession.created_at).getTime();
-      // If session is older than 30 minutes, close it and discard message
-      if (now - createdTime > 30 * 60 * 1000) {
-          await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
-          return res.status(200).send("EVENT_RECEIVED");
+
+      if (activeSession) {
+        const createdTime = new Date(activeSession.created_at).getTime();
+        // Se a sessão expirou (> 30 min), fecha a anterior e cria uma nova
+        if (now - createdTime > 30 * 60 * 1000 || activeSession.status === 'closed') {
+          if (activeSession.status !== 'closed') {
+            await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
+          }
+          const { data: newSess } = await supabaseAdmin
+            .from('chat_sessions')
+            .insert({
+              client_id: matchedClient.id,
+              admin_id: matchedClient.admin_id,
+              status: 'open',
+              created_at: new Date().toISOString()
+            })
+            .select()
+            .single();
+          if (newSess) activeSession = newSess;
+        }
+      } else {
+        // Se não existia nenhuma sessão para o cliente, cria uma sessão imediatamente
+        const { data: newSess } = await supabaseAdmin
+          .from('chat_sessions')
+          .insert({
+            client_id: matchedClient.id,
+            admin_id: matchedClient.admin_id,
+            status: 'open',
+            created_at: new Date().toISOString()
+          })
+          .select()
+          .single();
+        if (newSess) activeSession = newSess;
+      }
+
+      if (!activeSession) {
+        return res.status(200).send("EVENT_RECEIVED");
       }
 
       await supabaseAdmin.from('chat_messages').insert({
@@ -828,22 +854,47 @@ async function processPayment(paymentId, adminId) {
         .from('chat_sessions')
         .select('*')
         .eq('client_id', matchedClient.id)
-        .eq('status', 'open')
         .order('created_at', { ascending: false });
         
       let activeSession = sessions && sessions.length > 0 ? sessions[0] : null;
-      
-      if (!activeSession) {
-         return res.status(200).send("OK");
-      }
-      
       const now = new Date().getTime();
-      const createdTime = new Date(activeSession.created_at).getTime();
-      console.log("TIMER CHECK EVOLUTION:", { now, createdTime, diff: now - createdTime, limit: 30 * 60 * 1000 });
-      // If session is older than 30 minutes, close it and discard message
-      if (now - createdTime > 30 * 60 * 1000) {
-          await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
-          return res.status(200).send("OK");
+
+      if (activeSession) {
+        const createdTime = new Date(activeSession.created_at).getTime();
+        // Se a sessão expirou (> 30 min), fecha a anterior e cria uma nova
+        if (now - createdTime > 30 * 60 * 1000 || activeSession.status === 'closed') {
+          if (activeSession.status !== 'closed') {
+            await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
+          }
+          const { data: newSess } = await supabaseAdmin
+            .from('chat_sessions')
+            .insert({
+              client_id: matchedClient.id,
+              admin_id: matchedClient.admin_id,
+              status: 'open',
+              created_at: new Date().toISOString()
+            })
+            .select()
+            .single();
+          if (newSess) activeSession = newSess;
+        }
+      } else {
+        // Se não existia nenhuma sessão para o cliente, cria uma sessão imediatamente
+        const { data: newSess } = await supabaseAdmin
+          .from('chat_sessions')
+          .insert({
+            client_id: matchedClient.id,
+            admin_id: matchedClient.admin_id,
+            status: 'open',
+            created_at: new Date().toISOString()
+          })
+          .select()
+          .single();
+        if (newSess) activeSession = newSess;
+      }
+
+      if (!activeSession) {
+        return res.status(200).send("OK");
       }
 
       await supabaseAdmin.from('chat_messages').insert({
