@@ -275,7 +275,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       }
     };
 
-    // Polling ativo a cada 2 segundos para sincronizar confirmações de entrega/leitura do WhatsApp
+    // Polling ativo ultra-rápido (1 segundo) para sincronizar confirmações de entrega/leitura do WhatsApp
     const runSyncStatus = async () => {
       if (!isMounted) return;
       try {
@@ -299,7 +299,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
             body: JSON.stringify({ messageIds: msgIds, waSettings })
           });
 
-          if (syncRes.ok) {
+          if (syncRes.ok && isMounted) {
             const resData = await syncRes.json();
             if (resData?.statusMap && Object.keys(resData.statusMap).length > 0) {
               setMessages((prev) =>
@@ -327,12 +327,11 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       } catch (e) {}
     };
 
-    // Executa sincronização inicial após carregamento
-    setTimeout(() => {
-      runSyncStatus();
-    }, 400);
+    // Executa sincronização inicial imediata após carregamento
+    setTimeout(() => runSyncStatus(), 200);
+    setTimeout(() => runSyncStatus(), 600);
 
-    const syncStatusInterval = setInterval(runSyncStatus, 2000);
+    const syncStatusInterval = setInterval(runSyncStatus, 1000);
 
     window.addEventListener('focus', handleVisibilityOrFocus);
     document.addEventListener('visibilitychange', handleVisibilityOrFocus);
@@ -445,10 +444,48 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         // Atualiza status da mensagem para 'sent' com o externalId
         if (insertedMsg?.id) {
           const finalMetadata = { status: 'sent', external_id: externalId || undefined };
+          
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === insertedMsg.id
+                ? { ...m, media_url: JSON.stringify(finalMetadata), status: 'sent' }
+                : m
+            )
+          );
+
           await supabase
             .from('chat_messages')
             .update({ media_url: JSON.stringify(finalMetadata) })
             .eq('id', insertedMsg.id);
+
+          // Disparar checagens rápidas pós-envio para entrega e leitura instantâneas
+          const quickCheck = async () => {
+            try {
+              const checkRes = await fetch('/api/chat/sync-status', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ messageIds: [insertedMsg.id], waSettings: currentSettings })
+              });
+              if (checkRes.ok) {
+                const resData = await checkRes.json();
+                if (resData?.statusMap?.[insertedMsg.id]) {
+                  const newSt = resData.statusMap[insertedMsg.id];
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === insertedMsg.id
+                        ? { ...m, media_url: JSON.stringify({ ...finalMetadata, status: newSt }), status: newSt }
+                        : m
+                    )
+                  );
+                }
+              }
+            } catch (e) {}
+          };
+
+          setTimeout(quickCheck, 300);
+          setTimeout(quickCheck, 800);
+          setTimeout(quickCheck, 1600);
+          setTimeout(quickCheck, 3000);
         }
       }
     } catch (e) {

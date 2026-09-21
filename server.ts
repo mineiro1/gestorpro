@@ -330,107 +330,115 @@ async function processPayment(paymentId, adminId) {
         .eq('sender_type', 'tech');
 
       if (!msgs || msgs.length === 0) {
-        return res.json({ updated: 0 });
+        return res.json({ updated: 0, statusMap: {} });
       }
 
       let updatedCount = 0;
       const statusMap: Record<string, string> = {};
 
-      for (const msg of msgs) {
-        let meta: any = {};
-        try { meta = JSON.parse(msg.media_url); } catch(e) {}
-        
-        if (meta.status === 'read' || !meta.external_id) {
-          if (meta.status === 'read') {
-            statusMap[msg.id] = 'read';
-          }
-          continue;
-        }
-
-        const externalId = meta.external_id;
-        let remoteStatus: 'sent' | 'delivered' | 'read' | null = null;
-
-        // 1. Consulta na API WAME
-        if (waSettings?.useMetaApi && waSettings?.metaToken) {
-          let baseUrl = (waSettings.metaServerUrl || 'https://graph.facebook.com/v19.0').trim().replace(/\/$/, '');
-          if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
-          const isWame = baseUrl && !baseUrl.includes('graph.facebook.com');
-
-          if (isWame) {
-            try {
-              const checkUrl = `${baseUrl}/${waSettings.metaToken}/message/${externalId}`;
-              const checkRes = await fetch(checkUrl);
-              if (checkRes.ok) {
-                const msgDetails = await checkRes.json();
-                const label = String(msgDetails?.data?.statusLabel || msgDetails?.statusLabel || msgDetails?.data?.status_label || '').toLowerCase().trim();
-                const numStatus = msgDetails?.data?.status ?? msgDetails?.status ?? msgDetails?.update?.status;
-                const ack = msgDetails?.data?.ack ?? msgDetails?.ack ?? msgDetails?.update?.ack;
-
-                if (label === 'read' || label === 'played' || label === 'viewed' || numStatus === 4 || numStatus === 5 || ack === 4 || ack === 5) {
-                  remoteStatus = 'read';
-                } else if (label === 'delivered' || numStatus === 3 || ack === 3) {
-                  remoteStatus = 'delivered';
-                } else if (label === 'sent' || numStatus === 2 || ack === 2) {
-                  remoteStatus = 'sent';
-                }
-              }
-            } catch(e) {
-              console.error("Erro ao sincronizar status WAME:", e);
+      // Consultar em paralelo todas as mensagens pendentes para resposta ultra rápida (< 200ms)
+      await Promise.all(
+        msgs.map(async (msg) => {
+          let meta: any = {};
+          try { meta = JSON.parse(msg.media_url); } catch(e) {}
+          
+          if (meta.status === 'read' || !meta.external_id) {
+            if (meta.status === 'read') {
+              statusMap[msg.id] = 'read';
             }
+            return;
           }
-        } else if (waSettings?.useEvolutionApi && waSettings?.evolutionApiUrl && waSettings?.evolutionApiKey && waSettings?.evolutionInstanceName) {
-          // 2. Consulta na Evolution API
-          try {
-            let baseUrl = waSettings.evolutionApiUrl.trim().replace(/\/$/, '');
+
+          const externalId = meta.external_id;
+          let remoteStatus: 'sent' | 'delivered' | 'read' | null = null;
+
+          // 1. Consulta na API WAME
+          if (waSettings?.useMetaApi && waSettings?.metaToken) {
+            let baseUrl = (waSettings.metaServerUrl || 'https://graph.facebook.com/v19.0').trim().replace(/\/$/, '');
             if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
-            const checkUrl = `${baseUrl}/chat/findMessages/${waSettings.evolutionInstanceName}`;
-            const checkRes = await fetch(checkUrl, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'apikey': waSettings.evolutionApiKey
-              },
-              body: JSON.stringify({
-                where: {
-                  key: {
-                    id: externalId
+            const isWame = baseUrl && !baseUrl.includes('graph.facebook.com');
+
+            if (isWame) {
+              try {
+                const checkUrl = `${baseUrl}/${waSettings.metaToken}/message/${externalId}`;
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 2500);
+                const checkRes = await fetch(checkUrl, { signal: controller.signal });
+                clearTimeout(timeoutId);
+
+                if (checkRes.ok) {
+                  const msgDetails = await checkRes.json();
+                  const label = String(msgDetails?.data?.statusLabel || msgDetails?.statusLabel || msgDetails?.data?.status_label || '').toLowerCase().trim();
+                  const numStatus = msgDetails?.data?.status ?? msgDetails?.status ?? msgDetails?.update?.status;
+                  const ack = msgDetails?.data?.ack ?? msgDetails?.ack ?? msgDetails?.update?.ack;
+
+                  if (label === 'read' || label === 'played' || label === 'viewed' || numStatus === 4 || numStatus === 5 || ack === 4 || ack === 5) {
+                    remoteStatus = 'read';
+                  } else if (label === 'delivered' || numStatus === 3 || ack === 3) {
+                    remoteStatus = 'delivered';
+                  } else if (label === 'sent' || numStatus === 2 || ack === 2) {
+                    remoteStatus = 'sent';
                   }
                 }
-              })
-            });
-            if (checkRes.ok) {
-              const evoData = await checkRes.json();
-              const rec = evoData?.messages?.records?.[0] || evoData?.records?.[0] || (Array.isArray(evoData) ? evoData[0] : evoData);
-              const rawStatus = rec?.status || rec?.update?.status;
-              const str = String(rawStatus || '').toUpperCase();
-              if (str === '4' || str === '5' || str === 'READ' || str === 'PLAYED' || str === 'READ_RECEIPT') {
-                remoteStatus = 'read';
-              } else if (str === '3' || str === 'DELIVERY_ACK' || str === 'DELIVERED') {
-                remoteStatus = 'delivered';
-              }
+              } catch(e) {}
             }
-          } catch(e) {
-            console.error("Erro ao sincronizar status Evolution:", e);
-          }
-        }
-
-        if (remoteStatus) {
-          statusMap[msg.id] = remoteStatus;
-          if (remoteStatus !== meta.status) {
-            await supabaseAdmin
-              .from('chat_messages')
-              .update({
-                media_url: JSON.stringify({
-                  ...meta,
-                  status: remoteStatus,
-                  status_updated_at: new Date().toISOString()
+          } else if (waSettings?.useEvolutionApi && waSettings?.evolutionApiUrl && waSettings?.evolutionApiKey && waSettings?.evolutionInstanceName) {
+            // 2. Consulta na Evolution API
+            try {
+              let baseUrl = waSettings.evolutionApiUrl.trim().replace(/\/$/, '');
+              if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
+              const checkUrl = `${baseUrl}/chat/findMessages/${waSettings.evolutionInstanceName}`;
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 2500);
+              const checkRes = await fetch(checkUrl, {
+                method: 'POST',
+                signal: controller.signal,
+                headers: {
+                  'Content-Type': 'application/json',
+                  'apikey': waSettings.evolutionApiKey
+                },
+                body: JSON.stringify({
+                  where: {
+                    key: {
+                      id: externalId
+                    }
+                  }
                 })
-              })
-              .eq('id', msg.id);
-            updatedCount++;
+              });
+              clearTimeout(timeoutId);
+
+              if (checkRes.ok) {
+                const evoData = await checkRes.json();
+                const rec = evoData?.messages?.records?.[0] || evoData?.records?.[0] || (Array.isArray(evoData) ? evoData[0] : evoData);
+                const rawStatus = rec?.status || rec?.update?.status;
+                const str = String(rawStatus || '').toUpperCase();
+                if (str === '4' || str === '5' || str === 'READ' || str === 'PLAYED' || str === 'READ_RECEIPT') {
+                  remoteStatus = 'read';
+                } else if (str === '3' || str === 'DELIVERY_ACK' || str === 'DELIVERED') {
+                  remoteStatus = 'delivered';
+                }
+              }
+            } catch(e) {}
           }
-        }
-      }
+
+          if (remoteStatus) {
+            statusMap[msg.id] = remoteStatus;
+            if (remoteStatus !== meta.status) {
+              await supabaseAdmin
+                .from('chat_messages')
+                .update({
+                  media_url: JSON.stringify({
+                    ...meta,
+                    status: remoteStatus,
+                    status_updated_at: new Date().toISOString()
+                  })
+                })
+                .eq('id', msg.id);
+              updatedCount++;
+            }
+          }
+        })
+      );
 
       res.json({ updated: updatedCount, statusMap });
     } catch(e: any) {
@@ -456,6 +464,25 @@ async function processPayment(paymentId, adminId) {
         return 'sent';
       }
       return null;
+    };
+
+    const isReceiptEvent = String(body?.event || '').toLowerCase().includes('receipt');
+
+    const inspectItem = (item: any) => {
+      if (!item || typeof item !== 'object') return;
+      const id = item?.key?.id || item?.id || item?.keyId || item?.messageId || item?.update?.key?.id || item?.data?.key?.id;
+      if (!id) return;
+
+      if (isReceiptEvent || item?.receipt?.readTimestamp || item?.update?.readTimestamp) {
+        results.push({ id: String(id), status: 'read' });
+        return;
+      }
+
+      const rawStatus = item?.update?.status ?? item?.status ?? item?.ack ?? item?.update?.ack ?? item?.statusLabel ?? item?.update?.statusLabel ?? item?.receipt?.status;
+      const mapped = mapStatus(rawStatus);
+      if (mapped) {
+        results.push({ id: String(id), status: mapped });
+      }
     };
 
     if (body.entry && Array.isArray(body.entry)) {
@@ -485,25 +512,17 @@ async function processPayment(paymentId, adminId) {
       }
     }
 
-    const candidates: any[] = [];
     if (Array.isArray(body)) {
-      candidates.push(...body);
+      body.forEach(inspectItem);
     } else {
+      inspectItem(body);
       if (Array.isArray(body.data)) {
-        candidates.push(...body.data);
+        body.data.forEach(inspectItem);
       } else if (body.data && typeof body.data === 'object') {
-        candidates.push(body.data);
+        inspectItem(body.data);
       }
-      candidates.push(body);
-    }
-
-    for (const item of candidates) {
-      if (!item || typeof item !== 'object') continue;
-      const id = item?.key?.id || item?.id || item?.keyId || item?.messageId || item?.update?.key?.id;
-      const rawStatus = item?.update?.status ?? item?.status ?? item?.ack ?? item?.update?.ack;
-      const mapped = mapStatus(rawStatus);
-      if (id && mapped) {
-        results.push({ id: String(id), status: mapped });
+      if (Array.isArray(body.updates)) {
+        body.updates.forEach(inspectItem);
       }
     }
 
