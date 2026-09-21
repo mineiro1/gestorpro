@@ -17,6 +17,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isInitialScrollDoneRef = useRef(false);
   const isSyncingRef = useRef(false);
+  const isSendingRef = useRef(false);
 
   const clientId = client?.id;
 
@@ -362,7 +363,8 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
             body: JSON.stringify({
               text,
               clientPhone,
-              waSettings: currentSettings
+              waSettings: currentSettings,
+              messageId: insertedMsg.id
             })
           });
           if (apiRes.ok) {
@@ -411,13 +413,18 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     onError: (err) => {
       console.error('[ChatModal] Erro ao enviar mensagem:', err);
       queryClient.invalidateQueries({ queryKey: ['chat-messages', clientId] });
+    },
+    onSettled: () => {
+      isSendingRef.current = false;
     }
   });
 
   const handleSendMessage = (textToSend: string) => {
-    if (!textToSend.trim() || sendMutation.isPending) return;
+    const trimmed = textToSend.trim();
+    if (!trimmed || isSendingRef.current || sendMutation.isPending) return;
+    isSendingRef.current = true;
     setNewMessage('');
-    sendMutation.mutate(textToSend);
+    sendMutation.mutate(trimmed);
   };
 
   const formatTime = (seconds: number) => {

@@ -200,55 +200,46 @@ async function processPayment(paymentId, adminId) {
 
   app.post("/api/chat/send", async (req, res) => {
     try {
-      const { text, clientPhone, waSettings } = req.body;
-      if (!text || !clientPhone) return res.status(400).json({error: "Missing fields"});
+      const { text, clientPhone, waSettings, messageId } = req.body;
+      if (!text || !clientPhone) return res.status(400).json({ error: "Missing fields" });
 
-      const cleanDigits = clientPhone.replace(/\D/g, '');
-      let rawNumber = cleanDigits.startsWith('55') ? cleanDigits : `55${cleanDigits}`;
-      const numbersToTry: string[] = [];
-
-      if (rawNumber.startsWith('55')) {
-        if (rawNumber.length === 13 && rawNumber[4] === '9') {
-          numbersToTry.push(rawNumber);
-          numbersToTry.push(rawNumber.substring(0, 4) + rawNumber.substring(5));
-        } else if (rawNumber.length === 12) {
-          numbersToTry.push(rawNumber.substring(0, 4) + '9' + rawNumber.substring(4));
-          numbersToTry.push(rawNumber);
-        } else {
-          numbersToTry.push(rawNumber);
-        }
-      } else {
-        numbersToTry.push(rawNumber);
-      }
+      const cleanDigits = String(clientPhone).replace(/\D/g, '');
+      const targetNumber = cleanDigits.startsWith('55') ? cleanDigits : `55${cleanDigits}`;
 
       let externalId = '';
 
-      // Now send via Evolution API
+      // Send via Evolution API (Single attempt to exact number, preventing duplicate sends)
       if (waSettings?.useEvolutionApi && waSettings?.evolutionApiUrl && waSettings?.evolutionApiKey && waSettings?.evolutionInstanceName) {
-        let sent = false;
-        for (const targetNumber of numbersToTry) {
-          const response = await fetch(`${waSettings.evolutionApiUrl}/message/sendText/${waSettings.evolutionInstanceName}`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'apikey': waSettings.evolutionApiKey
-            },
-            body: JSON.stringify({
-              number: targetNumber,
-              text: text,
-              options: { delay: 1000, presence: 'composing' },
-              textMessage: { text: text }
-            })
-          });
-          if (response.ok) {
-            sent = true;
-            try {
-              const evoData = await response.json();
-              if (evoData?.key?.id) externalId = evoData.key.id;
-              else if (evoData?.messageId) externalId = evoData.messageId;
-            } catch (e) {}
-            break; // Retorna imediatamente no primeiro sucesso
-          }
+        let baseUrl = waSettings.evolutionApiUrl.trim().replace(/\/$/, '');
+        if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
+
+        const response = await fetch(`${baseUrl}/message/sendText/${waSettings.evolutionInstanceName}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': waSettings.evolutionApiKey
+          },
+          body: JSON.stringify({
+            number: targetNumber,
+            text: text,
+            options: { delay: 500, presence: 'composing' },
+            textMessage: { text: text }
+          })
+        });
+
+        if (response.ok) {
+          try {
+            const evoData = await response.json();
+            externalId = evoData?.key?.id || 
+                         evoData?.data?.key?.id || 
+                         evoData?.messageId || 
+                         evoData?.id || 
+                         evoData?.messages?.[0]?.key?.id || 
+                         evoData?.messages?.[0]?.id || '';
+          } catch (e) {}
+        } else {
+          const errData = await response.json().catch(() => ({}));
+          console.warn("[/api/chat/send] Evolution API error response:", errData);
         }
       } else if (waSettings?.useMetaApi) {
         if (!waSettings.metaToken) throw new Error("Token Meta obrigatório");
@@ -259,47 +250,72 @@ async function processPayment(paymentId, adminId) {
         }
         const isWame = baseUrl && !baseUrl.includes('graph.facebook.com');
         
-        let sent = false;
-        for (const targetNumber of numbersToTry) {
-          let url, headers, body;
-          if (isWame) {
-             url = `${baseUrl}/${waSettings.metaToken}/message/text`;
-             headers = { 'Content-Type': 'application/json' };
-             body = JSON.stringify({ to: targetNumber, text: text });
-          } else {
-             const phoneId = waSettings.metaPhoneNumberId ? `/${waSettings.metaPhoneNumberId}` : '';
-             url = `${baseUrl}${phoneId}/messages`;
-             headers = {
-                'Authorization': `Bearer ${waSettings.metaToken}`,
-                'Content-Type': 'application/json'
-             };
-             body = JSON.stringify({
-                messaging_product: "whatsapp",
-                recipient_type: "individual",
-                to: targetNumber,
-                type: "text",
-                text: { preview_url: false, body: text }
-             });
-          }
-          
-          const response = await fetch(url, { method: 'POST', headers, body });
-          if (response.ok) {
-            sent = true;
-            try {
-              const metaData = await response.json();
-              if (metaData?.key?.id) externalId = metaData.key.id;
-              else if (metaData?.data?.key?.id) externalId = metaData.data.key.id;
-              else if (metaData?.messages?.[0]?.id) externalId = metaData.messages[0].id;
-              else if (metaData?.id) externalId = metaData.id;
-            } catch (e) {}
-            break; // Retorna imediatamente no primeiro sucesso
-          }
+        let url, headers, body;
+        if (isWame) {
+           url = `${baseUrl}/${waSettings.metaToken}/message/text`;
+           headers = { 'Content-Type': 'application/json' };
+           body = JSON.stringify({ to: targetNumber, text: text });
+        } else {
+           const phoneId = waSettings.metaPhoneNumberId ? `/${waSettings.metaPhoneNumberId}` : '';
+           url = `${baseUrl}${phoneId}/messages`;
+           headers = {
+              'Authorization': `Bearer ${waSettings.metaToken}`,
+              'Content-Type': 'application/json'
+           };
+           body = JSON.stringify({
+              messaging_product: "whatsapp",
+              recipient_type: "individual",
+              to: targetNumber,
+              type: "text",
+              text: { preview_url: false, body: text }
+           });
+        }
+        
+        const response = await fetch(url, { method: 'POST', headers, body });
+        if (response.ok) {
+          try {
+            const metaData = await response.json();
+            externalId = metaData?.messages?.[0]?.id || 
+                         metaData?.id || 
+                         metaData?.key?.id || 
+                         metaData?.data?.key?.id || '';
+          } catch (e) {}
         }
       }
       
+      // Update database message status and external_id atomically if messageId is provided
+      if (messageId) {
+        try {
+          const { data: currentMsg } = await supabaseAdmin
+            .from('chat_messages')
+            .select('media_url')
+            .eq('id', messageId)
+            .single();
+
+          let meta: any = {};
+          if (currentMsg?.media_url) {
+            try { meta = JSON.parse(currentMsg.media_url); } catch(e) {}
+          }
+
+          await supabaseAdmin
+            .from('chat_messages')
+            .update({
+              media_url: JSON.stringify({
+                ...meta,
+                status: 'sent',
+                external_id: externalId || undefined,
+                sent_at: new Date().toISOString()
+              })
+            })
+            .eq('id', messageId);
+        } catch (dbErr) {
+          console.error("[/api/chat/send] Erro ao atualizar external_id no banco:", dbErr);
+        }
+      }
+
       res.json({ success: true, externalId });
     } catch(e: any) {
-      console.error(e);
+      console.error("[/api/chat/send] Erro:", e);
       res.status(500).json({ error: e.message });
     }
   });
@@ -410,12 +426,14 @@ async function processPayment(paymentId, adminId) {
               if (checkRes.ok) {
                 const evoData = await checkRes.json();
                 const rec = evoData?.messages?.records?.[0] || evoData?.records?.[0] || (Array.isArray(evoData) ? evoData[0] : evoData);
-                const rawStatus = rec?.status || rec?.update?.status;
-                const str = String(rawStatus || '').toUpperCase();
-                if (str === '4' || str === '5' || str === 'READ' || str === 'PLAYED' || str === 'READ_RECEIPT') {
+                const rawStatus = rec?.status ?? rec?.update?.status ?? rec?.ack ?? rec?.update?.ack ?? rec?.statusLabel;
+                const str = String(rawStatus || '').toUpperCase().trim();
+                if (str === '4' || str === '5' || str === 'READ' || str === 'PLAYED' || str === 'READ_RECEIPT' || str === 'VIEWED') {
                   remoteStatus = 'read';
-                } else if (str === '3' || str === 'DELIVERY_ACK' || str === 'DELIVERED') {
+                } else if (str === '3' || str === 'DELIVERY_ACK' || str === 'DELIVERED' || str === 'RECEIVED') {
                   remoteStatus = 'delivered';
+                } else if (str === '2' || str === 'SERVER_ACK' || str === 'SENT') {
+                  remoteStatus = 'sent';
                 }
               }
             } catch(e) {}
@@ -537,11 +555,23 @@ async function processPayment(paymentId, adminId) {
       const { id: externalId, status: newStatus } = update;
       if (!externalId) continue;
 
-      const { data: foundMsgs } = await supabaseAdmin
+      let { data: foundMsgs } = await supabaseAdmin
         .from('chat_messages')
         .select('id, media_url, sender_type')
         .eq('sender_type', 'tech')
         .ilike('media_url', `%${externalId}%`);
+
+      if (!foundMsgs || foundMsgs.length === 0) {
+        if (externalId.length > 8) {
+          const shortId = externalId.slice(-12);
+          const { data: fallback } = await supabaseAdmin
+            .from('chat_messages')
+            .select('id, media_url, sender_type')
+            .eq('sender_type', 'tech')
+            .ilike('media_url', `%${shortId}%`);
+          foundMsgs = fallback;
+        }
+      }
 
       if (foundMsgs && foundMsgs.length > 0) {
         for (const fm of foundMsgs) {
