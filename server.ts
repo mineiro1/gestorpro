@@ -200,15 +200,27 @@ async function processPayment(paymentId, adminId) {
 
   app.post("/api/chat/send", async (req, res) => {
     try {
-      const { text, clientPhone, waSettings, messageId } = req.body;
+      let { text, clientPhone, waSettings, messageId, sessionId, senderName } = req.body;
       if (!text || !clientPhone) return res.status(400).json({ error: "Missing fields" });
+
+      // Se waSettings não estiver completo, buscar configurações do admin no banco
+      if (!waSettings?.evolutionApiKey && !waSettings?.metaToken) {
+        const { data: adminUsers } = await supabaseAdmin
+          .from('users')
+          .select('whatsapp_settings')
+          .not('whatsapp_settings', 'is', null);
+        const validAdmin = adminUsers?.find(u => u.whatsapp_settings?.evolutionApiKey || u.whatsapp_settings?.metaToken);
+        if (validAdmin?.whatsapp_settings) {
+          waSettings = validAdmin.whatsapp_settings;
+        }
+      }
 
       const cleanDigits = String(clientPhone).replace(/\D/g, '');
       const targetNumber = cleanDigits.startsWith('55') ? cleanDigits : `55${cleanDigits}`;
 
       let externalId = '';
 
-      // Send via Evolution API (Single attempt to exact number, preventing duplicate sends)
+      // Send via Evolution API (Single attempt to exact number, NO textMessage duplicate field)
       if (waSettings?.useEvolutionApi && waSettings?.evolutionApiUrl && waSettings?.evolutionApiKey && waSettings?.evolutionInstanceName) {
         let baseUrl = waSettings.evolutionApiUrl.trim().replace(/\/$/, '');
         if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
@@ -222,8 +234,7 @@ async function processPayment(paymentId, adminId) {
           body: JSON.stringify({
             number: targetNumber,
             text: text,
-            options: { delay: 500, presence: 'composing' },
-            textMessage: { text: text }
+            options: { delay: 500, presence: 'composing', linkPreview: false }
           })
         });
 
@@ -283,7 +294,13 @@ async function processPayment(paymentId, adminId) {
         }
       }
       
-      // Update database message status and external_id atomically if messageId is provided
+      const mediaPayload = {
+        status: 'sent',
+        external_id: externalId || undefined,
+        sent_at: new Date().toISOString()
+      };
+
+      // Atualiza o registro da mensagem no banco ou cria caso não exista
       if (messageId) {
         try {
           const { data: currentMsg } = await supabaseAdmin
@@ -302,18 +319,33 @@ async function processPayment(paymentId, adminId) {
             .update({
               media_url: JSON.stringify({
                 ...meta,
-                status: 'sent',
-                external_id: externalId || undefined,
-                sent_at: new Date().toISOString()
+                ...mediaPayload
               })
             })
             .eq('id', messageId);
         } catch (dbErr) {
           console.error("[/api/chat/send] Erro ao atualizar external_id no banco:", dbErr);
         }
+      } else if (sessionId) {
+        try {
+          const { data: created } = await supabaseAdmin
+            .from('chat_messages')
+            .insert({
+              session_id: sessionId,
+              sender_type: 'tech',
+              sender_name: senderName || 'Colaborador',
+              content: text,
+              media_url: JSON.stringify(mediaPayload)
+            })
+            .select()
+            .single();
+          if (created) messageId = created.id;
+        } catch (dbErr) {
+          console.error("[/api/chat/send] Erro ao inserir mensagem no banco:", dbErr);
+        }
       }
 
-      res.json({ success: true, externalId });
+      res.json({ success: true, externalId, messageId });
     } catch(e: any) {
       console.error("[/api/chat/send] Erro:", e);
       res.status(500).json({ error: e.message });
@@ -324,7 +356,7 @@ async function processPayment(paymentId, adminId) {
     try {
       let { messageIds, waSettings } = req.body;
       if (!Array.isArray(messageIds) || messageIds.length === 0) {
-        return res.json({ updated: 0 });
+        return res.json({ updated: 0, statusMap: {} });
       }
 
       // Se waSettings não veio ou está vazio (ex: usuário colaborador), buscar as configurações do admin no banco
@@ -341,7 +373,7 @@ async function processPayment(paymentId, adminId) {
 
       const { data: msgs } = await supabaseAdmin
         .from('chat_messages')
-        .select('id, media_url, sender_type')
+        .select('id, session_id, media_url, sender_type, created_at')
         .in('id', messageIds)
         .eq('sender_type', 'tech');
 
@@ -352,89 +384,106 @@ async function processPayment(paymentId, adminId) {
       let updatedCount = 0;
       const statusMap: Record<string, string> = {};
 
-      // Consultar em paralelo todas as mensagens pendentes para resposta ultra rápida (< 200ms)
+      // Consultar em paralelo todas as mensagens pendentes para resposta ultra rápida (< 250ms)
       await Promise.all(
         msgs.map(async (msg) => {
           let meta: any = {};
           try { meta = JSON.parse(msg.media_url); } catch(e) {}
           
-          if (meta.status === 'read' || !meta.external_id) {
-            if (meta.status === 'read') {
-              statusMap[msg.id] = 'read';
-            }
+          if (meta.status === 'read') {
+            statusMap[msg.id] = 'read';
             return;
           }
 
-          const externalId = meta.external_id;
           let remoteStatus: 'sent' | 'delivered' | 'read' | null = null;
+          const externalId = meta.external_id;
 
-          // 1. Consulta na API WAME
-          if (waSettings?.useMetaApi && waSettings?.metaToken) {
-            let baseUrl = (waSettings.metaServerUrl || 'https://graph.facebook.com/v19.0').trim().replace(/\/$/, '');
-            if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
-            const isWame = baseUrl && !baseUrl.includes('graph.facebook.com');
+          if (externalId) {
+            // 1. Consulta na API WAME / Meta
+            if (waSettings?.useMetaApi && waSettings?.metaToken) {
+              let baseUrl = (waSettings.metaServerUrl || 'https://graph.facebook.com/v19.0').trim().replace(/\/$/, '');
+              if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
+              const isWame = baseUrl && !baseUrl.includes('graph.facebook.com');
 
-            if (isWame) {
+              if (isWame) {
+                try {
+                  const checkUrl = `${baseUrl}/${waSettings.metaToken}/message/${externalId}`;
+                  const controller = new AbortController();
+                  const timeoutId = setTimeout(() => controller.abort(), 2500);
+                  const checkRes = await fetch(checkUrl, { signal: controller.signal });
+                  clearTimeout(timeoutId);
+
+                  if (checkRes.ok) {
+                    const msgDetails = await checkRes.json();
+                    const label = String(msgDetails?.data?.statusLabel || msgDetails?.statusLabel || msgDetails?.data?.status_label || '').toLowerCase().trim();
+                    const numStatus = msgDetails?.data?.status ?? msgDetails?.status ?? msgDetails?.update?.status;
+                    const ack = msgDetails?.data?.ack ?? msgDetails?.ack ?? msgDetails?.update?.ack;
+
+                    if (label === 'read' || label === 'played' || label === 'viewed' || numStatus === 4 || numStatus === 5 || ack === 4 || ack === 5) {
+                      remoteStatus = 'read';
+                    } else if (label === 'delivered' || numStatus === 3 || ack === 3) {
+                      remoteStatus = 'delivered';
+                    } else if (label === 'sent' || numStatus === 2 || ack === 2) {
+                      remoteStatus = 'sent';
+                    }
+                  }
+                } catch(e) {}
+              }
+            } else if (waSettings?.useEvolutionApi && waSettings?.evolutionApiUrl && waSettings?.evolutionApiKey && waSettings?.evolutionInstanceName) {
+              // 2. Consulta na Evolution API
               try {
-                const checkUrl = `${baseUrl}/${waSettings.metaToken}/message/${externalId}`;
+                let baseUrl = waSettings.evolutionApiUrl.trim().replace(/\/$/, '');
+                if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
+                const checkUrl = `${baseUrl}/chat/findMessages/${waSettings.evolutionInstanceName}`;
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 2500);
-                const checkRes = await fetch(checkUrl, { signal: controller.signal });
+                const checkRes = await fetch(checkUrl, {
+                  method: 'POST',
+                  signal: controller.signal,
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'apikey': waSettings.evolutionApiKey
+                  },
+                  body: JSON.stringify({
+                    where: {
+                      key: {
+                        id: externalId
+                      }
+                    }
+                  })
+                });
                 clearTimeout(timeoutId);
 
                 if (checkRes.ok) {
-                  const msgDetails = await checkRes.json();
-                  const label = String(msgDetails?.data?.statusLabel || msgDetails?.statusLabel || msgDetails?.data?.status_label || '').toLowerCase().trim();
-                  const numStatus = msgDetails?.data?.status ?? msgDetails?.status ?? msgDetails?.update?.status;
-                  const ack = msgDetails?.data?.ack ?? msgDetails?.ack ?? msgDetails?.update?.ack;
-
-                  if (label === 'read' || label === 'played' || label === 'viewed' || numStatus === 4 || numStatus === 5 || ack === 4 || ack === 5) {
+                  const evoData = await checkRes.json();
+                  const rec = evoData?.messages?.records?.[0] || evoData?.records?.[0] || (Array.isArray(evoData) ? evoData[0] : evoData);
+                  const rawStatus = rec?.status ?? rec?.update?.status ?? rec?.ack ?? rec?.update?.ack ?? rec?.statusLabel;
+                  const str = String(rawStatus || '').toUpperCase().trim();
+                  if (str === '4' || str === '5' || str === 'READ' || str === 'PLAYED' || str === 'READ_RECEIPT' || str === 'VIEWED') {
                     remoteStatus = 'read';
-                  } else if (label === 'delivered' || numStatus === 3 || ack === 3) {
+                  } else if (str === '3' || str === 'DELIVERY_ACK' || str === 'DELIVERED' || str === 'RECEIVED') {
                     remoteStatus = 'delivered';
-                  } else if (label === 'sent' || numStatus === 2 || ack === 2) {
+                  } else if (str === '2' || str === 'SERVER_ACK' || str === 'SENT') {
                     remoteStatus = 'sent';
                   }
                 }
               } catch(e) {}
             }
-          } else if (waSettings?.useEvolutionApi && waSettings?.evolutionApiUrl && waSettings?.evolutionApiKey && waSettings?.evolutionInstanceName) {
-            // 2. Consulta na Evolution API
-            try {
-              let baseUrl = waSettings.evolutionApiUrl.trim().replace(/\/$/, '');
-              if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
-              const checkUrl = `${baseUrl}/chat/findMessages/${waSettings.evolutionInstanceName}`;
-              const controller = new AbortController();
-              const timeoutId = setTimeout(() => controller.abort(), 2500);
-              const checkRes = await fetch(checkUrl, {
-                method: 'POST',
-                signal: controller.signal,
-                headers: {
-                  'Content-Type': 'application/json',
-                  'apikey': waSettings.evolutionApiKey
-                },
-                body: JSON.stringify({
-                  where: {
-                    key: {
-                      id: externalId
-                    }
-                  }
-                })
-              });
-              clearTimeout(timeoutId);
+          }
 
-              if (checkRes.ok) {
-                const evoData = await checkRes.json();
-                const rec = evoData?.messages?.records?.[0] || evoData?.records?.[0] || (Array.isArray(evoData) ? evoData[0] : evoData);
-                const rawStatus = rec?.status ?? rec?.update?.status ?? rec?.ack ?? rec?.update?.ack ?? rec?.statusLabel;
-                const str = String(rawStatus || '').toUpperCase().trim();
-                if (str === '4' || str === '5' || str === 'READ' || str === 'PLAYED' || str === 'READ_RECEIPT' || str === 'VIEWED') {
-                  remoteStatus = 'read';
-                } else if (str === '3' || str === 'DELIVERY_ACK' || str === 'DELIVERED' || str === 'RECEIVED') {
-                  remoteStatus = 'delivered';
-                } else if (str === '2' || str === 'SERVER_ACK' || str === 'SENT') {
-                  remoteStatus = 'sent';
-                }
+          // 3. Se o cliente respondeu após esta mensagem no chat, considera lida imediatamente
+          if (!remoteStatus || remoteStatus !== 'read') {
+            try {
+              const { data: replyMsg } = await supabaseAdmin
+                .from('chat_messages')
+                .select('id')
+                .eq('session_id', msg.session_id)
+                .eq('sender_type', 'client')
+                .gt('created_at', msg.created_at)
+                .limit(1);
+
+              if (replyMsg && replyMsg.length > 0) {
+                remoteStatus = 'read';
               }
             } catch(e) {}
           }

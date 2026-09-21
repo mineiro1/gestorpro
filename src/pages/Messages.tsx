@@ -301,12 +301,10 @@ export default function Messages() {
     let body: any = {
       number: number,
       text: text,
-      textMessage: {
-        text: text
-      },
       options: {
-        delay: 1200,
-        presence: "composing"
+        delay: 1000,
+        presence: "composing",
+        linkPreview: false
       }
     };
 
@@ -317,14 +315,9 @@ export default function Messages() {
         number: number,
         mediatype: mediatype,
         caption: text,
-        mediaMessage: {
-          mediatype: mediatype,
-          caption: text,
-          media: mediaBase64
-        },
         media: mediaBase64,
         options: {
-          delay: 1200,
+          delay: 1000,
           presence: "composing"
         }
       };

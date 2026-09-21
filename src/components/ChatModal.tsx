@@ -217,9 +217,15 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         const newMsg = (payload.new || payload.old) as any;
         if (!newMsg || newMsg.sender_type === 'read') return;
 
-        // Atualiza diretamente o cache do React Query
+        // Atualiza diretamente o cache do React Query sem duplicar mensagens
         queryClient.setQueryData(['chat-messages', clientId], (prev: any[] | undefined) => {
-          const list = prev ? [...prev] : [];
+          let list = prev ? [...prev] : [];
+
+          // Remove mensagens temporárias otimistas que coincidam
+          if (newMsg.sender_type === 'tech') {
+            list = list.filter(m => !m.id || !String(m.id).startsWith('temp-') || m.content !== newMsg.content);
+          }
+
           const idx = list.findIndex((m) => m.id === newMsg.id);
           if (idx >= 0) {
             list[idx] = { ...list[idx], ...newMsg };
@@ -364,7 +370,8 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
               text,
               clientPhone,
               waSettings: currentSettings,
-              messageId: insertedMsg.id
+              messageId: insertedMsg.id,
+              senderName: userProfile?.name || 'Colaborador'
             })
           });
           if (apiRes.ok) {
@@ -374,15 +381,9 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         } catch (apiErr) {
           console.error('[ChatModal] Erro no envio via backend:', apiErr);
         }
-
-        const finalMetadata = { status: 'sent', external_id: externalId || undefined };
-        await supabase
-          .from('chat_messages')
-          .update({ media_url: JSON.stringify(finalMetadata) })
-          .eq('id', insertedMsg.id);
       }
 
-      return insertedMsg;
+      return { ...insertedMsg, media_url: JSON.stringify({ status: 'sent', external_id: externalId || undefined, sent_at: new Date().toISOString() }) };
     },
     onMutate: async (text: string) => {
       // Atualização Otimista Instantânea (0ms)
@@ -403,12 +404,22 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       requestAnimationFrame(() => scrollToBottom(true));
       return { tempId };
     },
-    onSuccess: () => {
+    onSuccess: (newInsertedMsg, _text, context) => {
+      // Atualiza o cache local substituindo o tempId pelo registro real
+      queryClient.setQueryData(['chat-messages', clientId], (prev: any[] | undefined) => {
+        if (!prev) return [newInsertedMsg];
+        const filtered = prev.filter(m => m.id !== context?.tempId && m.id !== newInsertedMsg.id);
+        return [...filtered, newInsertedMsg].sort(
+          (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        );
+      });
+
       queryClient.invalidateQueries({ queryKey: ['chat-messages', clientId] });
       queryClient.invalidateQueries({ queryKey: ['chat-session', clientId] });
       // Dispara checagem rápida de status após o envio
-      setTimeout(runSyncStatus, 500);
-      setTimeout(runSyncStatus, 1500);
+      setTimeout(runSyncStatus, 400);
+      setTimeout(runSyncStatus, 1200);
+      setTimeout(runSyncStatus, 2500);
     },
     onError: (err) => {
       console.error('[ChatModal] Erro ao enviar mensagem:', err);
