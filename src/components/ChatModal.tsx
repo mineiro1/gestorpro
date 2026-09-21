@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { X, Send, User, MessageCircle, Clock, Check, CheckCheck } from 'lucide-react';
+import { X, Send, User, MessageCircle, Clock } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { MediaViewer, AudioViewer } from './chat/MediaViewer';
 import { MessageStatus, parseMessageStatus } from './chat/MessageStatus';
@@ -16,6 +16,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isInitialScrollDoneRef = useRef(false);
+  const isSyncingRef = useRef(false);
 
   const clientId = client?.id;
 
@@ -105,7 +106,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       );
     },
     enabled: !!isOpen && !!clientId,
-    refetchInterval: 3000, // Polling em segundo plano leve
+    refetchInterval: 2500, // Polling de mensagens leve em segundo plano
     refetchOnWindowFocus: true,
     staleTime: 1000,
   });
@@ -126,12 +127,12 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       .filter(Boolean);
   }, [messages]);
 
-  // 3. React Query: Sincronização Periódica de Status de Entrega/Leitura (WhatsApp)
-  useQuery({
-    queryKey: ['chat-status-sync', clientId, unreadTechMsgIds.join(',')],
-    queryFn: async () => {
-      if (unreadTechMsgIds.length === 0) return null;
+  // 3. Sincronização Ativa de Status de Entrega/Leitura (WhatsApp)
+  const runSyncStatus = useCallback(async () => {
+    if (!isOpen || !clientId || isSyncingRef.current || unreadTechMsgIds.length === 0) return;
 
+    isSyncingRef.current = true;
+    try {
       let currentSettings = { ...(waSettings || {}) };
       const adminId = userProfile?.role === 'admin' ? userProfile?.uid : userProfile?.adminId;
 
@@ -154,42 +155,48 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         body: JSON.stringify({ messageIds: unreadTechMsgIds, waSettings: currentSettings })
       });
 
-      if (!syncRes.ok) return null;
-      const resData = await syncRes.json();
-
-      if (resData?.statusMap && Object.keys(resData.statusMap).length > 0) {
-        // Atualiza atomicamente o cache de mensagens sem re-fetch
-        queryClient.setQueryData(['chat-messages', clientId], (prev: any[] | undefined) => {
-          if (!prev) return prev;
-          let changed = false;
-          const next = prev.map((m) => {
-            const newStatus = resData.statusMap[m.id];
-            if (newStatus) {
-              let meta: any = {};
-              try {
-                meta = typeof m.media_url === 'string' && m.media_url.startsWith('{') ? JSON.parse(m.media_url) : {};
-              } catch (e) {}
-              if (meta.status !== newStatus) {
-                changed = true;
-                return {
-                  ...m,
-                  media_url: JSON.stringify({ ...meta, status: newStatus }),
-                  status: newStatus
-                };
+      if (syncRes.ok) {
+        const resData = await syncRes.json();
+        if (resData?.statusMap && Object.keys(resData.statusMap).length > 0) {
+          queryClient.setQueryData(['chat-messages', clientId], (prev: any[] | undefined) => {
+            if (!prev) return prev;
+            let changed = false;
+            const next = prev.map((m) => {
+              const newStatus = resData.statusMap[m.id];
+              if (newStatus) {
+                let meta: any = {};
+                try {
+                  meta = typeof m.media_url === 'string' && m.media_url.startsWith('{') ? JSON.parse(m.media_url) : {};
+                } catch (e) {}
+                if (meta.status !== newStatus) {
+                  changed = true;
+                  return {
+                    ...m,
+                    media_url: JSON.stringify({ ...meta, status: newStatus }),
+                    status: newStatus
+                  };
+                }
               }
-            }
-            return m;
+              return m;
+            });
+            return changed ? next : prev;
           });
-          return changed ? next : prev;
-        });
+        }
       }
+    } catch (err) {
+      console.warn('[ChatModal] Erro no sync status:', err);
+    } finally {
+      isSyncingRef.current = false;
+    }
+  }, [isOpen, clientId, unreadTechMsgIds, waSettings, userProfile, queryClient]);
 
-      return resData?.statusMap || null;
-    },
-    enabled: !!isOpen && !!clientId && unreadTechMsgIds.length > 0,
-    refetchInterval: 2500, // Sincroniza status a cada 2.5s sem travar a interface
-    staleTime: 2000,
-  });
+  // Loop de polling de status enquanto houver mensagens não lidas
+  useEffect(() => {
+    if (!isOpen || !clientId || unreadTechMsgIds.length === 0) return;
+    runSyncStatus();
+    const interval = setInterval(runSyncStatus, 1500);
+    return () => clearInterval(interval);
+  }, [isOpen, clientId, unreadTechMsgIds.length, runSyncStatus]);
 
   // 4. Inscrição em Tempo Real (Supabase Realtime) com Atualização Atômica do Cache
   useEffect(() => {
@@ -397,6 +404,9 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['chat-messages', clientId] });
       queryClient.invalidateQueries({ queryKey: ['chat-session', clientId] });
+      // Dispara checagem rápida de status após o envio
+      setTimeout(runSyncStatus, 500);
+      setTimeout(runSyncStatus, 1500);
     },
     onError: (err) => {
       console.error('[ChatModal] Erro ao enviar mensagem:', err);
@@ -431,15 +441,18 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
               <h3 className="font-bold text-lg leading-tight flex items-center gap-2">
                 {client.name}
               </h3>
-              <p className="text-xs text-blue-100 font-mono flex items-center gap-1.5 mt-0.5">
-                <span>{client.phone}</span>
-                {session?.status === 'open' && (
-                  <span className="inline-flex items-center gap-1 px-1.5 py-0.2 bg-emerald-500/30 text-emerald-100 rounded-full text-[10px] font-semibold">
+              <div className="flex items-center gap-1.5 mt-0.5">
+                {session?.status === 'open' ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-500/30 text-emerald-100 rounded-full text-[11px] font-semibold">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-300 animate-pulse" />
-                    Ativo
+                    Atendimento Ativo
+                  </span>
+                ) : (
+                  <span className="text-xs text-blue-100/80 font-medium">
+                    WhatsApp
                   </span>
                 )}
-              </p>
+              </div>
             </div>
           </div>
           
@@ -476,7 +489,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
             </div>
           ) : (
             messages.map((msg: any) => {
-              const deliveryStatus = parseMessageStatus(msg);
+              const deliveryStatus = parseMessageStatus(msg, messages);
               let realMediaUrl = '';
               try {
                 if (typeof msg.media_url === 'string') {

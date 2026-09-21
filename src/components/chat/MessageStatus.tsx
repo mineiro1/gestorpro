@@ -18,23 +18,26 @@ export function parseMessageStatus(msg: any, allMessages: any[] = []): MessageDe
     meta = msg.media_url;
   }
 
-  // If a client replied afterwards in the conversation, previous tech messages are marked as read
-  const hasClientReplyAfter = allMessages.some(
-    (other) =>
-      other &&
-      other.sender_type === 'client' &&
-      new Date(other.created_at).getTime() >= new Date(msg.created_at).getTime()
-  );
+  // Se o cliente respondeu após esta mensagem, marca mensagens anteriores do técnico como lidas
+  if (Array.isArray(allMessages) && allMessages.length > 0) {
+    const currentMsgTime = new Date(msg.created_at).getTime();
+    const hasClientReplyAfter = allMessages.some(
+      (other) =>
+        other &&
+        other.sender_type === 'client' &&
+        new Date(other.created_at).getTime() >= currentMsgTime
+    );
 
-  if (hasClientReplyAfter) {
-    return 'read';
+    if (hasClientReplyAfter) {
+      return 'read';
+    }
   }
 
-  const rawStatus = (meta.status || msg.status || '').toLowerCase().trim();
-  if (rawStatus === 'read' || rawStatus === 'viewed' || rawStatus === 'played') {
+  const rawStatus = String(meta.status || msg.status || '').toLowerCase().trim();
+  if (rawStatus === 'read' || rawStatus === 'viewed' || rawStatus === 'played' || rawStatus === 'read_receipt' || rawStatus === '4' || rawStatus === '5') {
     return 'read';
   }
-  if (rawStatus === 'delivered' || rawStatus === 'received') {
+  if (rawStatus === 'delivered' || rawStatus === 'received' || rawStatus === 'delivery_ack' || rawStatus === '3') {
     return 'delivered';
   }
   if (rawStatus === 'sending' || rawStatus === 'pending') {
@@ -70,7 +73,7 @@ export function MessageStatus({
         className={`inline-flex items-center ${className}`}
         data-status="read"
       >
-        <CheckCheck size={size} className="text-[#53bdeb] font-bold ml-0.5" />
+        <CheckCheck size={size} className="text-[#38bdf8] font-bold ml-0.5 drop-shadow-xs" />
       </span>
     );
   }
@@ -78,13 +81,13 @@ export function MessageStatus({
   if (status === 'delivered') {
     return (
       <span
-        title="Mensagem entregue (2 tiques cinzas)"
+        title="Mensagem entregue (2 tiques)"
         className={`inline-flex items-center ${className}`}
         data-status="delivered"
       >
         <CheckCheck
           size={size}
-          className={`${isBubbleOnPrimary ? 'text-gray-300' : 'text-gray-400'} ml-0.5`}
+          className={`${isBubbleOnPrimary ? 'text-blue-200/90' : 'text-gray-400'} ml-0.5`}
         />
       </span>
     );
@@ -99,22 +102,22 @@ export function MessageStatus({
       >
         <Clock
           size={Math.max(10, size - 3)}
-          className={`${isBubbleOnPrimary ? 'text-gray-300/80' : 'text-gray-400'} ml-0.5 animate-pulse`}
+          className={`${isBubbleOnPrimary ? 'text-blue-200/80' : 'text-gray-400'} ml-0.5 animate-pulse`}
         />
       </span>
     );
   }
 
-  // Default: 'sent' -> 1 grey tick
+  // Default: 'sent' -> 1 tick
   return (
     <span
-      title="Mensagem enviada (1 tique cinza)"
+      title="Mensagem enviada (1 tique)"
       className={`inline-flex items-center ${className}`}
       data-status="sent"
     >
       <Check
         size={size}
-        className={`${isBubbleOnPrimary ? 'text-gray-300' : 'text-gray-400'} ml-0.5`}
+        className={`${isBubbleOnPrimary ? 'text-blue-200/90' : 'text-gray-400'} ml-0.5`}
       />
     </span>
   );
