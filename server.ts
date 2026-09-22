@@ -1456,71 +1456,8 @@ app.all("/api/sync-payment", async (req, res) => {
     });
   });
 
-  // Background listener for Push Notifications
+  // Background listener for Push Notifications (incoming client chat messages)
   supabaseAdmin.channel('push-notifications-chat')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'visits' }, async (payload) => {
-       const newVisit = payload.new as any;
-       if (!newVisit) return;
-       
-       // Detect if it was just finalized
-       let justFinalized = false;
-       if (newVisit.status === 'finalizada') {
-           if (!global.notifiedVisits) global.notifiedVisits = new Set();
-           if (!global.notifiedVisits.has(newVisit.id)) {
-               global.notifiedVisits.add(newVisit.id);
-               justFinalized = true;
-               if (global.notifiedVisits.size > 1000) global.notifiedVisits.clear();
-           }
-       }
-       
-       if (justFinalized && newVisit.admin_id && newVisit.admin_id !== newVisit.employee_id) {
-           const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', newVisit.employee_id).single();
-           const { data: cliData } = await supabaseAdmin.from('clients').select('name').eq('id', newVisit.client_id).single();
-           
-           const empName = empData?.name || 'Um colaborador';
-           const cliName = cliData?.name || 'um cliente';
-
-           await sendPushToAdmin(
-             newVisit.admin_id,
-             'Visita Concluída',
-             `O colaborador ${empName} acaba de finalizar a visita ao cliente ${cliName}.`,
-             {
-               url: '/routes',
-               channelId: 'atendimentos',
-               type: 'visit_completed',
-               visitId: String(newVisit.id || ''),
-               clientId: String(newVisit.client_id || '')
-             }
-           );
-       }
-    })
-    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'oneoffjobs' }, async (payload) => {
-       const newJob = payload.new as any;
-       if (!newJob || !payload.old) return;
-       
-       if (newJob.status === 'concluido' && newJob.admin_id && newJob.admin_id !== newJob.employee_id) {
-           if (!global.notifiedJobs) global.notifiedJobs = new Set();
-           if (global.notifiedJobs.has(newJob.id)) return;
-           global.notifiedJobs.add(newJob.id);
-           if (global.notifiedJobs.size > 1000) global.notifiedJobs.clear();
-
-           const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', newJob.employee_id).single();
-           const empName = empData?.name || 'Um colaborador';
-           const cliName = newJob.client_name || 'um cliente';
-
-           await sendPushToAdmin(
-             newJob.admin_id,
-             'Serviço Avulso Concluído',
-             `O colaborador ${empName} acaba de finalizar o serviço avulso para ${cliName}.`,
-             {
-               url: '/routes',
-               channelId: 'atendimentos',
-               type: 'job_completed',
-               jobId: String(newJob.id || '')
-             }
-           );
-       }
-    })
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, async (payload) => {
        const newMsg = payload.new as any;
        if (newMsg.sender_type === 'client') {
@@ -1547,7 +1484,7 @@ app.all("/api/sync-payment", async (req, res) => {
           if (session && session.admin_id) {
              await sendPushToAdmin(
                session.admin_id,
-               'Nova mensagem no Chat',
+               `💬 ${session.client_name || 'Cliente'}`,
                newMsg.content || 'Mensagem de texto recebida',
                {
                  url: '/messages',
