@@ -178,29 +178,6 @@ export async function initCapacitorPushNotifications(
           audio.play().catch(() => {});
         } catch (e) {}
 
-        const title = notification.title || 'Atendimento Finalizado';
-        const body = notification.body || 'Um colaborador concluiu um atendimento.';
-        const channelId = notification.data?.channelId || 'atendimentos_v2';
-
-        // Display Heads-Up notification through LocalNotifications
-        try {
-          await LocalNotifications.schedule({
-            notifications: [
-              {
-                id: Math.floor(Math.random() * 2147483647),
-                title,
-                body,
-                schedule: { at: new Date(Date.now() + 100) },
-                channelId,
-                sound: 'notificacao',
-                extra: notification.data || {},
-              },
-            ],
-          });
-        } catch (locErr) {
-          console.error('[Capacitor Push] Erro ao disparar banner local:', locErr);
-        }
-
         // Notify app components (e.g. invalidate routes query)
         if (handlers?.onVisitCompleted) {
           handlers.onVisitCompleted(notification.data);

@@ -50,7 +50,7 @@ export default async function handler(req, res) {
       .select('id, name, fcm_token')
       .in('id', Array.from(adminIdsToTry));
 
-    let tokens = (users || []).map(u => u.fcm_token).filter(Boolean);
+    let tokens = Array.from(new Set((users || []).map(u => u.fcm_token).filter(Boolean)));
     
     // Fallback: se nenhum token for encontrado para o ID enviado, busca todos admins com FCM ativo
     if (tokens.length === 0) {
@@ -60,7 +60,7 @@ export default async function handler(req, res) {
         .eq('role', 'admin')
         .not('fcm_token', 'is', null);
       if (activeAdmins && activeAdmins.length > 0) {
-        tokens = activeAdmins.map(u => u.fcm_token).filter(Boolean);
+        tokens = Array.from(new Set(activeAdmins.map(u => u.fcm_token).filter(Boolean)));
       }
     }
 

@@ -184,7 +184,7 @@ export default function Layout() {
     requestPerms();
 
     const showNotification = async (title: string, body: string, channelId: string = 'atendimentos') => {
-      // Play custom sound
+      // Play custom sound if app is foreground
       try {
         const audio = new Audio('/notificacao.mp3');
         audio.play().catch(e => console.log("Audio play blocked by browser policy:", e));
@@ -192,25 +192,9 @@ export default function Layout() {
         console.error("Audio error", err);
       }
 
-      if (Capacitor.isNativePlatform()) {
-        try {
-          await LocalNotifications.schedule({
-            notifications: [
-              {
-                title,
-                body,
-                id: Math.floor(Math.random() * 2000000000),
-                schedule: { at: new Date(Date.now() + 100) },
-                channelId: channelId,
-                sound: 'notificacao.mp3',
-                extra: { url: channelId === 'chat_messages' ? '/messages' : '/routes' }
-              }
-            ]
-          });
-        } catch (e) {
-          console.error("Capacitor local notification error", e);
-        }
-      } else {
+      // On native platform (Capacitor/Android), push notifications are handled directly by Firebase FCM.
+      // We only fire web notifications when running inside browser / web mode.
+      if (!Capacitor.isNativePlatform()) {
         if (typeof Notification !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
           if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
             navigator.serviceWorker.ready.then(registration => {
