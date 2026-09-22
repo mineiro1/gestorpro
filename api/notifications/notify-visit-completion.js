@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { initFirebase, admin } from '../_firebaseAdmin.js';
+import { initFirebase } from '../_firebaseAdmin.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -50,12 +50,15 @@ export default async function handler(req, res) {
 
     const tokens = users.map(u => u.fcm_token).filter(Boolean);
     if (tokens.length === 0) {
-      return res.json({ success: false, message: 'Admin não possui tokens FCM registrados' });
+      return res.json({ success: false, message: 'Admin não possui tokens FCM registrados no momento' });
     }
 
-    initFirebase();
-    if (!admin.apps.length) {
-      return res.json({ success: false, message: 'Firebase Admin não configurado na Vercel (FIREBASE_SERVICE_ACCOUNT ausente)' });
+    const { initialized, messaging } = initFirebase();
+    if (!initialized || !messaging) {
+      return res.json({
+        success: false,
+        message: 'Firebase Admin não configurado na Vercel (FIREBASE_SERVICE_ACCOUNT ausente ou formato incorreto - necessita service-account.json com private_key)'
+      });
     }
 
     const isJob = type === 'job';
@@ -65,7 +68,7 @@ export default async function handler(req, res) {
     let sentCount = 0;
     for (const token of tokens) {
       try {
-        await admin.messaging().send({
+        await messaging.send({
           token,
           notification: { title, body },
           data: {
@@ -85,6 +88,7 @@ export default async function handler(req, res) {
               channelId: 'atendimentos',
               sound: 'default',
               priority: 'max',
+              visibility: 'public',
               defaultSound: true,
               defaultVibrateTimings: true
             }

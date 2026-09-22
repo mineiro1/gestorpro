@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { initFirebase, admin } from '../_firebaseAdmin.js';
+import { initFirebase } from '../_firebaseAdmin.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -36,12 +36,15 @@ export default async function handler(req, res) {
       return res.json({ success: false, message: 'Nenhum token FCM registrado neste dispositivo. Abra o app no celular primeiro.' });
     }
 
-    initFirebase();
-    if (!admin.apps.length) {
-      return res.json({ success: false, message: 'Firebase Admin não inicializado na Vercel (FIREBASE_SERVICE_ACCOUNT ausente)' });
+    const { initialized, messaging } = initFirebase();
+    if (!initialized || !messaging) {
+      return res.json({
+        success: false,
+        message: 'Firebase Admin não inicializado na Vercel (FIREBASE_SERVICE_ACCOUNT ausente ou formato incorreto - necessita chave privada service-account.json)'
+      });
     }
 
-    await admin.messaging().send({
+    await messaging.send({
       token: user.fcm_token,
       notification: {
         title: '🔔 Teste de Notificação Push',
@@ -58,13 +61,14 @@ export default async function handler(req, res) {
           channelId: 'atendimentos',
           sound: 'default',
           priority: 'max',
+          visibility: 'public',
           defaultSound: true,
           defaultVibrateTimings: true
         }
       }
     });
 
-    return res.json({ success: true, message: 'Notificação de teste disparada com sucesso!' });
+    return res.json({ success: true, message: 'Notificação de teste disparada com sucesso via FCM!' });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

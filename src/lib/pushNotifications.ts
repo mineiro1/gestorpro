@@ -119,7 +119,7 @@ export async function initCapacitorPushNotifications(
     await setupPushNotificationChannels();
 
     const pushCheck = await PushNotifications.checkPermissions();
-    if (pushCheck.receive === 'prompt') {
+    if (pushCheck.receive !== 'granted') {
       await PushNotifications.requestPermissions();
     }
 

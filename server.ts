@@ -1316,6 +1316,7 @@ app.all("/api/sync-payment", async (req, res) => {
                   channelId: data.channelId || 'atendimentos',
                   sound: 'default',
                   priority: 'max',
+                  visibility: 'public',
                   defaultSound: true,
                   defaultVibrateTimings: true
                 }

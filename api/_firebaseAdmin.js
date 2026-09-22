@@ -1,12 +1,11 @@
-import admin from 'firebase-admin';
+import { initializeApp, getApps, cert } from 'firebase-admin/app';
+import { getMessaging } from 'firebase-admin/messaging';
 import fs from 'fs';
 import path from 'path';
 
-let fcmInitialized = false;
-
 function initFirebase() {
-  if (admin.apps.length > 0) {
-    return admin;
+  if (getApps().length > 0) {
+    return { initialized: true, messaging: getMessaging() };
   }
 
   try {
@@ -28,18 +27,21 @@ function initFirebase() {
       }
     }
 
-    if (serviceAccount) {
-      admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount)
+    if (serviceAccount && serviceAccount.private_key && serviceAccount.client_email) {
+      initializeApp({
+        credential: cert(serviceAccount)
       });
-      fcmInitialized = true;
       console.log('[Firebase Admin] Inicializado com sucesso para FCM');
+      return { initialized: true, messaging: getMessaging() };
+    } else if (serviceAccount && !serviceAccount.private_key) {
+      console.warn('[Firebase Admin] O arquivo/variável fornecido é google-services.json e não a Chave de Conta de Serviço (service-account.json com private_key)');
     }
   } catch (err) {
     console.warn('[Firebase Admin] Falha ao inicializar:', err.message);
   }
 
-  return admin;
+  return { initialized: false, messaging: null };
 }
 
-export { initFirebase, admin };
+export { initFirebase, getApps, getMessaging };
+
