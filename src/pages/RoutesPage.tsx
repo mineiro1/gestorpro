@@ -155,22 +155,35 @@ export default function RoutesPage() {
           }).eq('id', payload.clientId);
           if (error) throw error;
         } else {
-          const { error: insertError } = await supabase.from('visits').insert({
-            admin_id: payload.adminId,
-            client_id: payload.clientId,
-            employee_id: payload.employeeId,
-            date: payload.date,
-            time: payload.time,
-            notes: payload.notes,
-            photo_urls: payload.photoUrls,
-            location: payload.location,
-            status: 'finalizada'
-          });
-          if (insertError) throw insertError;
+          // Prevenção de duplicidade: checa se a visita já foi gravada no banco
+          const { data: alreadyExists } = await supabase
+            .from('visits')
+            .select('id')
+            .eq('client_id', payload.clientId)
+            .eq('time', payload.time)
+            .eq('status', 'finalizada')
+            .limit(1);
+
+          if (!alreadyExists || alreadyExists.length === 0) {
+            const { error: insertError } = await supabase.from('visits').insert({
+              admin_id: payload.adminId,
+              client_id: payload.clientId,
+              employee_id: payload.employeeId,
+              date: payload.date,
+              time: payload.time,
+              notes: payload.notes,
+              photo_urls: payload.photoUrls,
+              location: payload.location,
+              status: 'finalizada'
+            });
+            if (insertError) throw insertError;
+          }
           
-          await supabase.from('clients').update({
-            last_visit_date: payload.date
-          }).eq('id', payload.clientId);
+          try {
+            await supabase.from('clients').update({
+              last_visit_date: payload.date
+            }).eq('id', payload.clientId);
+          } catch (e) {}
         }
         
         remainingVisits = remainingVisits.filter((v: any) => v !== payload);
@@ -1275,6 +1288,8 @@ export default function RoutesPage() {
          alert("Você está offline ou ocorreu um erro de conexão. A visita foi salva localmente e será sincronizada automaticamente.");
       };
 
+      let savedToDb = false;
+
       if (!navigator.onLine) {
          handleSaveOffline();
       } else {
@@ -1288,6 +1303,7 @@ export default function RoutesPage() {
               updated_at: finalVisitDate
             }).eq('id', targetClient.id);
             if (oneOffError) throw oneOffError;
+            savedToDb = true;
             
             if (!needsReturn) {
               try {
@@ -1300,18 +1316,15 @@ export default function RoutesPage() {
             }
           } else {
             // Normal Client Visit
-
-            // Check if there's an 'agendada' visit for today
             const { data: existingAgendada } = await supabase.from('visits')
               .select('id')
               .eq('client_id', targetClient.id)
-              .eq('date', routeDate) // this was used to insert the agendada
+              .eq('date', routeDate)
               .limit(1);
 
-            let insertError = null;
             let recordedVisitId = existingAgendada?.[0]?.id || null;
             if (existingAgendada && existingAgendada.length > 0) {
-              const { error } = await supabase.from('visits').update({
+              const { error: updateErr } = await supabase.from('visits').update({
                 admin_id: adminId,
                 employee_id: payload.employeeId,
                 date: finalVisitDate,
@@ -1321,9 +1334,10 @@ export default function RoutesPage() {
                 location: locationData,
                 status: 'finalizada'
               }).eq('id', existingAgendada[0].id);
-              insertError = error;
+              if (updateErr) throw updateErr;
+              savedToDb = true;
             } else {
-              const { data: insertedVisit, error } = await supabase.from('visits').insert({
+              const { data: insertedList, error: insertErr } = await supabase.from('visits').insert({
                 admin_id: adminId,
                 client_id: targetClient.id,
                 employee_id: payload.employeeId,
@@ -1333,9 +1347,10 @@ export default function RoutesPage() {
                 photo_urls: reportPhotos,
                 location: locationData,
                 status: 'finalizada'
-              }).select('id').single();
-              insertError = error;
-              if (insertedVisit?.id) recordedVisitId = insertedVisit.id;
+              }).select('id');
+              if (insertErr) throw insertErr;
+              savedToDb = true;
+              if (insertedList && insertedList.length > 0) recordedVisitId = insertedList[0].id;
             }
             
             if (!needsReturn) {
@@ -1345,12 +1360,9 @@ export default function RoutesPage() {
                    headers: { 'Content-Type': 'application/json' },
                    body: JSON.stringify({ clientId: targetClient.id })
                 });
-              } catch(e) { console.error(e); }
+              } catch(e) {}
             }
 
-            
-            if (insertError) throw insertError;
-            
             // Check if this visit was rescheduled from another date
             try {
               const extraVisitsRaw = targetClient.extra_visits || [];
@@ -1364,13 +1376,12 @@ export default function RoutesPage() {
                      client_id: targetClient.id,
                      employee_id: payload.employeeId,
                      date: finalVisitDate,
-                     time: originalDate, // Setting time to originalDate makes it show up as completed for that original route
+                     time: originalDate,
                      notes: `[SERVIÇO REALIZADO NO DIA ${activeRouteDate.split('-').reverse().join('/')}]\n\n` + finalNotes,
                      photo_urls: reportPhotos,
                      location: locationData
                    });
                    
-                   // Clean up the extra_visit entry
                    const newExtraVisits = extraVisitsRaw.filter((v: string) => v !== rescheduleEntry);
                    await supabase.from('clients').update({ extra_visits: newExtraVisits }).eq('id', targetClient.id);
                  }
@@ -1380,9 +1391,11 @@ export default function RoutesPage() {
             }
 
             // Update client with lastVisitDate
-            await supabase.from('clients').update({
-              last_visit_date: finalVisitDate
-            }).eq('id', targetClient.id);
+            try {
+              await supabase.from('clients').update({
+                last_visit_date: finalVisitDate
+              }).eq('id', targetClient.id);
+            } catch (e) {}
 
             // Cleanup old visits (keep only the 3 most recent)
             try {
@@ -1395,13 +1408,13 @@ export default function RoutesPage() {
               if (visitsData && visitsData.length > 3) {
                 const toDelete = visitsData.slice(3).map(v => v.id);
                 for (const id of toDelete) {
-                   await supabase.from('chat_sessions').update({ visit_id: null }).eq('visit_id', id);
-                   await supabase.from('visits').delete().eq('id', id);
+                   try {
+                     await supabase.from('chat_sessions').update({ visit_id: null }).eq('visit_id', id);
+                     await supabase.from('visits').delete().eq('id', id);
+                   } catch (delErr) {}
                 }
               }
-            } catch (cleanupErr) {
-              console.error("Erro ao limpar visitas antigas:", cleanupErr);
-            }
+            } catch (cleanupErr) {}
           }
 
           // Trigger Push Notification alert to administrator
@@ -1418,8 +1431,10 @@ export default function RoutesPage() {
             }).catch(e => console.warn('[Push] Error triggering admin push notification:', e));
           }
         } catch (dbError) {
-          console.error("Database error, saving offline:", dbError);
-          handleSaveOffline();
+          console.error("Database error in processReportSubmission:", dbError);
+          if (!savedToDb) {
+            handleSaveOffline();
+          }
         }
       }
 

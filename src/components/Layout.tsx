@@ -244,20 +244,27 @@ export default function Layout() {
            }
         }
 
-        const isAdminOwner = userProfile.role === 'admin' && admin_id === userProfile.uid;
+        const isAdminOrManager = userProfile.role === 'admin' || userProfile.role === 'manager';
         const isSelf = employee_id === userProfile.uid;
 
-        if (isAdminOwner && !isSelf) {
+        if (isAdminOrManager && !isSelf) {
           try {
-            const { data: empData } = await supabase.from('users').select('name').eq('id', employee_id).single();
-            const { data: cliData } = await supabase.from('clients').select('name').eq('id', client_id).single();
+            let empName = 'Colaborador';
+            let cliName = 'Cliente';
+
+            if (employee_id) {
+              const { data: empData } = await supabase.from('users').select('name').eq('id', employee_id).single();
+              if (empData?.name) empName = empData.name;
+            }
+
+            if (client_id) {
+              const { data: cliData } = await supabase.from('clients').select('name').eq('id', client_id).single();
+              if (cliData?.name) cliName = cliData.name;
+            }
             
-            const empName = empData?.name || 'Colaborador';
-            const cliName = cliData?.name || 'Cliente';
-            
-            showNotification('Visita Finalizada', `O colaborador ${empName} finalizou a visita no cliente ${cliName}.`);
+            showNotification('🏊 Visita Finalizada!', `O colaborador ${empName} finalizou o atendimento no cliente ${cliName}.`, 'atendimentos_v2');
           } catch (e) {
-            showNotification('Visita Finalizada', 'Um colaborador finalizou uma visita.');
+            showNotification('🏊 Visita Finalizada!', 'Um colaborador finalizou um atendimento.', 'atendimentos_v2');
           }
         }
       }
@@ -281,7 +288,7 @@ export default function Layout() {
 
     const handleJobUpdate = async (payload: any) => {
       if (payload.new && payload.old) {
-        const isAdminOwner = userProfile.role === 'admin' && payload.new.admin_id === userProfile.uid;
+        const isAdminOrManager = userProfile.role === 'admin' || userProfile.role === 'manager';
         const isSelf = payload.new.employee_id === userProfile.uid;
         
         const wasNotCompleted = payload.old.status !== 'concluido';
@@ -299,7 +306,7 @@ export default function Layout() {
           }
         }
 
-        if (isAdminOwner && !isSelf && isNowCompleted && !notifiedJobsRef.current.has(payload.new.id)) {
+        if (isAdminOrManager && !isSelf && isNowCompleted && !notifiedJobsRef.current.has(payload.new.id)) {
           notifiedJobsRef.current.add(payload.new.id);
           try {
             const { data: empData } = await supabase.from('users').select('name').eq('id', payload.new.employee_id).single();
@@ -307,9 +314,9 @@ export default function Layout() {
             const empName = empData?.name || 'Colaborador';
             const cliName = payload.new.client_name || 'Cliente';
             
-            showNotification('Serviço Avulso Finalizado', `O colaborador ${empName} finalizou o serviço avulso para ${cliName}.`);
+            showNotification('🏊 Serviço Avulso Finalizado', `O colaborador ${empName} finalizou o serviço avulso para ${cliName}.`, 'atendimentos_v2');
           } catch (e) {
-            showNotification('Serviço Avulso Finalizado', 'Um colaborador finalizou um serviço avulso.');
+            showNotification('🏊 Serviço Avulso Finalizado', 'Um colaborador finalizou um serviço avulso.', 'atendimentos_v2');
           }
         }
       }
