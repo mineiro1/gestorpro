@@ -119,8 +119,16 @@ export default function Billing() {
     const formattedDate = new Date(client.dueDate + 'T12:00:00').toLocaleDateString('pt-BR');
     const totalAmount = Number(client.monthlyFee || 0) + Number(client.extraAmount || 0);
 
+    const rawFirstName = (client.name || 'Cliente').trim().split(/\s+/)[0] || 'Cliente';
+    const firstName = rawFirstName ? (rawFirstName.charAt(0).toUpperCase() + rawFirstName.slice(1)) : 'Cliente';
+    const clientPhoneDigits = (client.phone || '').replace(/\D/g, '');
+
     let message = template
-      .replace(/{nome}/g, client.name)
+      .replace(/\{\s*primeiro\s*nome(\s*do\s*cliente)?\s*\}/gi, firstName)
+      .replace(/\{\s*primeiro_nome\s*\}/gi, firstName)
+      .replace(/\{\s*nome(\s*do\s*cliente)?\s*\}/gi, firstName)
+      .replace(/\{\s*telefone(\s*de\s*cadastro)?(\s*do\s*cliente)?\s*\}/gi, clientPhoneDigits)
+      .replace(/\{\s*telefone\s*cadastrado\s*\}/gi, clientPhoneDigits)
       .replace(/{valor}/g, totalAmount.toFixed(2).replace('.', ','))
       .replace(/{vencimento}/g, formattedDate);
 
@@ -922,11 +930,11 @@ export default function Billing() {
               <div>
                 <label className="flex justify-between items-center mb-1">
                   <span className="block text-sm font-medium text-gray-700">Mensagem de Relatório (1º Envio / Padrão)</span>
-                  <span className="text-xs font-normal text-gray-500">Variáveis: {'{nome}'}, {'{telefone}'}</span>
+                  <span className="text-xs font-normal text-gray-500">Variáveis: {'{Primeiro nome do cliente}'}, {'{telefone de cadastro do cliente}'}</span>
                 </label>
                 <p className="text-xs text-gray-500 mb-2">Enviada quando o cliente não recebeu relatório nos últimos 30 dias.</p>
                 <textarea
-                  rows={4}
+                  rows={5}
                   value={waSettings.reportMessage1}
                   onChange={e => setWaSettings({...waSettings, reportMessage1: e.target.value})}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none text-sm"
@@ -936,11 +944,11 @@ export default function Billing() {
               <div>
                 <label className="flex justify-between items-center mb-1">
                   <span className="block text-sm font-medium text-gray-700">Mensagem de Relatório Curta (Recorrente)</span>
-                  <span className="text-xs font-normal text-gray-500">Variáveis: {'{nome}'}, {'{telefone}'}</span>
+                  <span className="text-xs font-normal text-gray-500">Variáveis: {'{Primeiro nome do cliente}'}, {'{telefone de cadastro do cliente}'}</span>
                 </label>
                 <p className="text-xs text-gray-500 mb-2">Enviada se o cliente já recebeu o relatório principal (1) nos últimos 30 dias.</p>
                 <textarea
-                  rows={3}
+                  rows={4}
                   value={waSettings.reportMessage2}
                   onChange={e => setWaSettings({...waSettings, reportMessage2: e.target.value})}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none text-sm"

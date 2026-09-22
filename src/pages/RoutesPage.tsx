@@ -1121,15 +1121,18 @@ export default function RoutesPage() {
         const msg2 = currentSettings.reportMessage2 || defaultReportMsg;
 
         let message = useMessage2 ? msg2 : msg1;
-        const firstName = (targetClient.name || 'Cliente').trim().split(/\s+/)[0] || 'Cliente';
-        const clientPhoneDigits = targetClient.phone ? targetClient.phone.replace(/\D/g, '') : cleanPhone;
+        const rawFirstName = (targetClient.name || 'Cliente').trim().split(/\s+/)[0] || 'Cliente';
+        const firstName = rawFirstName ? (rawFirstName.charAt(0).toUpperCase() + rawFirstName.slice(1)) : 'Cliente';
+        const clientPhoneDigits = (targetClient.phone || targetClient.local_phone || cleanPhone || '').replace(/\D/g, '');
 
         message = message
-          .replace(/{Primeiro nome do cliente}/gi, firstName)
-          .replace(/{primeiro_nome}/gi, firstName)
-          .replace(/{nome}/gi, firstName)
-          .replace(/{telefone de cadastro do cliente}/gi, clientPhoneDigits)
-          .replace(/{telefone}/gi, clientPhoneDigits);
+          .replace(/\{\s*primeiro\s*nome(\s*do\s*cliente)?\s*\}/gi, firstName)
+          .replace(/\{\s*primeiro_nome\s*\}/gi, firstName)
+          .replace(/\{\s*nome(\s*do\s*cliente)?\s*\}/gi, firstName)
+          .replace(/\{\s*cliente\s*\}/gi, firstName)
+          .replace(/\{\s*telefone(\s*de\s*cadastro)?(\s*do\s*cliente)?\s*\}/gi, clientPhoneDigits)
+          .replace(/\{\s*telefone\s*cadastrado\s*\}/gi, clientPhoneDigits)
+          .replace(/\{\s*celular(\s*do\s*cliente)?\s*\}/gi, clientPhoneDigits);
 
         const reportMsgClientId = `visit_rep_${targetClient.id}_${Date.now()}`;
 
