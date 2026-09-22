@@ -902,17 +902,6 @@ export default function RoutesPage() {
       if (existingVisit && existingVisit.length > 0) {
          visitId = existingVisit[0].id;
          visitStatus = existingVisit[0].status;
-         console.log("Found existing visit:", visitId);
-      } else {
-         const { data: newVisit, error: newVisitErr } = await supabase.from('visits').insert({
-           admin_id: adminId,
-           client_id: client.id,
-           employee_id: selectedEmployee || userProfile.uid,
-           date: routeDate,
-           status: 'agendada'
-         }).select('id').single();
-         console.log("Created new visit:", newVisit, "Err:", newVisitErr);
-         if (newVisit) visitId = newVisit.id;
       }
     } catch(err) {
       console.error(err);

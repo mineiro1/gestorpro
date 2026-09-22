@@ -335,28 +335,33 @@ export default async function handler(req, res) {
        return res.status(200).send("EVENT_RECEIVED");
     }
 
-    const { data: clients } = await supabaseAdmin.from('clients').select('id, phone, local_phone, admin_id');
+    const cleanIncomingPhone = String(phone).replace(/\D/g, '');
+    const incomingCore8 = cleanIncomingPhone.length >= 8 ? cleanIncomingPhone.slice(-8) : cleanIncomingPhone;
+    const incomingCore9 = cleanIncomingPhone.length >= 9 ? cleanIncomingPhone.slice(-9) : cleanIncomingPhone;
+
+    const { data: clients } = await supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id');
     
     const matchedClient = (clients || []).find(c => {
        const cp = (c.phone || '').replace(/\D/g, '');
        const lp = (c.local_phone || '').replace(/\D/g, '');
        if (!cp && !lp) return false;
        
-       const getCore = (num) => num.length >= 8 ? num.slice(-8) : num;
-       const webhookCore = getCore(phone.replace(/\D/g, ''));
-       
-       let matchPhone = false;
-       if (cp.length > 5) {
-          matchPhone = cp.includes(phone) || phone.includes(cp) || getCore(cp) === webhookCore;
-       }
-       let matchLocal = false;
-       if (lp.length > 5) {
-          matchLocal = lp.includes(phone) || phone.includes(lp) || getCore(lp) === webhookCore;
-       }
-       return matchPhone || matchLocal;
+       const matchesNum = (stored) => {
+         if (!stored || stored.length < 6) return false;
+         const storedCore8 = stored.slice(-8);
+         const storedCore9 = stored.length >= 9 ? stored.slice(-9) : storedCore8;
+         return stored === cleanIncomingPhone ||
+                cleanIncomingPhone.includes(stored) ||
+                stored.includes(cleanIncomingPhone) ||
+                storedCore8 === incomingCore8 ||
+                storedCore9 === incomingCore9;
+       };
+
+       return matchesNum(cp) || matchesNum(lp);
     });
     
     if (!matchedClient) {
+        console.log("[Webhook WAME] Nenhum cliente encontrado para o telefone:", phone, cleanIncomingPhone);
         return res.status(200).send("EVENT_RECEIVED");
     }
 
@@ -364,23 +369,37 @@ export default async function handler(req, res) {
       .from('chat_sessions')
       .select('*')
       .eq('client_id', matchedClient.id)
-      .eq('status', 'open')
       .order('created_at', { ascending: false });
       
-    let activeSession = sessions && sessions.length > 0 ? sessions[0] : null;
-    
-    // Regra Estrita: A mensagem não deve ser processada se colaborador/admin não iniciou o chat
-    if (!activeSession) {
-       console.log("Nenhuma sessão ativa aberta por colaborador/admin para o cliente:", matchedClient.id);
-       return res.status(200).send("EVENT_RECEIVED");
-    }
-
-    // Verifica se a sessão passou dos 30 minutos
+    let activeSession = null;
     const now = new Date().getTime();
-    const createdTime = new Date(activeSession.created_at).getTime();
-    if (now - createdTime > 30 * 60 * 1000) {
-       await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
-       console.log("Sessão expirada (>30m). Descartando mensagem para o cliente:", matchedClient.id);
+
+    if (sessions && sessions.length > 0) {
+      // Procura primeiro por sessão explicitamente 'open'
+      const openSess = sessions.find(s => s.status === 'open');
+      if (openSess) {
+        const createdTime = new Date(openSess.created_at).getTime();
+        if (now - createdTime <= 30 * 60 * 1000) {
+          activeSession = openSess;
+        } else {
+          // Expirou os 30 min
+          await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', openSess.id);
+        }
+      }
+      
+      // Se não encontrou 'open', verifica se a mais recente foi criada há menos de 30 min
+      if (!activeSession) {
+        const latestSess = sessions[0];
+        const createdTime = new Date(latestSess.created_at).getTime();
+        if (now - createdTime <= 30 * 60 * 1000) {
+          activeSession = latestSess;
+        }
+      }
+    }
+    
+    // Regra: A mensagem é descartada se colaborador/admin não iniciou atendimento nos últimos 30min
+    if (!activeSession) {
+       console.log("[Webhook WAME] Nenhuma sessão ativa (<30m) aberta para o cliente:", matchedClient.id, matchedClient.name);
        return res.status(200).send("EVENT_RECEIVED");
     }
     

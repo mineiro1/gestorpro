@@ -81,14 +81,31 @@ export default async function handler(req, res) {
        return res.status(200).send("OK");
     }
     
+    const cleanIncomingPhone = String(phone).replace(/\D/g, '');
+    const incomingCore8 = cleanIncomingPhone.length >= 8 ? cleanIncomingPhone.slice(-8) : cleanIncomingPhone;
+    const incomingCore9 = cleanIncomingPhone.length >= 9 ? cleanIncomingPhone.slice(-9) : cleanIncomingPhone;
+
     const matchedClient = clients.find(c => {
        const cp = (c.phone || '').replace(/\D/g, '');
        const lp = (c.local_phone || '').replace(/\D/g, '');
-       return cp.includes(phone) || lp.includes(phone) || phone.includes(cp) || phone.includes(lp);
+       if (!cp && !lp) return false;
+       
+       const matchesNum = (stored) => {
+         if (!stored || stored.length < 6) return false;
+         const storedCore8 = stored.slice(-8);
+         const storedCore9 = stored.length >= 9 ? stored.slice(-9) : storedCore8;
+         return stored === cleanIncomingPhone ||
+                cleanIncomingPhone.includes(stored) ||
+                stored.includes(cleanIncomingPhone) ||
+                storedCore8 === incomingCore8 ||
+                storedCore9 === incomingCore9;
+       };
+
+       return matchesNum(cp) || matchesNum(lp);
     });
     
     if (!matchedClient) {
-       console.log("Client not found for phone:", phone);
+       console.log("[Webhook Evolution] Client not found for phone:", phone, cleanIncomingPhone);
        return res.status(200).send("OK");
     }
 
@@ -97,23 +114,34 @@ export default async function handler(req, res) {
       .from('chat_sessions')
       .select('*')
       .eq('client_id', matchedClient.id)
-      .eq('status', 'open')
       .order('created_at', { ascending: false });
       
-    let activeSession = sessions && sessions.length > 0 ? sessions[0] : null;
+    let activeSession = null;
+    const now = new Date().getTime();
+
+    if (sessions && sessions.length > 0) {
+      const openSess = sessions.find(s => s.status === 'open');
+      if (openSess) {
+        const createdTime = new Date(openSess.created_at).getTime();
+        if (now - createdTime <= 30 * 60 * 1000) {
+          activeSession = openSess;
+        } else {
+          await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', openSess.id);
+        }
+      }
+
+      if (!activeSession) {
+        const latestSess = sessions[0];
+        const createdTime = new Date(latestSess.created_at).getTime();
+        if (now - createdTime <= 30 * 60 * 1000) {
+          activeSession = latestSess;
+        }
+      }
+    }
     
     // If no active session, ignore message (rule: admin/collaborator must initiate chat)
     if (!activeSession) {
-       console.log("No active chat session initiated by collaborator/admin for client:", matchedClient.id);
-       return res.status(200).send("OK");
-    }
-
-    // Auto-close if older than 30 mins
-    const now = new Date().getTime();
-    const createdTime = new Date(activeSession.created_at).getTime();
-    if (now - createdTime > 30 * 60 * 1000) {
-       await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
-       console.log("Chat session expired (>30m). Discarding message for client:", matchedClient.id);
+       console.log("[Webhook Evolution] No active chat session (<30m) for client:", matchedClient.id, matchedClient.name);
        return res.status(200).send("OK");
     }
 
