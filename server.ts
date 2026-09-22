@@ -1267,6 +1267,23 @@ app.all("/api/sync-payment", async (req, res) => {
     });
   });
 
+  // Cache para evitar notificações duplicadas (chave -> timestamp)
+  const recentPushCache = new Map<string, number>();
+  function shouldSendPush(key: string): boolean {
+    if (!key) return true;
+    const now = Date.now();
+    // Limpa chaves antigas com mais de 2 minutos
+    for (const [k, time] of recentPushCache.entries()) {
+      if (now - time > 120000) recentPushCache.delete(k);
+    }
+    if (recentPushCache.has(key) && (now - recentPushCache.get(key)!) < 30000) {
+      console.log(`[Push Server] Notificação bloqueada por deduplicação (já enviada nos últimos 30s): ${key}`);
+      return false;
+    }
+    recentPushCache.set(key, now);
+    return true;
+  }
+
   // Helper to send push notification to all devices registered for an admin
   async function sendPushToAdmin(adminId: string, title: string, body: string, data: Record<string, string> = {}) {
     try {
@@ -1276,26 +1293,29 @@ app.all("/api/sync-payment", async (req, res) => {
         .select('id, name, fcm_token')
         .eq('id', adminId);
 
-      let tokens = (users || []).map(u => u.fcm_token).filter(Boolean);
+      let rawTokens = (users || []).map(u => u.fcm_token).filter(Boolean);
 
       // Fallback: se o adminId não possuir tokens, buscar administradores do sistema com token ativo
-      if (tokens.length === 0) {
+      if (rawTokens.length === 0) {
         const { data: fallbackAdmins } = await supabaseAdmin
           .from('users')
           .select('id, name, fcm_token')
           .eq('role', 'admin')
           .not('fcm_token', 'is', null);
         if (fallbackAdmins && fallbackAdmins.length > 0) {
-          tokens = fallbackAdmins.map(u => u.fcm_token).filter(Boolean);
+          rawTokens = fallbackAdmins.map(u => u.fcm_token).filter(Boolean);
         }
       }
+
+      // Deduplica tokens garantindo que nenhum dispositivo receba 2x
+      const tokens = Array.from(new Set(rawTokens));
 
       if (tokens.length === 0) {
         console.log(`[Push Server] Nenhum token FCM registrado no momento para admin ${adminId}.`);
         return false;
       }
 
-      console.log(`[Push Server] Disparando push notification para ${tokens.length} dispositivo(s): "${title}"`);
+      console.log(`[Push Server] Disparando push notification para ${tokens.length} dispositivo(s) único(s): "${title}"`);
 
       let sentCount = 0;
       for (const token of tokens) {
@@ -1372,28 +1392,13 @@ app.all("/api/sync-payment", async (req, res) => {
     }
   }
 
-  // Cache para evitar notificações duplicadas (chave -> timestamp)
-  const recentPushCache = new Map<string, number>();
-  function shouldSendPush(key: string): boolean {
-    const now = Date.now();
-    // Limpa chaves antigas com mais de 2 minutos
-    for (const [k, time] of recentPushCache.entries()) {
-      if (now - time > 120000) recentPushCache.delete(k);
-    }
-    if (recentPushCache.has(key) && (now - recentPushCache.get(key)!) < 15000) {
-      console.log(`[Push Server] Notificação suprimida por deduplicação recente: ${key}`);
-      return false;
-    }
-    recentPushCache.set(key, now);
-    return true;
-  }
-
   // Endpoint to immediately trigger attendance completion push notification
   app.post("/api/notifications/notify-visit-completion", async (req, res) => {
     try {
-      const { adminId, employeeId, clientId, clientName, techName, type, visitId } = req.body;
+      const { adminId, employeeId, clientId, clientName, techName, type } = req.body;
 
-      const dedupeKey = `push_${type || 'visit'}_${clientId || ''}_${visitId || ''}`;
+      // Deduplicação unificada por cliente/tipo
+      const dedupeKey = `${type || 'visit'}_${clientId || clientName || 'unknown'}`;
       if (!shouldSendPush(dedupeKey)) {
         return res.json({ success: true, deduped: true });
       }
@@ -1483,7 +1488,7 @@ app.all("/api/sync-payment", async (req, res) => {
        const newVisit = payload.new as any;
        if (!newVisit || newVisit.status !== 'finalizada') return;
 
-       const dedupeKey = `push_visit_${newVisit.client_id}_${newVisit.id}`;
+       const dedupeKey = `visit_${newVisit.client_id}`;
        if (!shouldSendPush(dedupeKey)) return;
 
        if (newVisit.admin_id && newVisit.admin_id !== newVisit.employee_id) {
@@ -1511,7 +1516,7 @@ app.all("/api/sync-payment", async (req, res) => {
        const newJob = payload.new as any;
        if (!newJob || newJob.status !== 'concluido') return;
 
-       const dedupeKey = `push_job_${newJob.id}`;
+       const dedupeKey = `job_${newJob.id || newJob.client_name}`;
        if (!shouldSendPush(dedupeKey)) return;
 
        if (newJob.admin_id && newJob.admin_id !== newJob.employee_id) {
