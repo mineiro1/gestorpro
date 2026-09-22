@@ -441,6 +441,7 @@ setInterval(() => {
             const { data: createdSess } = await supabaseAdmin.from('chat_sessions').insert({
               client_id: req.body.clientId,
               admin_id: clientRow?.admin_id || null,
+              employee_id: clientRow?.admin_id || null,
               client_name: clientRow?.name || null,
               status: 'open',
               created_at: new Date().toISOString()
@@ -615,6 +616,14 @@ setInterval(() => {
                 remoteStatus = 'read';
               }
             } catch(e) {}
+          }
+
+          // Se ainda estiver 'sending' e já passou mais de 5 segundos, promove para 'sent'
+          if (!remoteStatus && (meta.status === 'sending' || !meta.status)) {
+            const msgTime = new Date(msg.created_at).getTime();
+            if (Date.now() - msgTime > 5000) {
+              remoteStatus = 'sent';
+            }
           }
 
           if (remoteStatus) {

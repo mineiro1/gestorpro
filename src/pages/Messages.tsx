@@ -141,7 +141,7 @@ export default function Messages() {
               existing.lastMessage = msg.content || (msg.media_url ? '📷 Mídia' : '');
               existing.lastMessageTime = msg.created_at;
               existing.lastSenderType = msg.sender_type;
-              existing.lastStatus = parseMessageStatus(msg);
+              existing.lastStatus = parseMessageStatus(msg, recentMsgs);
             }
 
             if (msg.sender_type === 'client') {

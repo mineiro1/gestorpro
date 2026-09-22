@@ -307,12 +307,15 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     mutationFn: async ({ text, message_client_id }: { text: string; message_client_id: string }) => {
       let currentSession = session;
       if (!currentSession || currentSession.status === 'closed') {
+        const empId = userProfile?.uid || userProfile?.adminId;
+        const admId = userProfile?.role === 'admin' ? userProfile.uid : (userProfile?.adminId || userProfile?.uid);
         const { data: newSess } = await supabase
           .from('chat_sessions')
           .insert({
             client_id: clientId,
             visit_id: visit?.id || null,
-            admin_id: userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId,
+            admin_id: admId,
+            employee_id: empId,
             status: 'open',
             created_at: new Date().toISOString()
           })
@@ -385,7 +388,26 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         }
       }
 
-      return { ...insertedMsg, media_url: JSON.stringify({ status: 'sent', external_id: externalId || undefined, message_client_id, sent_at: new Date().toISOString() }) };
+      const updatedMetadata = {
+        status: 'sent',
+        external_id: externalId || undefined,
+        message_client_id,
+        sent_at: new Date().toISOString()
+      };
+
+      // Atualiza diretamente no Supabase com permissão do usuário autenticado
+      try {
+        await supabase
+          .from('chat_messages')
+          .update({
+            media_url: JSON.stringify(updatedMetadata)
+          })
+          .eq('id', insertedMsg.id);
+      } catch (dbUpdateErr) {
+        console.warn('[ChatModal] Erro ao sincronizar status pós-envio:', dbUpdateErr);
+      }
+
+      return { ...insertedMsg, media_url: JSON.stringify(updatedMetadata) };
     },
     onMutate: async ({ text, message_client_id }: { text: string; message_client_id: string }) => {
       // Atualização Otimista Instantânea (0ms)

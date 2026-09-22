@@ -33,6 +33,108 @@ export default async function handler(req, res) {
     if (typeof body === 'string') {
       try { body = JSON.parse(body); } catch(e) {}
     }
+
+    // Helper para extrair e processar status updates (sent / delivered / read)
+    const mapStatus = (raw) => {
+      if (raw === undefined || raw === null) return null;
+      const str = String(raw).toUpperCase().trim();
+      if (str === '4' || str === '5' || str === 'READ' || str === 'PLAYED' || str === 'READ_RECEIPT' || str === 'VIEWED') return 'read';
+      if (str === '3' || str === 'DELIVERY_ACK' || str === 'DELIVERED' || str === 'RECEIVED') return 'delivered';
+      if (str === '2' || str === 'SERVER_ACK' || str === 'SENT') return 'sent';
+      return null;
+    };
+
+    const statusUpdates = [];
+    const isReceiptEvent = String(body?.event || '').toLowerCase().includes('receipt');
+
+    const inspectItem = (item) => {
+      if (!item || typeof item !== 'object') return;
+      const id = item?.key?.id || item?.id || item?.keyId || item?.messageId || item?.update?.key?.id || item?.data?.key?.id;
+      if (!id) return;
+      if (isReceiptEvent || item?.receipt?.readTimestamp || item?.update?.readTimestamp) {
+        statusUpdates.push({ id: String(id), status: 'read' });
+        return;
+      }
+      const rawStatus = item?.update?.status ?? item?.status ?? item?.ack ?? item?.update?.ack ?? item?.statusLabel ?? item?.update?.statusLabel ?? item?.receipt?.status;
+      const mapped = mapStatus(rawStatus);
+      if (mapped) statusUpdates.push({ id: String(id), status: mapped });
+    };
+
+    if (body.entry && Array.isArray(body.entry)) {
+      for (const entry of body.entry) {
+        if (entry.changes && Array.isArray(entry.changes)) {
+          for (const change of entry.changes) {
+            const val = change.value;
+            if (val?.statuses && Array.isArray(val.statuses)) {
+              for (const st of val.statuses) {
+                const mapped = mapStatus(st.status);
+                if (st.id && mapped) statusUpdates.push({ id: String(st.id), status: mapped });
+              }
+            }
+          }
+        }
+      }
+    }
+    if (body.statuses && Array.isArray(body.statuses)) {
+      for (const st of body.statuses) {
+        const mapped = mapStatus(st.status);
+        if (st.id && mapped) statusUpdates.push({ id: String(st.id), status: mapped });
+      }
+    }
+    if (Array.isArray(body)) {
+      body.forEach(inspectItem);
+    } else {
+      inspectItem(body);
+      if (Array.isArray(body.data)) body.data.forEach(inspectItem);
+      else if (body.data && typeof body.data === 'object') inspectItem(body.data);
+      if (Array.isArray(body.updates)) body.updates.forEach(inspectItem);
+    }
+
+    if (statusUpdates.length > 0) {
+      for (const update of statusUpdates) {
+        const { id: externalId, status: newStatus } = update;
+        if (!externalId) continue;
+
+        let { data: foundMsgs } = await supabaseAdmin
+          .from('chat_messages')
+          .select('id, media_url, sender_type')
+          .eq('sender_type', 'tech')
+          .ilike('media_url', `%${externalId}%`);
+
+        if (!foundMsgs || foundMsgs.length === 0) {
+          if (externalId.length > 8) {
+            const shortId = externalId.slice(-12);
+            const { data: fallback } = await supabaseAdmin
+              .from('chat_messages')
+              .select('id, media_url, sender_type')
+              .eq('sender_type', 'tech')
+              .ilike('media_url', `%${shortId}%`);
+            foundMsgs = fallback;
+          }
+        }
+
+        if (foundMsgs && foundMsgs.length > 0) {
+          for (const fm of foundMsgs) {
+            let existing = {};
+            try { existing = JSON.parse(fm.media_url); } catch(e) {}
+            if (existing.status === 'read' && newStatus !== 'read') continue;
+
+            await supabaseAdmin
+              .from('chat_messages')
+              .update({
+                media_url: JSON.stringify({
+                  ...existing,
+                  status: newStatus,
+                  external_id: externalId,
+                  status_updated_at: new Date().toISOString()
+                })
+              })
+              .eq('id', fm.id);
+          }
+        }
+      }
+      return res.status(200).send("EVENT_RECEIVED");
+    }
     
     let phone = "";
     let content = "";
