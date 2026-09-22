@@ -415,6 +415,45 @@ setInterval(() => {
         } catch (dbErr) {
           console.error("[/api/chat/send] Erro ao inserir mensagem no banco:", dbErr);
         }
+      } else if (req.body.clientId) {
+        try {
+          const { data: existingSessions } = await supabaseAdmin
+            .from('chat_sessions')
+            .select('id')
+            .eq('client_id', req.body.clientId)
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+          let sessId = existingSessions?.[0]?.id;
+          if (!sessId) {
+            const { data: clientRow } = await supabaseAdmin.from('clients').select('admin_id, name').eq('id', req.body.clientId).single();
+            const { data: createdSess } = await supabaseAdmin.from('chat_sessions').insert({
+              client_id: req.body.clientId,
+              admin_id: clientRow?.admin_id || null,
+              client_name: clientRow?.name || null,
+              status: 'open',
+              created_at: new Date().toISOString()
+            }).select('id').single();
+            sessId = createdSess?.id;
+          }
+
+          if (sessId) {
+            const { data: created } = await supabaseAdmin
+              .from('chat_messages')
+              .insert({
+                session_id: sessId,
+                sender_type: 'tech',
+                sender_name: senderName || 'Colaborador',
+                content: text,
+                media_url: JSON.stringify(mediaPayload)
+              })
+              .select()
+              .single();
+            if (created) messageId = created.id;
+          }
+        } catch (dbErr) {
+          console.error("[/api/chat/send] Erro ao associar sessão/mensagem de relatório no banco:", dbErr);
+        }
       }
 
       // Atualiza o cache com a resposta definitiva

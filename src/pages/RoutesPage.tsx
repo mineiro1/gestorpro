@@ -1062,72 +1062,121 @@ export default function RoutesPage() {
 
   const processReportSubmission = async (sendWhatsApp: boolean) => {
     setConfirmSendReportPopupOpen(false);
+    if (!selectedClientForReport || !userProfile) return;
+    
+    // Captura o cliente em uma constante para evitar erros de referência nula
+    const targetClient = { ...selectedClientForReport };
     setSubmittingReport(true);
 
     const handleWhatsApp = async () => {
-      if (sendWhatsApp) {
-        if (selectedClientForReport?.phone) {
-          const clientName = selectedClientForReport.name;
-          const clientPhone = selectedClientForReport.phone;
-          const cleanPhone = clientPhone.replace(/\D/g, '');
-          
-          try {
-            const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
+      if (!sendWhatsApp) return;
+      if (!targetClient.phone) {
+        console.warn('Este cliente não possui um número de telefone cadastrado para o envio do WhatsApp.');
+        return;
+      }
+
+      const clientName = targetClient.name || 'Cliente';
+      const clientPhone = targetClient.phone;
+      const cleanPhone = clientPhone.replace(/\D/g, '');
+      if (!cleanPhone) return;
+
+      try {
+        const adminId = isAdmin ? userProfile.uid : (userProfile.adminId || userProfile.uid);
+        
+        // 1. Obter configurações de WhatsApp mais recentes do admin
+        let currentSettings = (userProfile?.whatsappSettings as any) || {};
+        try {
+          const { data: adminData } = await supabase
+            .from('users')
+            .select('whatsapp_settings')
+            .eq('id', adminId)
+            .single();
+          if (adminData?.whatsapp_settings) {
+            currentSettings = { ...currentSettings, ...adminData.whatsapp_settings };
+          }
+        } catch (e) {
+          console.warn('Erro ao carregar whatsapp_settings atualizado:', e);
+        }
+
+        // 2. Verificar histórico recente (últimos 30 dias) para alternar entre mensagem 1 e 2
+        let useMessage2 = false;
+        try {
+          if (navigator.onLine && targetClient.id) {
             const thirtyDaysAgo = new Date();
             thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-            
-            let useMessage2 = false;
-            if (navigator.onLine) {
-              const { data: recentVisits } = await supabase.from('visits')
-                .select('date')
-                .eq('client_id', selectedClientForReport.id)
-                .eq('admin_id', adminId)
-                .gte('date', thirtyDaysAgo.toISOString())
-                .limit(1);
-              if (recentVisits && recentVisits.length > 0) {
-                useMessage2 = true;
-              }
+            const { data: recentVisits } = await supabase.from('visits')
+              .select('date')
+              .eq('client_id', targetClient.id)
+              .eq('admin_id', adminId)
+              .gte('date', thirtyDaysAgo.toISOString())
+              .limit(1);
+            if (recentVisits && recentVisits.length > 0) {
+              useMessage2 = true;
             }
-            
-            const waSettings = (userProfile?.whatsappSettings as any) || {};
-            const msg1 = waSettings.reportMessage1 || `Olá {nome},\n\nO atendimento da sua piscina foi finalizado! Você pode acessar o nosso painel para acompanhar todas as informações do tratamento.\n\nAcesse: https://www.zapmass.app.br/client-panel\nLogin: {telefone}\nSenha: {telefone}`;
-            const msg2 = waSettings.reportMessage2 || `Olá {nome},\n\nO atendimento da sua piscina foi finalizado! Verifique as informações completas no nosso painel de clientes.\n\nAcesse: https://www.zapmass.app.br/client-panel`;
-            
-            let message = useMessage2 ? msg2 : msg1;
-            message = message.replace(/{nome}/g, clientName).replace(/{telefone}/g, cleanPhone);
-            
-            let currentSettings = waSettings;
-            if (userProfile?.uid) {
-              const { data } = await supabase.from('users').select('whatsapp_settings').eq('id', adminId).single();
-              if (data && data.whatsapp_settings) {
-                currentSettings = { ...waSettings, ...data.whatsapp_settings };
-              }
-            }
+          }
+        } catch (e) {}
 
-            const reportMsgClientId = `visit_rep_${selectedVisit?.id || cleanPhone}`;
-            if (currentSettings.useSmsForReports) {
-              // Envia para a fila de SMS (Gateway)
-              await supabase.from('sms_queue').insert({
-                admin_id: adminId,
-                phone_number: cleanPhone,
-                message: message
-              });
-              console.log('Mensagem de relatório adicionada à fila de SMS.');
-            } else if (currentSettings.useMetaApi) {
-              await sendMetaMessage(clientPhone, message, currentSettings, reportMsgClientId);
-              // Não bloqueia a tela com alert
-            } else if (currentSettings.useEvolutionApi) {
-              await sendEvolutionMessage(clientPhone, message, currentSettings, reportMsgClientId);
-              // Não bloqueia a tela com alert
-            } else {
-              openWhatsApp(clientPhone, message);
+        const msg1 = currentSettings.reportMessage1 || `Olá {nome},\n\nO atendimento da sua piscina foi finalizado! Você pode acessar o nosso painel para acompanhar todas as informações do tratamento.\n\nAcesse: https://www.rspiscinas.app.br/client-panel\nLogin: {telefone}\nSenha: {telefone}`;
+        const msg2 = currentSettings.reportMessage2 || `Olá {nome},\n\nO atendimento da sua piscina foi finalizado! Verifique as informações completas no nosso painel de clientes.\n\nAcesse: https://www.rspiscinas.app.br/client-panel`;
+
+        let message = useMessage2 ? msg2 : msg1;
+        message = message.replace(/{nome}/g, clientName).replace(/{telefone}/g, cleanPhone);
+
+        const reportMsgClientId = `visit_rep_${targetClient.id}_${Date.now()}`;
+
+        if (currentSettings.useSmsForReports) {
+          await supabase.from('sms_queue').insert({
+            admin_id: adminId,
+            phone_number: cleanPhone,
+            message: message
+          });
+          console.log('Mensagem de relatório adicionada à fila de SMS.');
+        } else if (currentSettings.useMetaApi || currentSettings.useEvolutionApi) {
+          let sent = false;
+          // Envio primário: endpoint seguro do servidor (/api/chat/send)
+          try {
+            const apiRes = await fetch('/api/chat/send', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                text: message,
+                clientPhone: cleanPhone,
+                clientId: targetClient.id,
+                waSettings: currentSettings,
+                senderName: userProfile?.name || 'Técnico',
+                message_client_id: reportMsgClientId
+              })
+            });
+            if (apiRes.ok) {
+              const resData = await apiRes.json();
+              if (resData.success) {
+                sent = true;
+                console.log('[WhatsApp Relatório] Enviado com sucesso via servidor:', resData);
+              }
             }
-          } catch (err: any) {
-            console.error('Erro ao enviar mensagem via API WhatsApp:', err);
+          } catch (serverErr) {
+            console.warn('[WhatsApp Relatório] Falha no backend, tentando fallback direto:', serverErr);
+          }
+
+          // Fallback: se o backend falhar, tenta envio direto pelo navegador
+          if (!sent) {
+            try {
+              if (currentSettings.useMetaApi) {
+                await sendMetaMessage(clientPhone, message, currentSettings, reportMsgClientId);
+                sent = true;
+              } else if (currentSettings.useEvolutionApi) {
+                await sendEvolutionMessage(clientPhone, message, currentSettings, reportMsgClientId);
+                sent = true;
+              }
+            } catch (directErr) {
+              console.error('[WhatsApp Relatório] Falha também no envio direto:', directErr);
+            }
           }
         } else {
-          console.warn('Este cliente não possui um número de telefone cadastrado para o envio do WhatsApp.');
+          openWhatsApp(clientPhone, message);
         }
+      } catch (err: any) {
+        console.error('Erro ao enviar mensagem via WhatsApp:', err);
       }
     };
 
@@ -1171,7 +1220,7 @@ export default function RoutesPage() {
           status: 'closed',
           closed_at: new Date().toISOString() 
         })
-        .eq('client_id', selectedClientForReport.id)
+        .eq('client_id', targetClient.id)
         .eq('status', 'open');
       if (chatUpdateErr) console.error("Error updating chat session:", chatUpdateErr);
     } catch(e) {}
@@ -1203,14 +1252,14 @@ export default function RoutesPage() {
       
       const payload = {
         adminId,
-        clientId: selectedClientForReport.id,
+        clientId: targetClient.id,
         employeeId: (isAdmin || isManager) && selectedEmployee ? selectedEmployee : userProfile.uid,
         date: finalVisitDate,
         time: activeRouteDate,
         notes: finalNotes,
         photoUrls: reportPhotos,
         location: locationData,
-        isOneOffJob: selectedClientForReport.isOneOffJob,
+        isOneOffJob: targetClient.isOneOffJob,
         needsReturn,
         returnDate
       };
@@ -1226,14 +1275,14 @@ export default function RoutesPage() {
          handleSaveOffline();
       } else {
         try {
-          if (selectedClientForReport.isOneOffJob) {
+          if (targetClient.isOneOffJob) {
             // Avulso Update
             const { error: oneOffError } = await supabase.from('oneoffjobs').update({
               status: needsReturn ? 'em_andamento' : 'concluido',
               return_date: needsReturn ? returnDate : null,
               report: finalNotes,
               updated_at: finalVisitDate
-            }).eq('id', selectedClientForReport.id);
+            }).eq('id', targetClient.id);
             if (oneOffError) throw oneOffError;
             
             if (!needsReturn) {
@@ -1241,7 +1290,7 @@ export default function RoutesPage() {
                 await fetch('/api/chat/close', {
                    method: 'POST',
                    headers: { 'Content-Type': 'application/json' },
-                   body: JSON.stringify({ clientId: selectedClientForReport.id })
+                   body: JSON.stringify({ clientId: targetClient.id })
                 });
               } catch(e) { console.error(e); }
             }
@@ -1251,7 +1300,7 @@ export default function RoutesPage() {
             // Check if there's an 'agendada' visit for today
             const { data: existingAgendada } = await supabase.from('visits')
               .select('id')
-              .eq('client_id', selectedClientForReport.id)
+              .eq('client_id', targetClient.id)
               .eq('date', routeDate) // this was used to insert the agendada
               .limit(1);
 
@@ -1270,7 +1319,7 @@ export default function RoutesPage() {
             } else {
               const { error } = await supabase.from('visits').insert({
                 admin_id: adminId,
-                client_id: selectedClientForReport.id,
+                client_id: targetClient.id,
                 employee_id: payload.employeeId,
                 date: finalVisitDate,
                 time: activeRouteDate,
@@ -1287,7 +1336,7 @@ export default function RoutesPage() {
                 await fetch('/api/chat/close', {
                    method: 'POST',
                    headers: { 'Content-Type': 'application/json' },
-                   body: JSON.stringify({ clientId: selectedClientForReport.id })
+                   body: JSON.stringify({ clientId: targetClient.id })
                 });
               } catch(e) { console.error(e); }
             }
@@ -1297,7 +1346,7 @@ export default function RoutesPage() {
             
             // Check if this visit was rescheduled from another date
             try {
-              const extraVisitsRaw = selectedClientForReport.extra_visits || [];
+              const extraVisitsRaw = targetClient.extra_visits || [];
               const targetStr = activeRouteDate + ':from:';
               const rescheduleEntry = extraVisitsRaw.find((v: string) => typeof v === 'string' && v.startsWith(targetStr));
               if (rescheduleEntry) {
@@ -1305,7 +1354,7 @@ export default function RoutesPage() {
                  if (originalDate) {
                    await supabase.from('visits').insert({
                      admin_id: adminId,
-                     client_id: selectedClientForReport.id,
+                     client_id: targetClient.id,
                      employee_id: payload.employeeId,
                      date: finalVisitDate,
                      time: originalDate, // Setting time to originalDate makes it show up as completed for that original route
@@ -1316,7 +1365,7 @@ export default function RoutesPage() {
                    
                    // Clean up the extra_visit entry
                    const newExtraVisits = extraVisitsRaw.filter((v: string) => v !== rescheduleEntry);
-                   await supabase.from('clients').update({ extra_visits: newExtraVisits }).eq('id', selectedClientForReport.id);
+                   await supabase.from('clients').update({ extra_visits: newExtraVisits }).eq('id', targetClient.id);
                  }
               }
             } catch(e) {
@@ -1326,13 +1375,13 @@ export default function RoutesPage() {
             // Update client with lastVisitDate
             await supabase.from('clients').update({
               last_visit_date: finalVisitDate
-            }).eq('id', selectedClientForReport.id);
+            }).eq('id', targetClient.id);
 
             // Cleanup old visits (keep only the 3 most recent)
             try {
               const { data: visitsData } = await supabase.from('visits')
                 .select('id, date')
-                .eq('client_id', selectedClientForReport.id)
+                .eq('client_id', targetClient.id)
                 .eq('admin_id', adminId)
                 .order('date', { ascending: false });
               
@@ -1353,9 +1402,9 @@ export default function RoutesPage() {
             notifyAdminAttendanceFinished({
               adminId,
               employeeId: payload.employeeId || userProfile?.uid,
-              clientId: selectedClientForReport.id,
-              clientName: selectedClientForReport.name,
-              type: selectedClientForReport.isOneOffJob ? 'job' : 'visit',
+              clientId: targetClient.id,
+              clientName: targetClient.name,
+              type: targetClient.isOneOffJob ? 'job' : 'visit',
               notes: reportNotes
             }).catch(e => console.warn('[Push] Error triggering admin push notification:', e));
           }
@@ -1370,7 +1419,7 @@ export default function RoutesPage() {
       queryClient.setQueryData(['routeData', routeDate, selectedEmployee, selectedDay, userProfile?.uid, generated], (old: any) => {
         if (!old) return old;
         const nextSet = new Set(old.completed);
-        nextSet.add(selectedClientForReport.id);
+        nextSet.add(targetClient.id);
         return { ...old, completed: nextSet };
       });
       queryClient.invalidateQueries({ queryKey: ['routeData'] });
