@@ -141,6 +141,27 @@ export default function Layout() {
   useEffect(() => {
     if (!userProfile) return;
 
+    // Keep app CPU/Screen awake to ensure background notifications and socket updates aren't frozen
+    let wakeLockSentinel: any = null;
+    const requestWakeLock = async () => {
+      try {
+        if ('wakeLock' in navigator && (navigator as any).wakeLock) {
+          wakeLockSentinel = await (navigator as any).wakeLock.request('screen');
+          console.log('[WakeLock] Tela/CPU mantida ativa para não suspender notificações');
+        }
+      } catch (err) {
+        console.log('[WakeLock] WakeLock aviso:', err);
+      }
+    };
+    requestWakeLock();
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        requestWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     const requestPerms = async () => {
       if (Capacitor.isNativePlatform()) {
         try {
@@ -368,6 +389,10 @@ export default function Layout() {
       .subscribe();
 
     return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (wakeLockSentinel && typeof wakeLockSentinel.release === 'function') {
+        wakeLockSentinel.release().catch(() => {});
+      }
       supabase.removeChannel(channel);
     };
   }, [userProfile]);

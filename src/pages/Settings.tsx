@@ -415,6 +415,29 @@ export default function Settings() {
             </div>
           </div>
 
+          {/* Background and WakeLock Card */}
+          <div className="p-4 bg-amber-50 rounded-xl border border-amber-200 text-sm">
+            <div className="flex items-start">
+              <AlertCircle className="text-amber-600 mr-2.5 mt-0.5 shrink-0" size={18} />
+              <div>
+                <p className="font-bold text-amber-900">
+                  ⚡ Como manter o aplicativo 100% acordado em segundo plano no Android:
+                </p>
+                <div className="text-amber-800 mt-2 text-xs space-y-1.5 leading-relaxed">
+                  <p>
+                    <strong>1. Bateria Sem Restrições:</strong> Vá em <em>Configurações do Android &gt; Aplicativos &gt; GestãoPro &gt; Bateria</em> e selecione <strong>"Sem Restrições" / "Não Otimizado"</strong>. Isso impede que o sistema congele o aplicativo quando a tela for bloqueada ou apagada.
+                  </p>
+                  <p>
+                    <strong>2. Notificações na Tela de Bloqueio:</strong> Em <em>Configurações &gt; Aplicativos &gt; GestãoPro &gt; Notificações</em>, garanta que <strong>"Exibir na tela de bloqueio"</strong> e <strong>"Permitir som e vibração"</strong> estejam ativados.
+                  </p>
+                  <p>
+                    <strong>3. Início Automático (Xiaomi, Redmi, Samsung, Poco, Realme):</strong> Ative a opção <strong>"Início Automático" (Auto-start)</strong> e desative a <strong>"Economia de bateria MIUI/OneUI"</strong> para o aplicativo.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
           {testResult && (
             <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl text-blue-900 text-sm flex items-center">
               <Bell className="mr-2.5 text-blue-600 shrink-0" size={18} />
