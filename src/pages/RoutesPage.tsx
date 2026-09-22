@@ -1116,7 +1116,7 @@ export default function RoutesPage() {
           }
         } catch (e) {}
 
-        const defaultReportMsg = `Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nhttps://www.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}`;
+        const defaultReportMsg = `Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}`;
         const msg1 = currentSettings.reportMessage1 || defaultReportMsg;
         const msg2 = currentSettings.reportMessage2 || defaultReportMsg;
 
@@ -1126,6 +1126,7 @@ export default function RoutesPage() {
         const clientPhoneDigits = (targetClient.phone || targetClient.local_phone || cleanPhone || '').replace(/\D/g, '');
 
         message = message
+          .replace(/https:\/\/www\.rspiscinas\.app\.br\/client-panel/gi, 'www.rspiscinas.app.br/client-panel')
           .replace(/\{\s*primeiro\s*nome(\s*do\s*cliente)?\s*\}/gi, firstName)
           .replace(/\{\s*primeiro_nome\s*\}/gi, firstName)
           .replace(/\{\s*nome(\s*do\s*cliente)?\s*\}/gi, firstName)
