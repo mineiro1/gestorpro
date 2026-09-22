@@ -1372,10 +1372,31 @@ app.all("/api/sync-payment", async (req, res) => {
     }
   }
 
+  // Cache para evitar notificações duplicadas (chave -> timestamp)
+  const recentPushCache = new Map<string, number>();
+  function shouldSendPush(key: string): boolean {
+    const now = Date.now();
+    // Limpa chaves antigas com mais de 2 minutos
+    for (const [k, time] of recentPushCache.entries()) {
+      if (now - time > 120000) recentPushCache.delete(k);
+    }
+    if (recentPushCache.has(key) && (now - recentPushCache.get(key)!) < 15000) {
+      console.log(`[Push Server] Notificação suprimida por deduplicação recente: ${key}`);
+      return false;
+    }
+    recentPushCache.set(key, now);
+    return true;
+  }
+
   // Endpoint to immediately trigger attendance completion push notification
   app.post("/api/notifications/notify-visit-completion", async (req, res) => {
     try {
-      const { adminId, employeeId, clientId, clientName, techName, type, notes } = req.body;
+      const { adminId, employeeId, clientId, clientName, techName, type, visitId } = req.body;
+
+      const dedupeKey = `push_${type || 'visit'}_${clientId || ''}_${visitId || ''}`;
+      if (!shouldSendPush(dedupeKey)) {
+        return res.json({ success: true, deduped: true });
+      }
 
       let empName = techName || "Colaborador";
       if (!techName && employeeId) {
@@ -1427,11 +1448,11 @@ app.all("/api/sync-payment", async (req, res) => {
 
       const sent = await sendPushToAdmin(
         adminId,
-        'Teste de Notificação Push',
+        '🏊 Teste de Notificação Push',
         'Seu dispositivo está conectado e configurado para receber alertas em tempo real das rotas!',
         {
           url: '/routes',
-          channelId: 'atendimentos',
+          channelId: 'atendimentos_v2',
           type: 'test_push'
         }
       );
@@ -1456,8 +1477,61 @@ app.all("/api/sync-payment", async (req, res) => {
     });
   });
 
-  // Background listener for Push Notifications (incoming client chat messages)
-  supabaseAdmin.channel('push-notifications-chat')
+  // Background listener for Database changes (Visits, OneOffJobs, Chat Messages)
+  supabaseAdmin.channel('push-notifications-db-events')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'visits' }, async (payload) => {
+       const newVisit = payload.new as any;
+       if (!newVisit || newVisit.status !== 'finalizada') return;
+
+       const dedupeKey = `push_visit_${newVisit.client_id}_${newVisit.id}`;
+       if (!shouldSendPush(dedupeKey)) return;
+
+       if (newVisit.admin_id && newVisit.admin_id !== newVisit.employee_id) {
+           const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', newVisit.employee_id).single();
+           const { data: cliData } = await supabaseAdmin.from('clients').select('name').eq('id', newVisit.client_id).single();
+
+           const empName = empData?.name || 'Colaborador';
+           const cliName = cliData?.name || 'Cliente';
+
+           await sendPushToAdmin(
+             newVisit.admin_id,
+             '🏊 Visita Finalizada!',
+             `O colaborador ${empName} finalizou o atendimento no cliente ${cliName}.`,
+             {
+               url: '/routes',
+               channelId: 'atendimentos_v2',
+               type: 'visit_completed',
+               visitId: String(newVisit.id || ''),
+               clientId: String(newVisit.client_id || '')
+             }
+           );
+       }
+    })
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'oneoffjobs' }, async (payload) => {
+       const newJob = payload.new as any;
+       if (!newJob || newJob.status !== 'concluido') return;
+
+       const dedupeKey = `push_job_${newJob.id}`;
+       if (!shouldSendPush(dedupeKey)) return;
+
+       if (newJob.admin_id && newJob.admin_id !== newJob.employee_id) {
+           const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', newJob.employee_id).single();
+           const empName = empData?.name || 'Colaborador';
+           const cliName = newJob.client_name || 'Cliente';
+
+           await sendPushToAdmin(
+             newJob.admin_id,
+             '🏊 Serviço Avulso Finalizado',
+             `O colaborador ${empName} finalizou o serviço avulso para ${cliName}.`,
+             {
+               url: '/routes',
+               channelId: 'atendimentos_v2',
+               type: 'job_completed',
+               jobId: String(newJob.id || '')
+             }
+           );
+       }
+    })
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, async (payload) => {
        const newMsg = payload.new as any;
        if (newMsg.sender_type === 'client') {
@@ -1474,7 +1548,6 @@ app.all("/api/sync-payment", async (req, res) => {
           const now = Date.now();
           const createdMs = session.created_at ? new Date(session.created_at).getTime() : 0;
           if (createdMs > 0 && now - createdMs > 30 * 60 * 1000) {
-            // Janela de 30 minutos já expirada: encerra no banco e não envia push
             await supabaseAdmin.from('chat_sessions')
               .update({ status: 'closed', closed_at: new Date().toISOString() })
               .eq('id', session.id);
