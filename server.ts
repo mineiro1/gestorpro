@@ -1314,10 +1314,10 @@ app.all("/api/sync-payment", async (req, res) => {
                 priority: 'high',
                 notification: {
                   channelId: data.channelId || 'atendimentos',
-                  sound: 'default',
+                  sound: 'notificacao.mp3',
                   priority: 'max',
                   visibility: 'public',
-                  defaultSound: true,
+                  defaultSound: false,
                   defaultVibrateTimings: true
                 }
               },

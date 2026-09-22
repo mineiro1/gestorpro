@@ -86,10 +86,10 @@ export default async function handler(req, res) {
             priority: 'high',
             notification: {
               channelId: 'atendimentos',
-              sound: 'default',
+              sound: 'notificacao.mp3',
               priority: 'max',
               visibility: 'public',
-              defaultSound: true,
+              defaultSound: false,
               defaultVibrateTimings: true
             }
           }
