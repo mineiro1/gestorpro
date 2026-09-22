@@ -1313,7 +1313,9 @@ app.all("/api/sync-payment", async (req, res) => {
                 ...data,
                 click_action: 'FCM_PLUGIN_ACTIVITY',
                 url: data.url || '/routes',
-                channelId: data.channelId || 'atendimentos_v2'
+                channelId: data.channelId || 'atendimentos_v2',
+                channel_id: data.channelId || 'atendimentos_v2',
+                sound: 'notificacao'
               },
               android: {
                 priority: 'high',

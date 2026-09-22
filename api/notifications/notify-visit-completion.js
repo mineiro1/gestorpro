@@ -97,7 +97,9 @@ export default async function handler(req, res) {
             type: isJob ? 'job_completed' : 'visit_completed',
             click_action: 'FCM_PLUGIN_ACTIVITY',
             url: '/routes',
-            channelId: 'atendimentos_v2'
+            channelId: 'atendimentos_v2',
+            channel_id: 'atendimentos_v2',
+            sound: 'notificacao'
           },
           android: {
             priority: 'high',
