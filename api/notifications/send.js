@@ -7,9 +7,9 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { visitId, adminId, employeeId, clientId, clientName, techName, type, notes } = req.body || {};
-    if (!adminId) {
-      return res.status(400).json({ error: 'adminId is required' });
+    const { targetUserId, title, body, data = {} } = req.body || {};
+    if (!targetUserId || !title) {
+      return res.status(400).json({ error: 'targetUserId and title are required' });
     }
 
     const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
@@ -22,67 +22,44 @@ export default async function handler(req, res) {
       auth: { autoRefreshToken: false, persistSession: false }
     });
 
-    let empName = techName || "Colaborador";
-    if (!techName && employeeId) {
-      try {
-        const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', employeeId).single();
-        if (empData?.name) empName = empData.name;
-      } catch (e) {}
-    }
-
-    let resolvedClientName = clientName;
-    if (!resolvedClientName && clientId) {
-      try {
-        const { data: cliData } = await supabaseAdmin.from('clients').select('name').eq('id', clientId).single();
-        if (cliData?.name) resolvedClientName = cliData.name;
-      } catch (e) {}
-    }
-    if (!resolvedClientName) resolvedClientName = "Cliente";
-
     const { data: users, error } = await supabaseAdmin
       .from('users')
       .select('id, name, fcm_token')
-      .eq('id', adminId);
+      .eq('id', targetUserId);
 
     if (error || !users || users.length === 0) {
-      return res.status(404).json({ error: 'Admin não encontrado' });
+      return res.status(404).json({ error: 'Usuário destinatário não encontrado' });
     }
 
     const tokens = users.map(u => u.fcm_token).filter(Boolean);
     if (tokens.length === 0) {
-      return res.json({ success: false, message: 'Admin não possui tokens FCM registrados' });
+      return res.json({ success: false, message: 'Nenhum token FCM registrado para o usuário' });
     }
 
     initFirebase();
     if (!admin.apps.length) {
-      return res.json({ success: false, message: 'Firebase Admin não configurado na Vercel (FIREBASE_SERVICE_ACCOUNT ausente)' });
+      return res.json({ success: false, message: 'Firebase Admin não inicializado na Vercel' });
     }
-
-    const isJob = type === 'job';
-    const title = isJob ? '🏊 Serviço Avulso Finalizado' : '🏊 Visita Finalizada!';
-    const body = `O colaborador ${empName} finalizou o atendimento no cliente ${resolvedClientName}.`;
 
     let sentCount = 0;
     for (const token of tokens) {
       try {
         await admin.messaging().send({
           token,
-          notification: { title, body },
+          notification: {
+            title,
+            body: body || ''
+          },
           data: {
-            visitId: String(visitId || ''),
-            clientName: resolvedClientName,
-            techName: empName,
-            clientId: String(clientId || ''),
-            employeeId: String(employeeId || ''),
-            type: isJob ? 'job_completed' : 'visit_completed',
+            ...data,
             click_action: 'FCM_PLUGIN_ACTIVITY',
-            url: '/routes',
-            channelId: 'atendimentos'
+            url: data.url || '/routes',
+            channelId: data.channelId || 'atendimentos'
           },
           android: {
             priority: 'high',
             notification: {
-              channelId: 'atendimentos',
+              channelId: data.channelId || 'atendimentos',
               sound: 'default',
               priority: 'max',
               defaultSound: true,
@@ -92,7 +69,7 @@ export default async function handler(req, res) {
         });
         sentCount++;
       } catch (fcmErr) {
-        console.error('Erro FCM:', fcmErr.message);
+        console.error('Erro FCM ao enviar:', fcmErr.message);
         if (fcmErr.code === 'messaging/registration-token-not-registered' || fcmErr.code === 'messaging/invalid-registration-token') {
           await supabaseAdmin.from('users').update({ fcm_token: null }).eq('fcm_token', token);
         }

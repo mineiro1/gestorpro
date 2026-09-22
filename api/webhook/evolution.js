@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { initFirebase, admin } from '../_firebaseAdmin.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -128,6 +129,50 @@ export default async function handler(req, res) {
        console.error("Error inserting message:", insertError);
     } else {
        console.log("Message successfully saved to session", activeSession.id);
+
+       // Dispara Push Notification nativo para o responsável pelo atendimento
+       try {
+         const targetUserId = activeSession.employee_id || activeSession.admin_id;
+         if (targetUserId) {
+           const { data: recipientUser } = await supabaseAdmin
+             .from('users')
+             .select('fcm_token')
+             .eq('id', targetUserId)
+             .single();
+
+           if (recipientUser?.fcm_token) {
+             initFirebase();
+             if (admin.apps.length) {
+               await admin.messaging().send({
+                 token: recipientUser.fcm_token,
+                 notification: {
+                   title: `💬 ${matchedClient.name || 'Cliente'}`,
+                   body: content || (mediaUrl ? '📷 Foto/Áudio recebido' : 'Nova mensagem')
+                 },
+                 data: {
+                   sessionId: String(activeSession.id),
+                   clientId: String(matchedClient.id),
+                   click_action: 'FCM_PLUGIN_ACTIVITY',
+                   channelId: 'chat_messages',
+                   url: '/messages'
+                 },
+                 android: {
+                   priority: 'high',
+                   notification: {
+                     channelId: 'chat_messages',
+                     sound: 'default',
+                     priority: 'max',
+                     defaultSound: true,
+                     defaultVibrateTimings: true
+                   }
+                 }
+               });
+             }
+           }
+         }
+       } catch (pushErr) {
+         console.warn('[Webhook Evolution] Erro ao disparar push nativo:', pushErr.message);
+       }
     }
     
     return res.status(200).send("OK");
