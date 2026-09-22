@@ -83,6 +83,22 @@ export default function RoutesPage() {
   // Report Modal State
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [selectedClientForReport, setSelectedClientForReport] = useState<any>(null);
+  const cachedLocationRef = useRef<{ lat: number; lng: number } | null>(null);
+
+  // Pre-fetch location as soon as report modal opens
+  useEffect(() => {
+    if (reportModalOpen && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          if (pos?.coords) {
+            cachedLocationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          }
+        },
+        () => {},
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 300000 }
+      );
+    }
+  }, [reportModalOpen]);
   const [reportNotes, setReportNotes] = useState('');
   const [reportPhotos, setReportPhotos] = useState<string[]>([]);
   const [photoDate, setPhotoDate] = useState<Date | null>(null);
@@ -1200,16 +1216,22 @@ export default function RoutesPage() {
     // Dispara em segundo plano para não travar a UI de finalização da visita
     handleWhatsApp();
     
-    let locationData = null;
+    let locationData = cachedLocationRef.current || null;
     try {
       if (navigator.geolocation) {
         const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
-          navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000 });
+          navigator.geolocation.getCurrentPosition(resolve, reject, { 
+            enableHighAccuracy: true, 
+            timeout: 10000, 
+            maximumAge: 300000 // aceita localização recente de até 5 minutos
+          });
         });
-        locationData = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        if (pos && pos.coords) {
+          locationData = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        }
       }
     } catch(err) {
-      console.warn("Não foi possível obter a localização", err);
+      console.warn("Não foi possível obter a localização em tempo real, usando cache se houver", err);
     }
 
     try {
