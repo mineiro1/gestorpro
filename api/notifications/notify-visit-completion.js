@@ -80,13 +80,13 @@ export default async function handler(req, res) {
             type: isJob ? 'job_completed' : 'visit_completed',
             click_action: 'FCM_PLUGIN_ACTIVITY',
             url: '/routes',
-            channelId: 'atendimentos'
+            channelId: 'atendimentos_v2'
           },
           android: {
             priority: 'high',
             notification: {
-              channelId: 'atendimentos',
-              sound: 'notificacao.mp3',
+              channelId: 'atendimentos_v2',
+              sound: 'notificacao',
               priority: 'max',
               visibility: 'public',
               defaultSound: false,

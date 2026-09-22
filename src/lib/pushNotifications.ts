@@ -21,12 +21,12 @@ export async function setupPushNotificationChannels(): Promise<void> {
   try {
     // Channel for route attendance & completed visits
     await PushNotifications.createChannel({
-      id: 'atendimentos',
-      name: 'Atendimentos das Rotas',
-      description: 'Notificações em tempo real quando um colaborador finalizar um atendimento',
+      id: 'atendimentos_v2',
+      name: 'Atendimentos das Rotas (Alerta Sonoro)',
+      description: 'Notificações em tempo real com som personalizado quando um colaborador finalizar um atendimento',
       importance: 5, // High / Max importance (heads-up banner)
       visibility: 1, // Public on lockscreen
-      sound: 'notificacao.mp3',
+      sound: 'notificacao',
       vibration: true,
       lights: true,
       lightColor: '#10b981',
@@ -34,12 +34,12 @@ export async function setupPushNotificationChannels(): Promise<void> {
 
     // Also configure LocalNotifications channel matching the ID
     await LocalNotifications.createChannel({
-      id: 'atendimentos',
-      name: 'Atendimentos das Rotas',
-      description: 'Notificações em tempo real de atendimentos finalizados',
+      id: 'atendimentos_v2',
+      name: 'Atendimentos das Rotas (Alerta Sonoro)',
+      description: 'Notificações em tempo real com som personalizado',
       importance: 5,
       visibility: 1,
-      sound: 'notificacao.mp3',
+      sound: 'notificacao',
       vibration: true,
       lights: true,
       lightColor: '#10b981',
@@ -167,7 +167,7 @@ export async function initCapacitorPushNotifications(
 
         const title = notification.title || 'Atendimento Finalizado';
         const body = notification.body || 'Um colaborador concluiu um atendimento.';
-        const channelId = notification.data?.channelId || 'atendimentos';
+        const channelId = notification.data?.channelId || 'atendimentos_v2';
 
         // Display Heads-Up notification through LocalNotifications
         try {
@@ -179,7 +179,7 @@ export async function initCapacitorPushNotifications(
                 body,
                 schedule: { at: new Date(Date.now() + 100) },
                 channelId,
-                sound: 'notificacao.mp3',
+                sound: 'notificacao',
                 extra: notification.data || {},
               },
             ],

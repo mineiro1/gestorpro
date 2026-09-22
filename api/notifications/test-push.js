@@ -52,14 +52,14 @@ export default async function handler(req, res) {
       },
       data: {
         type: 'test_push',
-        channelId: 'atendimentos',
+        channelId: 'atendimentos_v2',
         url: '/routes'
       },
       android: {
         priority: 'high',
         notification: {
-          channelId: 'atendimentos',
-          sound: 'notificacao.mp3',
+          channelId: 'atendimentos_v2',
+          sound: 'notificacao',
           priority: 'max',
           visibility: 'public',
           defaultSound: false,
