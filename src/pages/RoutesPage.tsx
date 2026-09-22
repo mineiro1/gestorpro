@@ -1116,11 +1116,20 @@ export default function RoutesPage() {
           }
         } catch (e) {}
 
-        const msg1 = currentSettings.reportMessage1 || `Olá {nome},\n\nO atendimento da sua piscina foi finalizado! Você pode acessar o nosso painel para acompanhar todas as informações do tratamento.\n\nAcesse: https://www.rspiscinas.app.br/client-panel\nLogin: {telefone}\nSenha: {telefone}`;
-        const msg2 = currentSettings.reportMessage2 || `Olá {nome},\n\nO atendimento da sua piscina foi finalizado! Verifique as informações completas no nosso painel de clientes.\n\nAcesse: https://www.rspiscinas.app.br/client-panel`;
+        const defaultReportMsg = `Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nhttps://www.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}`;
+        const msg1 = currentSettings.reportMessage1 || defaultReportMsg;
+        const msg2 = currentSettings.reportMessage2 || defaultReportMsg;
 
         let message = useMessage2 ? msg2 : msg1;
-        message = message.replace(/{nome}/g, clientName).replace(/{telefone}/g, cleanPhone);
+        const firstName = (targetClient.name || 'Cliente').trim().split(/\s+/)[0] || 'Cliente';
+        const clientPhoneDigits = targetClient.phone ? targetClient.phone.replace(/\D/g, '') : cleanPhone;
+
+        message = message
+          .replace(/{Primeiro nome do cliente}/gi, firstName)
+          .replace(/{primeiro_nome}/gi, firstName)
+          .replace(/{nome}/gi, firstName)
+          .replace(/{telefone de cadastro do cliente}/gi, clientPhoneDigits)
+          .replace(/{telefone}/gi, clientPhoneDigits);
 
         const reportMsgClientId = `visit_rep_${targetClient.id}_${Date.now()}`;
 
