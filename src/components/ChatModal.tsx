@@ -6,6 +6,8 @@ import { MessageStatus, parseMessageStatus } from './chat/MessageStatus';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { evaluateSessionExpiry, checkDailyChatAvailability, markClientChatAsRead } from '../lib/chatSessionUtils';
+import { getApiUrl } from '../lib/apiConfig';
+import { sendMetaMessage, sendEvolutionMessage } from '../lib/whatsapp';
 
 export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const { userProfile } = useAuth();
@@ -151,7 +153,8 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         } catch (e) {}
       }
 
-      const syncRes = await fetch('/api/chat/sync-status', {
+      const syncUrl = getApiUrl('/api/chat/sync-status');
+      const syncRes = await fetch(syncUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messageIds: unreadTechMsgIds, waSettings: currentSettings })
@@ -346,28 +349,46 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       if (insertErr) throw insertErr;
 
       // Resolve configurações de WhatsApp
-      let currentSettings = { ...(waSettings || {}) };
-      const adminId = userProfile?.role === 'admin' ? userProfile?.uid : userProfile?.adminId;
+      let currentSettings = { ...(waSettings || {}), ...(userProfile?.whatsappSettings || {}) };
+      const adminId = userProfile?.role === 'admin' ? userProfile?.uid : (userProfile?.adminId || userProfile?.uid);
 
-      if (adminId && (!currentSettings.metaToken && !currentSettings.evolutionApiKey)) {
+      if (!currentSettings.metaToken && !currentSettings.evolutionApiKey) {
         try {
-          const { data: adminData } = await supabase
-            .from('users')
-            .select('whatsapp_settings')
-            .eq('id', adminId)
-            .single();
-          if (adminData?.whatsapp_settings) {
-            currentSettings = { ...currentSettings, ...adminData.whatsapp_settings };
+          if (adminId) {
+            const { data: adminData } = await supabase
+              .from('users')
+              .select('whatsapp_settings')
+              .eq('id', adminId)
+              .single();
+            if (adminData?.whatsapp_settings) {
+              currentSettings = { ...currentSettings, ...adminData.whatsapp_settings };
+            }
           }
-        } catch (e) {}
+          if (!currentSettings.metaToken && !currentSettings.evolutionApiKey) {
+            const { data: allUsers } = await supabase
+              .from('users')
+              .select('whatsapp_settings')
+              .not('whatsapp_settings', 'is', null);
+            const foundAdmin = allUsers?.find((u: any) => u.whatsapp_settings?.metaToken || u.whatsapp_settings?.evolutionApiKey);
+            if (foundAdmin?.whatsapp_settings) {
+              currentSettings = { ...currentSettings, ...foundAdmin.whatsapp_settings };
+            }
+          }
+        } catch (e) {
+          console.warn('[ChatModal] Erro ao buscar configurações de WhatsApp:', e);
+        }
       }
 
       const clientPhone = client.local_phone || client.phone || '';
       let externalId = '';
+      let sentSuccess = false;
+      let sendError: string | null = null;
 
       if (clientPhone) {
+        // Tentativa 1: Envio primário via Backend Seguro (/api/chat/send)
         try {
-          const apiRes = await fetch('/api/chat/send', {
+          const sendEndpoint = getApiUrl('/api/chat/send');
+          const apiRes = await fetch(sendEndpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -379,20 +400,55 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
               message_client_id
             })
           });
+
           if (apiRes.ok) {
             const apiData = await apiRes.json().catch(() => null);
-            if (apiData?.externalId) externalId = apiData.externalId;
+            if (apiData?.success) {
+              sentSuccess = true;
+              if (apiData?.externalId) externalId = apiData.externalId;
+            } else if (apiData?.error) {
+              sendError = apiData.error;
+            }
+          } else {
+            console.warn('[ChatModal] Servidor backend retornou HTTP', apiRes.status);
           }
-        } catch (apiErr) {
-          console.error('[ChatModal] Erro no envio via backend:', apiErr);
+        } catch (apiErr: any) {
+          console.warn('[ChatModal] Falha ao contatar backend, acionando fallback direto:', apiErr);
         }
+
+        // Tentativa 2: Fallback direto no navegador / APK Nativo
+        if (!sentSuccess) {
+          try {
+            if (currentSettings.useMetaApi && currentSettings.metaToken) {
+              const metaRes = await sendMetaMessage(clientPhone, text, currentSettings, message_client_id);
+              if (metaRes) {
+                sentSuccess = true;
+                externalId = metaRes.id || metaRes.messages?.[0]?.id || metaRes.key?.id || '';
+              }
+            } else if (currentSettings.useEvolutionApi && currentSettings.evolutionApiKey) {
+              const evoRes = await sendEvolutionMessage(clientPhone, text, currentSettings, message_client_id);
+              if (evoRes) {
+                sentSuccess = true;
+                externalId = evoRes.key?.id || evoRes.id || evoRes.messageId || '';
+              }
+            } else {
+              sendError = 'Nenhuma configuração de WhatsApp ativa encontrada.';
+            }
+          } catch (directErr: any) {
+            console.error('[ChatModal] Falha no fallback de envio direto:', directErr);
+            sendError = directErr.message || 'Erro ao enviar mensagem via WhatsApp';
+          }
+        }
+      } else {
+        sendError = 'Cliente não possui telefone cadastrado.';
       }
 
       const updatedMetadata = {
-        status: 'sent',
+        status: sentSuccess ? 'sent' : 'failed',
         external_id: externalId || undefined,
         message_client_id,
-        sent_at: new Date().toISOString()
+        sent_at: sentSuccess ? new Date().toISOString() : undefined,
+        error: sentSuccess ? undefined : (sendError || 'Falha no envio')
       };
 
       // Atualiza diretamente no Supabase com permissão do usuário autenticado
@@ -405,6 +461,10 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
           .eq('id', insertedMsg.id);
       } catch (dbUpdateErr) {
         console.warn('[ChatModal] Erro ao sincronizar status pós-envio:', dbUpdateErr);
+      }
+
+      if (!sentSuccess && sendError) {
+        console.error('[ChatModal] Mensagem não pôde ser entregue:', sendError);
       }
 
       return { ...insertedMsg, media_url: JSON.stringify(updatedMetadata) };

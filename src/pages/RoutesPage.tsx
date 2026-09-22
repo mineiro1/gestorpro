@@ -10,6 +10,7 @@ import { openMap, openRouteMap, openWaze } from '../lib/maps';
 import { openWhatsApp, sendEvolutionMessage, sendMetaMessage } from '../lib/whatsapp';
 import { notifyAdminAttendanceFinished } from '../lib/pushNotifications';
 import { getLocalDayUtcRange, checkDailyChatAvailability, evaluateSessionExpiry, markClientChatAsRead } from '../lib/chatSessionUtils';
+import { getApiUrl } from '../lib/apiConfig';
 import EmployeeMap from '../components/EmployeeMap';
 import exifr from 'exifr';
 
@@ -1148,7 +1149,8 @@ export default function RoutesPage() {
           let sent = false;
           // Envio primário: endpoint seguro do servidor (/api/chat/send)
           try {
-            const apiRes = await fetch('/api/chat/send', {
+            const sendUrl = getApiUrl('/api/chat/send');
+            const apiRes = await fetch(sendUrl, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -1300,7 +1302,7 @@ export default function RoutesPage() {
             
             if (!needsReturn) {
               try {
-                await fetch('/api/chat/close', {
+                await fetch(getApiUrl('/api/chat/close'), {
                    method: 'POST',
                    headers: { 'Content-Type': 'application/json' },
                    body: JSON.stringify({ clientId: targetClient.id })
@@ -1346,7 +1348,7 @@ export default function RoutesPage() {
             
             if (!needsReturn) {
               try {
-                await fetch('/api/chat/close', {
+                await fetch(getApiUrl('/api/chat/close'), {
                    method: 'POST',
                    headers: { 'Content-Type': 'application/json' },
                    body: JSON.stringify({ clientId: targetClient.id })

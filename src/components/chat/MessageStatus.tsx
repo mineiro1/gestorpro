@@ -1,10 +1,10 @@
 import React from 'react';
-import { Check, CheckCheck, Clock } from 'lucide-react';
+import { Check, CheckCheck, Clock, AlertCircle } from 'lucide-react';
 
-export type MessageDeliveryStatus = 'sending' | 'sent' | 'delivered' | 'read';
+export type MessageDeliveryStatus = 'sending' | 'sent' | 'delivered' | 'read' | 'failed';
 
 /**
- * Extracts and maps message status ('sent', 'delivered', 'read') from message payload and media_url metadata
+ * Extracts and maps message status ('sent', 'delivered', 'read', 'failed') from message payload and media_url metadata
  */
 export function parseMessageStatus(msg: any, allMessages: any[] = []): MessageDeliveryStatus {
   if (!msg) return 'sent';
@@ -16,6 +16,11 @@ export function parseMessageStatus(msg: any, allMessages: any[] = []): MessageDe
     } catch (e) {}
   } else if (typeof msg.media_url === 'object' && msg.media_url !== null) {
     meta = msg.media_url;
+  }
+
+  const rawStatus = String(meta.status || msg.status || '').toLowerCase().trim();
+  if (rawStatus === 'failed' || rawStatus === 'error') {
+    return 'failed';
   }
 
   // Se o cliente respondeu após esta mensagem, marca mensagens anteriores do técnico como lidas
@@ -33,7 +38,6 @@ export function parseMessageStatus(msg: any, allMessages: any[] = []): MessageDe
     }
   }
 
-  const rawStatus = String(meta.status || msg.status || '').toLowerCase().trim();
   if (rawStatus === 'read' || rawStatus === 'viewed' || rawStatus === 'played' || rawStatus === 'read_receipt' || rawStatus === '4' || rawStatus === '5') {
     return 'read';
   }
@@ -59,6 +63,7 @@ interface MessageStatusProps {
  * - 'sent': 1 grey tick (sent to servers)
  * - 'delivered': 2 grey ticks (delivered to recipient device)
  * - 'read': 2 blue ticks (viewed/read by recipient)
+ * - 'failed': Red alert icon (failure)
  */
 export function MessageStatus({
   status,
@@ -66,6 +71,18 @@ export function MessageStatus({
   className = '',
   isBubbleOnPrimary = false
 }: MessageStatusProps) {
+  if (status === 'failed') {
+    return (
+      <span
+        title="Falha no envio da mensagem"
+        className={`inline-flex items-center ${className}`}
+        data-status="failed"
+      >
+        <AlertCircle size={size} className="text-red-400 font-bold ml-0.5" />
+      </span>
+    );
+  }
+
   if (status === 'read') {
     return (
       <span

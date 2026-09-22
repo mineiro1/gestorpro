@@ -123,38 +123,47 @@ export default async function handler(req, res) {
     }
 
     let externalId = '';
+    let sendSuccess = false;
+    let lastSendError = '';
 
     // Envio ÚNICO via Evolution API (sem loops de tentativas com/sem 9 para não duplicar)
     if (waSettings?.useEvolutionApi && waSettings?.evolutionApiUrl && waSettings?.evolutionApiKey && waSettings?.evolutionInstanceName) {
       let baseUrl = waSettings.evolutionApiUrl.trim().replace(/\/$/, '');
       if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
 
-      const response = await fetch(`${baseUrl}/message/sendText/${waSettings.evolutionInstanceName}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': waSettings.evolutionApiKey
-        },
-        body: JSON.stringify({
-          number: targetNumber,
-          text: text,
-          options: { delay: 500, presence: 'composing', linkPreview: false }
-        })
-      });
+      try {
+        const response = await fetch(`${baseUrl}/message/sendText/${waSettings.evolutionInstanceName}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': waSettings.evolutionApiKey
+          },
+          body: JSON.stringify({
+            number: targetNumber,
+            text: text,
+            options: { delay: 500, presence: 'composing', linkPreview: false }
+          })
+        });
 
-      if (response.ok) {
-        try {
-          const evoData = await response.json();
-          externalId = evoData?.key?.id || 
-                       evoData?.data?.key?.id || 
-                       evoData?.messageId || 
-                       evoData?.id || 
-                       evoData?.messages?.[0]?.key?.id || 
-                       evoData?.messages?.[0]?.id || '';
-        } catch (e) {}
-      } else {
-        const errData = await response.json().catch(() => ({}));
-        console.warn("[/api/chat/send] Evolution API error response:", errData);
+        if (response.ok) {
+          sendSuccess = true;
+          try {
+            const evoData = await response.json();
+            externalId = evoData?.key?.id || 
+                         evoData?.data?.key?.id || 
+                         evoData?.messageId || 
+                         evoData?.id || 
+                         evoData?.messages?.[0]?.key?.id || 
+                         evoData?.messages?.[0]?.id || '';
+          } catch (e) {}
+        } else {
+          const errData = await response.json().catch(() => ({}));
+          lastSendError = errData?.message || JSON.stringify(errData);
+          console.warn("[/api/chat/send] Evolution API error response:", errData);
+        }
+      } catch (evoFetchErr) {
+        lastSendError = evoFetchErr.message;
+        console.error("[/api/chat/send] Erro de conexão com Evolution API:", evoFetchErr);
       }
     } else if (waSettings?.useMetaApi) {
       if (!waSettings.metaToken) throw new Error("Token Meta obrigatório");
@@ -194,24 +203,33 @@ export default async function handler(req, res) {
       }
 
       // Envio ESTRITAMENTE ÚNICO: 1 requisição para o targetNumber
-      const response = await fetch(url, {
-        method: 'POST',
-        headers,
-        body
-      });
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers,
+          body
+        });
 
-      if (response.ok) {
-        try {
-          const resData = await response.json();
-          externalId = resData?.id || 
-                       resData?.messages?.[0]?.id || 
-                       resData?.data?.id || 
-                       resData?.key?.id || '';
-        } catch (e) {}
-      } else {
-        const errText = await response.text().catch(() => '');
-        console.warn("[/api/chat/send] Meta/WAME API error response:", errText);
+        if (response.ok) {
+          sendSuccess = true;
+          try {
+            const resData = await response.json();
+            externalId = resData?.id || 
+                         resData?.messages?.[0]?.id || 
+                         resData?.data?.id || 
+                         resData?.key?.id || '';
+          } catch (e) {}
+        } else {
+          const errText = await response.text().catch(() => '');
+          lastSendError = errText;
+          console.warn("[/api/chat/send] Meta/WAME API error response:", errText);
+        }
+      } catch (metaFetchErr) {
+        lastSendError = metaFetchErr.message;
+        console.error("[/api/chat/send] Erro de conexão com Meta/WAME API:", metaFetchErr);
       }
+    } else {
+      lastSendError = "Nenhum provedor de WhatsApp (Meta ou Evolution) está ativo nas configurações.";
     }
 
     // Atualiza idempotência em memória com externalId
@@ -236,10 +254,11 @@ export default async function handler(req, res) {
         }
         const updatedMeta = {
           ...parsedMeta,
-          status: 'sent',
+          status: sendSuccess ? 'sent' : 'failed',
           external_id: externalId || parsedMeta.external_id || undefined,
           message_client_id: clientMsgId,
-          sent_at: new Date().toISOString()
+          sent_at: sendSuccess ? new Date().toISOString() : undefined,
+          error: sendSuccess ? undefined : (lastSendError || 'Falha no envio')
         };
         await supabaseAdmin
           .from('chat_messages')
@@ -251,9 +270,10 @@ export default async function handler(req, res) {
     }
 
     return res.json({
-      success: true,
+      success: sendSuccess,
       externalId: externalId || undefined,
-      message_client_id: clientMsgId
+      message_client_id: clientMsgId,
+      error: sendSuccess ? undefined : lastSendError
     });
 
   } catch(e) {

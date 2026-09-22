@@ -2,6 +2,7 @@ import { Capacitor } from '@capacitor/core';
 import { PushNotifications, Token, PushNotificationSchema, ActionPerformed } from '@capacitor/push-notifications';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { supabase } from './supabase';
+import { getApiUrl } from './apiConfig';
 
 export interface PushNotificationHandlers {
   onNavigate?: (url: string) => void;
@@ -251,7 +252,7 @@ export async function notifyAdminAttendanceFinished(params: {
   notes?: string;
 }): Promise<boolean> {
   try {
-    const res = await fetch('/api/notifications/notify-visit-completion', {
+    const res = await fetch(getApiUrl('/api/notifications/notify-visit-completion'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
@@ -269,7 +270,7 @@ export async function notifyAdminAttendanceFinished(params: {
  */
 export async function sendTestPushNotification(adminId: string): Promise<{ success: boolean; message?: string }> {
   try {
-    const res = await fetch('/api/notifications/test-push', {
+    const res = await fetch(getApiUrl('/api/notifications/test-push'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ adminId }),
