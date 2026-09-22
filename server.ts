@@ -252,19 +252,23 @@ setInterval(() => {
         if (recentMatching && recentMatching.length > 0) {
           let existingMeta: any = {};
           try { existingMeta = JSON.parse(recentMatching[0].media_url); } catch(e) {}
-          console.log(`[Idempotência] Ignorando envio duplicado (Banco de Dados): ${clientMsgId}`);
-          processedMessageClientIds.set(clientMsgId, {
-            timestamp: now,
-            externalId: existingMeta.external_id || '',
-            messageId: recentMatching[0].id
-          });
-          return res.json({
-            success: true,
-            duplicated: true,
-            externalId: existingMeta.external_id || undefined,
-            messageId: recentMatching[0].id,
-            message_client_id: clientMsgId
-          });
+          
+          const isSameUnsentRecord = messageId && recentMatching[0].id === messageId && !existingMeta.external_id && existingMeta.status !== 'sent';
+          if (!isSameUnsentRecord) {
+            console.log(`[Idempotência] Ignorando envio duplicado (Banco de Dados): ${clientMsgId}`);
+            processedMessageClientIds.set(clientMsgId, {
+              timestamp: now,
+              externalId: existingMeta.external_id || '',
+              messageId: recentMatching[0].id
+            });
+            return res.json({
+              success: true,
+              duplicated: true,
+              externalId: existingMeta.external_id || undefined,
+              messageId: recentMatching[0].id,
+              message_client_id: clientMsgId
+            });
+          }
         }
       } catch (dbCheckErr) {
         console.warn("[Idempotência] Erro ao consultar duplicidade no banco:", dbCheckErr);
