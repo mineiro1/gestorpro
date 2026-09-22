@@ -31,26 +31,41 @@ export default async function handler(req, res) {
     }
 
     let resolvedClientName = clientName;
-    if (!resolvedClientName && clientId) {
+    let clientAdminId = null;
+    if (clientId) {
       try {
-        const { data: cliData } = await supabaseAdmin.from('clients').select('name').eq('id', clientId).single();
+        const { data: cliData } = await supabaseAdmin.from('clients').select('name, admin_id').eq('id', clientId).single();
         if (cliData?.name) resolvedClientName = cliData.name;
+        if (cliData?.admin_id) clientAdminId = cliData.admin_id;
       } catch (e) {}
     }
     if (!resolvedClientName) resolvedClientName = "Cliente";
 
-    const { data: users, error } = await supabaseAdmin
+    const adminIdsToTry = new Set();
+    if (adminId) adminIdsToTry.add(adminId);
+    if (clientAdminId) adminIdsToTry.add(clientAdminId);
+
+    const { data: users } = await supabaseAdmin
       .from('users')
       .select('id, name, fcm_token')
-      .eq('id', adminId);
+      .in('id', Array.from(adminIdsToTry));
 
-    if (error || !users || users.length === 0) {
-      return res.status(404).json({ error: 'Admin não encontrado' });
+    let tokens = (users || []).map(u => u.fcm_token).filter(Boolean);
+    
+    // Fallback: se nenhum token for encontrado para o ID enviado, busca todos admins com FCM ativo
+    if (tokens.length === 0) {
+      const { data: activeAdmins } = await supabaseAdmin
+        .from('users')
+        .select('id, name, fcm_token')
+        .eq('role', 'admin')
+        .not('fcm_token', 'is', null);
+      if (activeAdmins && activeAdmins.length > 0) {
+        tokens = activeAdmins.map(u => u.fcm_token).filter(Boolean);
+      }
     }
 
-    const tokens = users.map(u => u.fcm_token).filter(Boolean);
     if (tokens.length === 0) {
-      return res.json({ success: false, message: 'Admin não possui tokens FCM registrados no momento' });
+      return res.json({ success: false, message: 'Nenhum administrador com token FCM registrado no momento' });
     }
 
     const { initialized, messaging } = initFirebase();

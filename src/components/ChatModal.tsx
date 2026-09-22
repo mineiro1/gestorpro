@@ -310,8 +310,8 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     mutationFn: async ({ text, message_client_id }: { text: string; message_client_id: string }) => {
       let currentSession = session;
       if (!currentSession || currentSession.status === 'closed') {
-        const empId = userProfile?.uid || userProfile?.adminId;
-        const admId = userProfile?.role === 'admin' ? userProfile.uid : (userProfile?.adminId || userProfile?.uid);
+        const admId = client?.admin_id || (userProfile?.role === 'admin' ? userProfile.uid : (userProfile?.adminId || userProfile?.uid));
+        const empId = userProfile?.uid || admId;
         const { data: newSess } = await supabase
           .from('chat_sessions')
           .insert({

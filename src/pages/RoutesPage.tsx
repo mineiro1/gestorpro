@@ -1200,7 +1200,7 @@ export default function RoutesPage() {
     }
 
     try {
-      const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
+      const adminId = targetClient.admin_id || (isAdmin ? userProfile.uid : (userProfile.adminId || userProfile.uid));
       const finalVisitDate = photoDate ? photoDate.toISOString() : new Date().toISOString();
       const activeRouteDate = routeDate || getLocalISODate();
       
@@ -1309,9 +1309,11 @@ export default function RoutesPage() {
               .limit(1);
 
             let insertError = null;
+            let recordedVisitId = existingAgendada?.[0]?.id || null;
             if (existingAgendada && existingAgendada.length > 0) {
               const { error } = await supabase.from('visits').update({
                 admin_id: adminId,
+                employee_id: payload.employeeId,
                 date: finalVisitDate,
                 time: activeRouteDate,
                 notes: finalNotes,
@@ -1321,7 +1323,7 @@ export default function RoutesPage() {
               }).eq('id', existingAgendada[0].id);
               insertError = error;
             } else {
-              const { error } = await supabase.from('visits').insert({
+              const { data: insertedVisit, error } = await supabase.from('visits').insert({
                 admin_id: adminId,
                 client_id: targetClient.id,
                 employee_id: payload.employeeId,
@@ -1331,8 +1333,9 @@ export default function RoutesPage() {
                 photo_urls: reportPhotos,
                 location: locationData,
                 status: 'finalizada'
-              });
+              }).select('id').single();
               insertError = error;
+              if (insertedVisit?.id) recordedVisitId = insertedVisit.id;
             }
             
             if (!needsReturn) {
@@ -1408,6 +1411,8 @@ export default function RoutesPage() {
               employeeId: payload.employeeId || userProfile?.uid,
               clientId: targetClient.id,
               clientName: targetClient.name,
+              techName: userProfile?.name || 'Colaborador',
+              visitId: recordedVisitId || targetClient.id,
               type: targetClient.isOneOffJob ? 'job' : 'visit',
               notes: reportNotes
             }).catch(e => console.warn('[Push] Error triggering admin push notification:', e));

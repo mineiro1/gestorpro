@@ -158,43 +158,64 @@ export default async function handler(req, res) {
     } else {
        console.log("Message successfully saved to session", activeSession.id);
 
-       // Dispara Push Notification nativo para o responsável pelo atendimento
+       // Dispara Push Notification nativo para o colaborador e administrador responsáveis
        try {
-         const targetUserId = activeSession.employee_id || activeSession.admin_id;
-         if (targetUserId) {
-           const { data: recipientUser } = await supabaseAdmin
+         const targetUserIds = new Set();
+         if (activeSession.employee_id) targetUserIds.add(activeSession.employee_id);
+         if (activeSession.admin_id) targetUserIds.add(activeSession.admin_id);
+         if (matchedClient.admin_id) targetUserIds.add(matchedClient.admin_id);
+
+         const { data: recipientUsers } = await supabaseAdmin
+           .from('users')
+           .select('id, fcm_token')
+           .in('id', Array.from(targetUserIds));
+
+         let fcmTokens = (recipientUsers || []).map(u => u.fcm_token).filter(Boolean);
+
+         // Fallback: se nenhum dos IDs possuir token, busca administradores do sistema com token ativo
+         if (fcmTokens.length === 0) {
+           const { data: fallbackAdmins } = await supabaseAdmin
              .from('users')
              .select('fcm_token')
-             .eq('id', targetUserId)
-             .single();
+             .eq('role', 'admin')
+             .not('fcm_token', 'is', null);
+           if (fallbackAdmins && fallbackAdmins.length > 0) {
+             fcmTokens = fallbackAdmins.map(u => u.fcm_token).filter(Boolean);
+           }
+         }
 
-           if (recipientUser?.fcm_token) {
-             initFirebase();
-             if (admin.apps.length) {
-               await admin.messaging().send({
-                 token: recipientUser.fcm_token,
-                 notification: {
-                   title: `💬 ${matchedClient.name || 'Cliente'}`,
-                   body: content || (mediaUrl ? '📷 Foto/Áudio recebido' : 'Nova mensagem')
-                 },
-                 data: {
-                   sessionId: String(activeSession.id),
-                   clientId: String(matchedClient.id),
-                   click_action: 'FCM_PLUGIN_ACTIVITY',
-                   channelId: 'chat_messages',
-                   url: '/messages'
-                 },
-                 android: {
-                   priority: 'high',
+         if (fcmTokens.length > 0) {
+           const { initialized, messaging } = initFirebase();
+           if (initialized && messaging) {
+             for (const token of fcmTokens) {
+               try {
+                 await messaging.send({
+                   token,
                    notification: {
+                     title: `💬 ${matchedClient.name || 'Cliente'}`,
+                     body: content || (mediaUrl ? '📷 Foto/Áudio recebido' : 'Nova mensagem')
+                   },
+                   data: {
+                     sessionId: String(activeSession.id),
+                     clientId: String(matchedClient.id),
+                     click_action: 'FCM_PLUGIN_ACTIVITY',
                      channelId: 'chat_messages',
-                     sound: 'default',
-                     priority: 'max',
-                     defaultSound: true,
-                     defaultVibrateTimings: true
+                     url: '/messages'
+                   },
+                   android: {
+                     priority: 'high',
+                     notification: {
+                       channelId: 'chat_messages',
+                       sound: 'notificacao.mp3',
+                       priority: 'max',
+                       defaultSound: false,
+                       defaultVibrateTimings: true
+                     }
                    }
-                 }
-               });
+                 });
+               } catch (sendErr) {
+                 console.warn('[Webhook Evolution] Erro ao enviar FCM individual:', sendErr.message);
+               }
              }
            }
          }

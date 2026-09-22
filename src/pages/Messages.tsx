@@ -101,10 +101,20 @@ export default function Messages() {
           .order('created_at', { ascending: false })
           .limit(500);
 
-        const { data: allSessions } = await supabase
+        const clientIds = clientsData.map((c) => c.id).filter(Boolean);
+        
+        // 2. Fetch chat sessions for current admin or admin's clients
+        let allSessionsQuery = supabase
           .from('chat_sessions')
-          .select('id, client_id, status, updated_at')
-          .eq('admin_id', currentAdminId);
+          .select('id, client_id, status, updated_at');
+
+        if (clientIds.length > 0) {
+          allSessionsQuery = allSessionsQuery.or(`admin_id.eq.${currentAdminId},client_id.in.(${clientIds.join(',')})`);
+        } else {
+          allSessionsQuery = allSessionsQuery.eq('admin_id', currentAdminId);
+        }
+
+        const { data: allSessions } = await allSessionsQuery;
 
         const sessionClientMap = new Map<string, string>();
         if (allSessions) {

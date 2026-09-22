@@ -248,6 +248,8 @@ export async function notifyAdminAttendanceFinished(params: {
   employeeId: string;
   clientId?: string;
   clientName?: string;
+  techName?: string;
+  visitId?: string;
   type?: 'visit' | 'job';
   notes?: string;
 }): Promise<boolean> {

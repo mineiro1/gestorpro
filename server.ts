@@ -1276,23 +1276,26 @@ app.all("/api/sync-payment", async (req, res) => {
         .select('id, name, fcm_token')
         .eq('id', adminId);
 
-      if (error) {
-        console.error('[Push Server] Erro ao consultar usuário administrador:', error);
-        return false;
-      }
+      let tokens = (users || []).map(u => u.fcm_token).filter(Boolean);
 
-      if (!users || users.length === 0) {
-        console.log('[Push Server] Administrador não encontrado:', adminId);
-        return false;
-      }
-
-      const tokens = users.map(u => u.fcm_token).filter(Boolean);
+      // Fallback: se o adminId não possuir tokens, buscar administradores do sistema com token ativo
       if (tokens.length === 0) {
-        console.log(`[Push Server] Admin ${adminId} não possui tokens FCM registrados no momento.`);
+        const { data: fallbackAdmins } = await supabaseAdmin
+          .from('users')
+          .select('id, name, fcm_token')
+          .eq('role', 'admin')
+          .not('fcm_token', 'is', null);
+        if (fallbackAdmins && fallbackAdmins.length > 0) {
+          tokens = fallbackAdmins.map(u => u.fcm_token).filter(Boolean);
+        }
+      }
+
+      if (tokens.length === 0) {
+        console.log(`[Push Server] Nenhum token FCM registrado no momento para admin ${adminId}.`);
         return false;
       }
 
-      console.log(`[Push Server] Disparando push notification para ${tokens.length} dispositivo(s) do admin ${adminId}: "${title}"`);
+      console.log(`[Push Server] Disparando push notification para ${tokens.length} dispositivo(s): "${title}"`);
 
       let sentCount = 0;
       for (const token of tokens) {
@@ -1308,13 +1311,13 @@ app.all("/api/sync-payment", async (req, res) => {
                 ...data,
                 click_action: 'FCM_PLUGIN_ACTIVITY',
                 url: data.url || '/routes',
-                channelId: data.channelId || 'atendimentos'
+                channelId: data.channelId || 'atendimentos_v2'
               },
               android: {
                 priority: 'high',
                 notification: {
-                  channelId: data.channelId || 'atendimentos',
-                  sound: 'notificacao.mp3',
+                  channelId: data.channelId || 'atendimentos_v2',
+                  sound: 'notificacao',
                   priority: 'max',
                   visibility: 'public',
                   defaultSound: false,
@@ -1324,7 +1327,7 @@ app.all("/api/sync-payment", async (req, res) => {
               apns: {
                 payload: {
                   aps: {
-                    sound: 'default',
+                    sound: 'notificacao.mp3',
                     badge: 1,
                     alert: {
                       title,
@@ -1357,31 +1360,35 @@ app.all("/api/sync-payment", async (req, res) => {
   // Endpoint to immediately trigger attendance completion push notification
   app.post("/api/notifications/notify-visit-completion", async (req, res) => {
     try {
-      const { adminId, employeeId, clientId, clientName, type, notes } = req.body;
-      if (!adminId) {
-        return res.status(400).json({ error: "Missing adminId" });
-      }
+      const { adminId, employeeId, clientId, clientName, techName, type, notes } = req.body;
 
-      let empName = "Colaborador";
-      if (employeeId) {
+      let empName = techName || "Colaborador";
+      if (!techName && employeeId) {
         const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', employeeId).single();
         if (empData?.name) empName = empData.name;
       }
 
       let resolvedClientName = clientName;
-      if (!resolvedClientName && clientId) {
-        const { data: cliData } = await supabaseAdmin.from('clients').select('name').eq('id', clientId).single();
+      let clientAdminId = null;
+      if (clientId) {
+        const { data: cliData } = await supabaseAdmin.from('clients').select('name, admin_id').eq('id', clientId).single();
         if (cliData?.name) resolvedClientName = cliData.name;
+        if (cliData?.admin_id) clientAdminId = cliData.admin_id;
       }
       if (!resolvedClientName) resolvedClientName = "Cliente";
 
+      const targetAdminId = clientAdminId || adminId;
+      if (!targetAdminId) {
+        return res.status(400).json({ error: "Missing adminId and clientId" });
+      }
+
       const isJob = type === 'job';
-      const title = isJob ? 'Serviço Avulso Finalizado' : 'Visita Finalizada';
+      const title = isJob ? '🏊 Serviço Avulso Finalizado' : '🏊 Visita Finalizada!';
       const body = `O colaborador ${empName} finalizou o atendimento no cliente ${resolvedClientName}.`;
 
-      const sent = await sendPushToAdmin(adminId, title, body, {
+      const sent = await sendPushToAdmin(targetAdminId, title, body, {
         url: '/routes',
-        channelId: 'atendimentos',
+        channelId: 'atendimentos_v2',
         type: isJob ? 'job_completed' : 'visit_completed',
         clientId: String(clientId || ''),
         employeeId: String(employeeId || '')
