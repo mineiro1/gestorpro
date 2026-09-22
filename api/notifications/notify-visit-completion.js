@@ -87,6 +87,8 @@ export default async function handler(req, res) {
           token,
           notification: { title, body },
           data: {
+            title,
+            body,
             visitId: String(visitId || ''),
             clientName: resolvedClientName,
             techName: empName,
@@ -99,13 +101,34 @@ export default async function handler(req, res) {
           },
           android: {
             priority: 'high',
+            ttl: 2419200,
+            directBootOk: true,
             notification: {
               channelId: 'atendimentos_v2',
+              title,
+              body,
               sound: 'notificacao',
               priority: 'max',
               visibility: 'public',
               defaultSound: false,
-              defaultVibrateTimings: true
+              defaultVibrateTimings: true,
+              localOnly: false,
+              notificationCount: 1,
+              tag: `visit_${visitId || Date.now()}`
+            }
+          },
+          apns: {
+            headers: {
+              'apns-priority': '10',
+              'apns-push-type': 'alert'
+            },
+            payload: {
+              aps: {
+                alert: { title, body },
+                sound: 'notificacao.mp3',
+                badge: 1,
+                contentAvailable: true
+              }
             }
           }
         });

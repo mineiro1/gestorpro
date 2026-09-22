@@ -19,44 +19,57 @@ export async function setupPushNotificationChannels(): Promise<void> {
   if (!Capacitor.isNativePlatform()) return;
 
   try {
-    // Channel for route attendance & completed visits
-    await PushNotifications.createChannel({
-      id: 'atendimentos_v2',
-      name: 'Atendimentos das Rotas (Alerta Sonoro)',
-      description: 'Notificações em tempo real com som personalizado quando um colaborador finalizar um atendimento',
-      importance: 5, // High / Max importance (heads-up banner)
-      visibility: 1, // Public on lockscreen
-      sound: 'notificacao',
-      vibration: true,
-      lights: true,
-      lightColor: '#10b981',
-    });
+    const channels = [
+      {
+        id: 'atendimentos_v2',
+        name: 'Atendimentos das Rotas (Alerta Sonoro)',
+        description: 'Notificações em tempo real com som personalizado quando um colaborador finalizar um atendimento',
+        importance: 5 as const, // High / Max importance (heads-up banner)
+        visibility: 1 as const, // Public on lockscreen
+        sound: 'notificacao',
+        vibration: true,
+        lights: true,
+        lightColor: '#10b981',
+      },
+      {
+        id: 'atendimentos',
+        name: 'Atendimentos Gerais',
+        description: 'Notificações de atendimento',
+        importance: 5 as const,
+        visibility: 1 as const,
+        sound: 'notificacao',
+        vibration: true,
+        lights: true,
+        lightColor: '#10b981',
+      },
+      {
+        id: 'fcm_default_channel',
+        name: 'Notificações Gerais',
+        description: 'Canal padrão do aplicativo',
+        importance: 5 as const,
+        visibility: 1 as const,
+        sound: 'notificacao',
+        vibration: true,
+        lights: true,
+        lightColor: '#10b981',
+      },
+      {
+        id: 'chat_messages',
+        name: 'Mensagens do Chat',
+        description: 'Notificações de mensagens recebidas de clientes',
+        importance: 5 as const,
+        visibility: 1 as const,
+        sound: 'notificacao.mp3',
+        vibration: true,
+        lights: true,
+        lightColor: '#2563eb',
+      }
+    ];
 
-    // Also configure LocalNotifications channel matching the ID
-    await LocalNotifications.createChannel({
-      id: 'atendimentos_v2',
-      name: 'Atendimentos das Rotas (Alerta Sonoro)',
-      description: 'Notificações em tempo real com som personalizado',
-      importance: 5,
-      visibility: 1,
-      sound: 'notificacao',
-      vibration: true,
-      lights: true,
-      lightColor: '#10b981',
-    });
-
-    // General chat channel
-    await PushNotifications.createChannel({
-      id: 'chat_messages',
-      name: 'Mensagens do Chat',
-      description: 'Notificações de mensagens recebidas de clientes',
-      importance: 5,
-      visibility: 1,
-      sound: 'notificacao.mp3',
-      vibration: true,
-      lights: true,
-      lightColor: '#2563eb',
-    });
+    for (const ch of channels) {
+      await PushNotifications.createChannel(ch).catch(() => {});
+      await LocalNotifications.createChannel(ch).catch(() => {});
+    }
   } catch (err) {
     console.warn('[Push] Notification channel creation warning:', err);
   }

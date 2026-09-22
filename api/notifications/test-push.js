@@ -51,19 +51,44 @@ export default async function handler(req, res) {
         body: `Olá ${user.name || 'Gestor'}, seu dispositivo está configurado e pronto para receber notificações em segundo plano!`
       },
       data: {
+        title: '🔔 Teste de Notificação Push',
+        body: `Olá ${user.name || 'Gestor'}, seu dispositivo está configurado e pronto para receber notificações em segundo plano!`,
         type: 'test_push',
         channelId: 'atendimentos_v2',
         url: '/routes'
       },
       android: {
         priority: 'high',
+        ttl: 2419200,
+        directBootOk: true,
         notification: {
           channelId: 'atendimentos_v2',
+          title: '🔔 Teste de Notificação Push',
+          body: `Olá ${user.name || 'Gestor'}, seu dispositivo está configurado e pronto para receber notificações em segundo plano!`,
           sound: 'notificacao',
           priority: 'max',
           visibility: 'public',
           defaultSound: false,
-          defaultVibrateTimings: true
+          defaultVibrateTimings: true,
+          localOnly: false,
+          notificationCount: 1
+        }
+      },
+      apns: {
+        headers: {
+          'apns-priority': '10',
+          'apns-push-type': 'alert'
+        },
+        payload: {
+          aps: {
+            alert: {
+              title: '🔔 Teste de Notificação Push',
+              body: `Olá ${user.name || 'Gestor'}, seu dispositivo está configurado!`
+            },
+            sound: 'notificacao.mp3',
+            badge: 1,
+            contentAvailable: true
+          }
         }
       }
     });

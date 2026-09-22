@@ -196,6 +196,8 @@ export default async function handler(req, res) {
                      body: content || (mediaUrl ? '📷 Foto/Áudio recebido' : 'Nova mensagem')
                    },
                    data: {
+                     title: `💬 ${matchedClient.name || 'Cliente'}`,
+                     body: content || (mediaUrl ? '📷 Foto/Áudio recebido' : 'Nova mensagem'),
                      sessionId: String(activeSession.id),
                      clientId: String(matchedClient.id),
                      click_action: 'FCM_PLUGIN_ACTIVITY',
@@ -204,12 +206,18 @@ export default async function handler(req, res) {
                    },
                    android: {
                      priority: 'high',
+                     ttl: 2419200,
+                     directBootOk: true,
                      notification: {
                        channelId: 'chat_messages',
+                       title: `💬 ${matchedClient.name || 'Cliente'}`,
+                       body: content || (mediaUrl ? '📷 Foto/Áudio recebido' : 'Nova mensagem'),
                        sound: 'notificacao.mp3',
                        priority: 'max',
+                       visibility: 'public',
                        defaultSound: false,
-                       defaultVibrateTimings: true
+                       defaultVibrateTimings: true,
+                       localOnly: false
                      }
                    }
                  });

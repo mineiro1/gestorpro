@@ -1308,6 +1308,8 @@ app.all("/api/sync-payment", async (req, res) => {
                 body
               },
               data: {
+                title,
+                body,
                 ...data,
                 click_action: 'FCM_PLUGIN_ACTIVITY',
                 url: data.url || '/routes',
@@ -1315,20 +1317,31 @@ app.all("/api/sync-payment", async (req, res) => {
               },
               android: {
                 priority: 'high',
+                ttl: 2419200,
+                directBootOk: true,
                 notification: {
                   channelId: data.channelId || 'atendimentos_v2',
+                  title,
+                  body,
                   sound: 'notificacao',
                   priority: 'max',
                   visibility: 'public',
                   defaultSound: false,
-                  defaultVibrateTimings: true
+                  defaultVibrateTimings: true,
+                  localOnly: false,
+                  notificationCount: 1
                 }
               },
               apns: {
+                headers: {
+                  'apns-priority': '10',
+                  'apns-push-type': 'alert'
+                },
                 payload: {
                   aps: {
                     sound: 'notificacao.mp3',
                     badge: 1,
+                    contentAvailable: true,
                     alert: {
                       title,
                       body
