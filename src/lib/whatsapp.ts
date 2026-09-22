@@ -131,7 +131,14 @@ export const sendMetaMessage = async (phone: string, text: string, waSettings: a
       const response = await fetch(url, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ to: targetNumber, text: text })
+        body: JSON.stringify({
+          to: targetNumber,
+          text: text,
+          linkPreview: false,
+          preview_url: false,
+          previewUrl: false,
+          options: { linkPreview: false }
+        })
       });
 
       if (response.ok) {

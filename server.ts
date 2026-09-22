@@ -340,7 +340,14 @@ setInterval(() => {
         if (isWame) {
            url = `${baseUrl}/${waSettings.metaToken}/message/text`;
            headers = { 'Content-Type': 'application/json' };
-           body = JSON.stringify({ to: targetNumber, text: text });
+           body = JSON.stringify({
+             to: targetNumber,
+             text: text,
+             linkPreview: false,
+             preview_url: false,
+             previewUrl: false,
+             options: { linkPreview: false }
+           });
         } else {
            const phoneId = waSettings.metaPhoneNumberId ? `/${waSettings.metaPhoneNumberId}` : '';
            url = `${baseUrl}${phoneId}/messages`;
