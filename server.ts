@@ -1483,8 +1483,69 @@ app.all("/api/sync-payment", async (req, res) => {
     });
   });
 
-  // Background listener for Push Notifications (incoming client chat messages)
-  supabaseAdmin.channel('push-notifications-chat-events')
+  // Background listener for Push Notifications (incoming client chat messages, finished visits, one-off jobs)
+  supabaseAdmin.channel('push-notifications-db-events')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'visits' }, async (payload) => {
+       const newVisit = payload.new as any;
+       if (!newVisit || newVisit.status !== 'finalizada') return;
+
+       const dedupeKey = `visit_${newVisit.id}`;
+       if (!shouldSendPush(dedupeKey)) return;
+
+       let targetAdminId = newVisit.admin_id;
+       if (!targetAdminId && newVisit.client_id) {
+          const { data: cli } = await supabaseAdmin.from('clients').select('admin_id').eq('id', newVisit.client_id).single();
+          if (cli?.admin_id) targetAdminId = cli.admin_id;
+       }
+
+       if (targetAdminId && targetAdminId !== newVisit.employee_id) {
+           const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', newVisit.employee_id).single();
+           const { data: cliData } = await supabaseAdmin.from('clients').select('name').eq('id', newVisit.client_id).single();
+
+           const empName = empData?.name || 'Colaborador';
+           const cliName = cliData?.name || 'Cliente';
+
+           await sendPushToAdmin(
+             targetAdminId,
+             '🏊 Visita Finalizada!',
+             `O colaborador ${empName} finalizou o atendimento no cliente ${cliName}.`,
+             {
+               url: '/routes',
+               channelId: 'atendimentos_v2',
+               type: 'visit_completed',
+               visitId: String(newVisit.id || ''),
+               clientId: String(newVisit.client_id || ''),
+               tag: `visit_${newVisit.id}`
+             }
+           );
+       }
+    })
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'oneoffjobs' }, async (payload) => {
+       const newJob = payload.new as any;
+       if (!newJob || newJob.status !== 'concluido') return;
+
+       const dedupeKey = `job_${newJob.id}`;
+       if (!shouldSendPush(dedupeKey)) return;
+
+       if (newJob.admin_id && newJob.admin_id !== newJob.employee_id) {
+           const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', newJob.employee_id).single();
+           const empName = empData?.name || 'Colaborador';
+           const cliName = newJob.client_name || 'Cliente';
+
+           await sendPushToAdmin(
+             newJob.admin_id,
+             '🏊 Serviço Avulso Finalizado',
+             `O colaborador ${empName} finalizou o serviço avulso para ${cliName}.`,
+             {
+               url: '/routes',
+               channelId: 'atendimentos_v2',
+               type: 'job_completed',
+               jobId: String(newJob.id || ''),
+               tag: `job_${newJob.id}`
+             }
+           );
+       }
+    })
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, async (payload) => {
        const newMsg = payload.new as any;
        if (newMsg.sender_type === 'client') {
