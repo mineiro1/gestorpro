@@ -134,7 +134,17 @@ export default async function handler(req, res) {
           }
         }
       }
-      return res.status(200).send("EVENT_RECEIVED");
+      // Se era puramente um evento de status (sem mensagens no corpo), retorna
+      const hasMessagesInBody = Boolean(
+        (body.entry && body.entry.some(e => e.changes?.some(c => c.value?.messages?.length > 0))) ||
+        body.data?.msgContent ||
+        body.data?.message ||
+        body.message ||
+        body.body
+      );
+      if (!hasMessagesInBody) {
+        return res.status(200).send("EVENT_RECEIVED");
+      }
     }
     
     let phone = "";

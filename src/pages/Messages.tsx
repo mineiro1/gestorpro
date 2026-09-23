@@ -39,7 +39,7 @@ export default function Messages() {
   const { userProfile, isAdmin, isManager } = useAuth();
   
   const adminId = userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId;
-  const refreshTrigger = useRealtimeUpdates(['clients', 'chat_messages', 'chat_sessions'], 'admin_id', adminId);
+  const refreshTrigger = useRealtimeUpdates(['clients', 'chat_sessions'], 'admin_id', adminId);
 
   // Tab selection: 'conversations' vs 'broadcast'
   const [activeTab, setActiveTab] = useState<'conversations' | 'broadcast'>('conversations');
@@ -106,7 +106,7 @@ export default function Messages() {
         // 2. Fetch chat sessions for current admin or admin's clients
         let allSessionsQuery = supabase
           .from('chat_sessions')
-          .select('id, client_id, status, updated_at');
+          .select('id, client_id, status, created_at');
 
         if (clientIds.length > 0) {
           allSessionsQuery = allSessionsQuery.or(`admin_id.eq.${currentAdminId},client_id.in.(${clientIds.join(',')})`);
@@ -205,10 +205,12 @@ export default function Messages() {
           const newMsg = payload.new as any;
           if (!newMsg || !newMsg.session_id) return;
 
-          // Update the conversation status in real-time
+          // Update conversation in place or refetch
           setConversations((prev) => {
-            return prev.map((conv) => {
+            let found = false;
+            const updated = prev.map((conv) => {
               if (conv.sessionId === newMsg.session_id) {
+                found = true;
                 const status = parseMessageStatus(newMsg);
                 return {
                   ...conv,
@@ -220,6 +222,20 @@ export default function Messages() {
                 };
               }
               return conv;
+            });
+
+            if (!found) {
+              fetchRecipientsAndConversations();
+              return prev;
+            }
+
+            return updated.sort((a, b) => {
+              if (a.unreadCount > 0 && b.unreadCount === 0) return -1;
+              if (b.unreadCount > 0 && a.unreadCount === 0) return 1;
+              if (a.lastMessageTime && b.lastMessageTime) {
+                return new Date(b.lastMessageTime).getTime() - new Date(a.lastMessageTime).getTime();
+              }
+              return 0;
             });
           });
         }

@@ -849,10 +849,7 @@ setInterval(() => {
       const body = req.body;
 
       // 1. Process status updates (delivered / read / sent)
-      const hadStatus = await processStatusUpdates(body);
-      if (hadStatus) {
-        return res.status(200).send("EVENT_RECEIVED");
-      }
+      await processStatusUpdates(body);
 
       // Check if message was sent by us (fromMe = true) - DO NOT treat as client message!
       const isFromMe = Boolean(
