@@ -150,11 +150,70 @@ export default async function handler(req, res) {
     let phone = "";
     let content = "";
     let mediaUrl = "";
+    let externalMsgId = "";
     
-    if ((body.object === "whatsapp_business_account" || body.object === "wame") && body.entry && body.entry[0].changes) {
+    // Extract candidate item from all possible container structures
+    let rawItem = null;
+    if (Array.isArray(body.data?.messages) && body.data.messages.length > 0) {
+      rawItem = body.data.messages[0];
+    } else if (Array.isArray(body.messages) && body.messages.length > 0) {
+      rawItem = body.messages[0];
+    } else if (Array.isArray(body.data) && body.data.length > 0) {
+      rawItem = body.data[0];
+    } else if (body.data && typeof body.data === 'object') {
+      rawItem = body.data;
+    } else {
+      rawItem = body;
+    }
+
+    if (rawItem) {
+      if (rawItem.key?.fromMe === true || rawItem.fromMe === true || rawItem.me === true) {
+        return res.status(200).send("EVENT_RECEIVED");
+      }
+
+      if (rawItem.key?.remoteJid) {
+        phone = String(rawItem.key.remoteJid).split('@')[0];
+      } else if (rawItem.remoteJid) {
+        phone = String(rawItem.remoteJid).split('@')[0];
+      } else if (rawItem.phoneNumber) {
+        phone = String(rawItem.phoneNumber);
+      } else if (rawItem.from) {
+        phone = String(rawItem.from).split('@')[0];
+      } else if (rawItem.sender) {
+        phone = String(rawItem.sender).split('@')[0];
+      }
+
+      if (rawItem.key?.id || rawItem.id) {
+        externalMsgId = String(rawItem.key?.id || rawItem.id);
+      }
+
+      const msgObj = rawItem.message || rawItem.msgContent;
+      if (typeof msgObj === 'string') {
+        content = msgObj;
+      } else if (msgObj?.conversation) {
+        content = msgObj.conversation;
+      } else if (msgObj?.extendedTextMessage?.text) {
+        content = msgObj.extendedTextMessage.text;
+      } else if (msgObj?.text) {
+        content = msgObj.text;
+      } else if (msgObj?.audioMessage) {
+        content = "🎵 Mensagem de Áudio";
+      } else if (msgObj?.imageMessage) {
+        content = msgObj.imageMessage?.caption || "📷 Imagem";
+      } else if (rawItem.text || rawItem.body || rawItem.content) {
+        content = rawItem.text || rawItem.body || rawItem.content;
+      } else if (typeof rawItem.message === 'string') {
+        content = rawItem.message;
+      }
+    }
+
+    if (!phone && (body.object === "whatsapp_business_account" || body.object === "wame") && body.entry && body.entry[0]?.changes) {
        const value = body.entry[0].changes[0].value;
        if (value.messages && value.messages.length > 0) {
           const msg = value.messages[0];
+          if (msg.from_me) {
+             return res.status(200).send("EVENT_RECEIVED");
+          }
           phone = msg.from;
           if (msg.type === "text" && msg.text) {
              content = msg.text.body;
@@ -173,172 +232,20 @@ export default async function handler(req, res) {
           } else {
              content = `[Media: ${msg.type}]`;
           }
-
-          // Fetch the mediaUrl immediately to bypass CORS and get the base64 for the frontend
-          if (mediaUrl && mediaUrl.includes('api-wa.me') && mediaUrl.includes('/media')) {
-             try {
-                 const mediaRes = await fetch(mediaUrl);
-                 if (mediaRes.ok) {
-                     const mediaData = await mediaRes.json();
-                     if (mediaData.base64) {
-                         let b64 = mediaData.base64;
-                         if (!b64.startsWith('data:')) {
-                             let mime = mediaData.mimetype || 'application/octet-stream';
-                             if (mime.includes('audio/ogg') && mime.includes('opus')) {
-                                 mime = 'audio/ogg';
-                             }
-                             b64 = `data:${mime};base64,${b64}`;
-                         } else {
-                             if (b64.includes('audio/ogg') && b64.includes('opus')) {
-                                 b64 = b64.replace('audio/ogg; codecs=opus', 'audio/ogg');
-                             }
-                         }
-                         mediaUrl = b64;
-                     }
-                 }
-             } catch (fetchErr) {
-                 console.error("Error fetching media from api-wa.me:", fetchErr);
-             }
-          }
-       } else {
-          return res.status(200).send("EVENT_RECEIVED");
        }
     } 
-    else if (body.type === "message" && body.data) {
-        if (body.data.me) {
-           return res.status(200).send("EVENT_RECEIVED"); 
-        }
-        phone = body.data.phoneNumber || "";
-        if (!phone && body.data.remoteJid) {
-            phone = body.data.remoteJid.split('@')[0];
-        }
-        if (body.data.messageType === "conversation" && body.data.msgContent && body.data.msgContent.conversation) {
-            content = body.data.msgContent.conversation;
-        } else if (body.data.msgContent && body.data.msgContent.extendedTextMessage && body.data.msgContent.extendedTextMessage.text) {
-            content = body.data.msgContent.extendedTextMessage.text;
-        } else if (body.data.messageType === "imageMessage" && body.data.msgContent && body.data.msgContent.imageMessage) {
-            content = body.data.msgContent.imageMessage.caption || "📸 Imagem recebida";
-            if (body.data.base64) {
-               const b64 = body.data.base64; 
-               if (typeof b64 === 'string' && b64.includes('use GET ')) { 
-                  mediaUrl = b64.split('GET ')[1].split(' to ')[0]; 
-               } else if (typeof b64 === 'string' && b64.includes('{"messageId"')) {
-                  try {
-                      const p = JSON.parse(b64);
-                      mediaUrl = `data:${p.mimetype};base64,${p.base64}`;
-                  } catch(e) { mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${b64}`; }
-               } else { 
-                  mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${b64}`; 
-               }
-            } else if (body.data.fileBase64) {
-               const fb64 = body.data.fileBase64; 
-               if (typeof fb64 === 'string' && fb64.includes('use GET ')) { 
-                  mediaUrl = fb64.split('GET ')[1].split(' to ')[0]; 
-               } else if (typeof fb64 === 'string' && fb64.includes('{"messageId"')) {
-                  try {
-                      const p = JSON.parse(fb64);
-                      mediaUrl = `data:${p.mimetype};base64,${p.base64}`;
-                  } catch(e) { mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${fb64}`; }
-               } else { 
-                  mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${fb64}`; 
-               }
-            }
-        } else if (body.data.messageType === "audioMessage" && body.data.msgContent && body.data.msgContent.audioMessage) {
-            content = "🎵 Áudio recebido";
-            if (body.data.base64) {
-               const b64 = body.data.base64; 
-               if (typeof b64 === 'string' && b64.includes('use GET ')) { 
-                  mediaUrl = b64.split('GET ')[1].split(' to ')[0]; 
-               } else if (typeof b64 === 'string' && b64.includes('{"messageId"')) {
-                  try {
-                      const p = JSON.parse(b64);
-                      mediaUrl = `data:${p.mimetype};base64,${p.base64}`;
-                  } catch(e) { mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${b64}`; }
-               } else { 
-                  mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${b64}`; 
-               }
-            } else if (body.data.fileBase64) {
-               const fb64 = body.data.fileBase64; 
-               if (typeof fb64 === 'string' && fb64.includes('use GET ')) { 
-                  mediaUrl = fb64.split('GET ')[1].split(' to ')[0]; 
-               } else if (typeof fb64 === 'string' && fb64.includes('{"messageId"')) {
-                  try {
-                      const p = JSON.parse(fb64);
-                      mediaUrl = `data:${p.mimetype};base64,${p.base64}`;
-                  } catch(e) { mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${fb64}`; }
-               } else { 
-                  mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${fb64}`; 
-               }
-            }
-        } else if (body.data.messageType === "videoMessage" && body.data.msgContent && body.data.msgContent.videoMessage) {
-            content = body.data.msgContent.videoMessage.caption || "🎥 Vídeo recebido";
-            if (body.data.base64) {
-               const b64 = body.data.base64; 
-               if (typeof b64 === 'string' && b64.includes('use GET ')) { 
-                  mediaUrl = b64.split('GET ')[1].split(' to ')[0]; 
-               } else if (typeof b64 === 'string' && b64.includes('{"messageId"')) {
-                  try {
-                      const p = JSON.parse(b64);
-                      mediaUrl = `data:${p.mimetype};base64,${p.base64}`;
-                  } catch(e) { mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${b64}`; }
-               } else { 
-                  mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${b64}`; 
-               }
-            } else if (body.data.fileBase64) {
-               const fb64 = body.data.fileBase64; 
-               if (typeof fb64 === 'string' && fb64.includes('use GET ')) { 
-                  mediaUrl = fb64.split('GET ')[1].split(' to ')[0]; 
-               } else if (typeof fb64 === 'string' && fb64.includes('{"messageId"')) {
-                  try {
-                      const p = JSON.parse(fb64);
-                      mediaUrl = `data:${p.mimetype};base64,${p.base64}`;
-                  } catch(e) { mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${fb64}`; }
-               } else { 
-                  mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${fb64}`; 
-               }
-            }
-        } else if (body.data.messageType === "documentMessage" && body.data.msgContent && body.data.msgContent.documentMessage) {
-            content = `📄 Documento recebido: ${body.data.msgContent.documentMessage.fileName || 'Arquivo'}`;
-            if (body.data.base64) {
-               const b64 = body.data.base64; 
-               if (typeof b64 === 'string' && b64.includes('use GET ')) { 
-                  mediaUrl = b64.split('GET ')[1].split(' to ')[0]; 
-               } else if (typeof b64 === 'string' && b64.includes('{"messageId"')) {
-                  try {
-                      const p = JSON.parse(b64);
-                      mediaUrl = `data:${p.mimetype};base64,${p.base64}`;
-                  } catch(e) { mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${b64}`; }
-               } else { 
-                  mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${b64}`; 
-               }
-            } else if (body.data.fileBase64) {
-               const fb64 = body.data.fileBase64; 
-               if (typeof fb64 === 'string' && fb64.includes('use GET ')) { 
-                  mediaUrl = fb64.split('GET ')[1].split(' to ')[0]; 
-               } else if (typeof fb64 === 'string' && fb64.includes('{"messageId"')) {
-                  try {
-                      const p = JSON.parse(fb64);
-                      mediaUrl = `data:${p.mimetype};base64,${p.base64}`;
-                  } catch(e) { mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${fb64}`; }
-               } else { 
-                  mediaUrl = `data:${body.data.msgContent[Object.keys(body.data.msgContent)[0]]?.mimetype || ''};base64,${fb64}`; 
-               }
-            }
-        } else if (body.data.messageType) {
-            content = `[${body.data.messageType}]`;
-        } else {
-            content = "[Mensagem não textual recebida]";
-        }
-    }
-    else if (body.phone && body.message) {
+    else if (!phone && body.phone && (body.message || body.text)) {
         phone = body.phone;
-        content = body.message;
-    } else if (body.contact && body.message) {
+        content = typeof body.message === 'string' ? body.message : (body.text || body.message?.conversation || body.message?.extendedTextMessage?.text || "");
+    } else if (!phone && body.contact && (body.message || body.text)) {
         phone = body.contact;
-        content = body.message;
-    } else if (body.from && body.body) {
-        phone = body.from;
-        content = body.body;
+        content = typeof body.message === 'string' ? body.message : (body.text || "");
+    } else if (!phone && body.from && (body.body || body.message || body.text)) {
+        phone = String(body.from).split('@')[0];
+        content = body.body || (typeof body.message === 'string' ? body.message : body.text) || "";
+    } else if (!phone && body.sender && (body.text || body.message)) {
+        phone = String(body.sender).split('@')[0];
+        content = body.text || (typeof body.message === 'string' ? body.message : "");
     }
     
     if (!phone || !content) {
@@ -396,29 +303,25 @@ export default async function handler(req, res) {
     let activeSession = null;
     const now = new Date().getTime();
 
-    if (sessions && sessions.length > 0) {
-      // Procura primeiro por sessão explicitamente 'open'
-      const openSess = sessions.find(s => s.status === 'open');
-      if (openSess) {
-        const createdTime = new Date(openSess.created_at).getTime();
-        if (now - createdTime <= 30 * 60 * 1000) {
-          activeSession = openSess;
-        } else {
-          // Expirou os 30 min
-          await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', openSess.id);
-        }
-      }
+    // Localiza sessões abertas e consolida duplicadas
+    const openSessions = (sessions || []).filter((s) => s.status === 'open');
+    if (openSessions.length > 0) {
+      activeSession = openSessions[0];
+      const createdTime = new Date(activeSession.created_at).getTime();
       
-      // Se não encontrou 'open', verifica se a mais recente foi criada há menos de 30 min e não foi explicitamente fechada
-      if (!activeSession) {
-        const latestSess = sessions[0];
-        const createdTime = new Date(latestSess.created_at).getTime();
-        if (now - createdTime <= 30 * 60 * 1000 && latestSess.status !== 'closed') {
-          activeSession = latestSess;
-        }
+      // Se a sessão expirou (> 30 min), fecha ela
+      if (now - createdTime > 30 * 60 * 1000) {
+        await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
+        activeSession = null;
+      }
+
+      // Fecha qualquer outra sessão aberta duplicada para manter apenas 1 sessão ativa
+      if (openSessions.length > 1) {
+        const extraIds = openSessions.slice(1).map((s) => s.id);
+        await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).in('id', extraIds);
       }
     }
-    
+
     // Se não há sessão ativa, cria uma nova sessão aberta para o cliente imediatamente
     if (!activeSession) {
       const { data: newSess } = await supabaseAdmin

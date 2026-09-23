@@ -901,54 +901,42 @@ setInterval(() => {
       let mediaUrl = "";
       let externalMsgId = "";
       
-      // Format 1: Native WAME format with body.type === "message"
-      if (body.type === "message" && body.data) {
-        if (body.data.me || body.data.fromMe) {
-          return res.status(200).send("EVENT_RECEIVED");
-        }
-        phone = body.data.phoneNumber || "";
-        if (!phone && body.data.remoteJid) {
-          phone = String(body.data.remoteJid).split('@')[0];
-        }
-        if (body.data.id || body.data.key?.id) {
-          externalMsgId = String(body.data.id || body.data.key?.id);
-        }
-        if (body.data.messageType === "conversation" && body.data.msgContent?.conversation) {
-          content = body.data.msgContent.conversation;
-        } else if (body.data.msgContent?.extendedTextMessage?.text) {
-          content = body.data.msgContent.extendedTextMessage.text;
-        } else if (body.data.msgContent?.conversation) {
-          content = body.data.msgContent.conversation;
-        } else if (body.data.messageType === "imageMessage" || body.data.msgContent?.imageMessage) {
-          content = body.data.msgContent?.imageMessage?.caption || "📷 Imagem";
-        } else if (body.data.messageType === "audioMessage" || body.data.msgContent?.audioMessage) {
-          content = "🎵 Mensagem de Áudio";
-        } else if (body.data.text || body.data.content) {
-          content = body.data.text || body.data.content;
-        }
+      // Extract candidate item from all possible container structures
+      let rawItem: any = null;
+      if (Array.isArray(body.data?.messages) && body.data.messages.length > 0) {
+        rawItem = body.data.messages[0];
+      } else if (Array.isArray(body.messages) && body.messages.length > 0) {
+        rawItem = body.messages[0];
+      } else if (Array.isArray(body.data) && body.data.length > 0) {
+        rawItem = body.data[0];
+      } else if (body.data && typeof body.data === 'object') {
+        rawItem = body.data;
+      } else {
+        rawItem = body;
       }
 
-      // Format 2: Native WAME/Baileys format: { event: "messages.upsert", data: { key: { remoteJid, id }, message: { conversation } } }
-      const nativeItem = Array.isArray(body.data) ? body.data[0] : (body.data || body);
-      if (!phone && nativeItem && (nativeItem.key || nativeItem.message || nativeItem.msgContent)) {
-        if (nativeItem.key?.fromMe || nativeItem.fromMe || nativeItem.me) {
+      if (rawItem) {
+        if (rawItem.key?.fromMe === true || rawItem.fromMe === true || rawItem.me === true) {
           return res.status(200).send("EVENT_RECEIVED");
         }
-        if (nativeItem.key?.remoteJid) {
-          phone = String(nativeItem.key.remoteJid).split('@')[0];
-        } else if (nativeItem.remoteJid) {
-          phone = String(nativeItem.remoteJid).split('@')[0];
-        } else if (nativeItem.phoneNumber) {
-          phone = String(nativeItem.phoneNumber);
-        } else if (nativeItem.from) {
-          phone = String(nativeItem.from).split('@')[0];
+
+        if (rawItem.key?.remoteJid) {
+          phone = String(rawItem.key.remoteJid).split('@')[0];
+        } else if (rawItem.remoteJid) {
+          phone = String(rawItem.remoteJid).split('@')[0];
+        } else if (rawItem.phoneNumber) {
+          phone = String(rawItem.phoneNumber);
+        } else if (rawItem.from) {
+          phone = String(rawItem.from).split('@')[0];
+        } else if (rawItem.sender) {
+          phone = String(rawItem.sender).split('@')[0];
         }
 
-        if (nativeItem.key?.id || nativeItem.id) {
-          externalMsgId = String(nativeItem.key?.id || nativeItem.id);
+        if (rawItem.key?.id || rawItem.id) {
+          externalMsgId = String(rawItem.key?.id || rawItem.id);
         }
 
-        const msgObj = nativeItem.message || nativeItem.msgContent;
+        const msgObj = rawItem.message || rawItem.msgContent;
         if (typeof msgObj === 'string') {
           content = msgObj;
         } else if (msgObj?.conversation) {
@@ -961,12 +949,14 @@ setInterval(() => {
           content = "🎵 Mensagem de Áudio";
         } else if (msgObj?.imageMessage) {
           content = msgObj.imageMessage?.caption || "📷 Imagem";
-        } else if (nativeItem.text || nativeItem.body || nativeItem.content) {
-          content = nativeItem.text || nativeItem.body || nativeItem.content;
+        } else if (rawItem.text || rawItem.body || rawItem.content) {
+          content = rawItem.text || rawItem.body || rawItem.content;
+        } else if (typeof rawItem.message === 'string') {
+          content = rawItem.message;
         }
       }
 
-      // Format 3: Meta Cloud API format
+      // Format Meta Cloud API
       if (!phone && (body.object === "whatsapp_business_account" || body.object === "wame") && body.entry && body.entry[0]?.changes) {
          const value = body.entry[0].changes[0].value;
          if (value.messages && value.messages.length > 0) {
@@ -1026,31 +1016,29 @@ setInterval(() => {
         .eq('client_id', matchedClient.id)
         .order('created_at', { ascending: false });
         
-      let activeSession = sessions && sessions.length > 0 ? sessions[0] : null;
       const now = new Date().getTime();
+      let activeSession: any = null;
 
-      if (activeSession) {
+      // Localiza sessões abertas e consolida duplicadas
+      const openSessions = (sessions || []).filter((s: any) => s.status === 'open');
+      if (openSessions.length > 0) {
+        activeSession = openSessions[0];
         const createdTime = new Date(activeSession.created_at).getTime();
-        // Se a sessão expirou (> 30 min) ou está fechada, cria uma nova
-        if (now - createdTime > 30 * 60 * 1000 || activeSession.status === 'closed') {
-          if (activeSession.status !== 'closed') {
-            await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
-          }
-          const { data: newSess } = await supabaseAdmin
-            .from('chat_sessions')
-            .insert({
-              client_id: matchedClient.id,
-              admin_id: matchedClient.admin_id,
-              employee_id: matchedClient.employee_id || null,
-              status: 'open',
-              created_at: new Date().toISOString()
-            })
-            .select()
-            .single();
-          if (newSess) activeSession = newSess;
+        
+        // Se a sessão expirou (> 30 min), fecha ela
+        if (now - createdTime > 30 * 60 * 1000) {
+          await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
+          activeSession = null;
         }
-      } else {
-        // Se não existia nenhuma sessão para o cliente, cria uma sessão imediatamente
+
+        // Fecha qualquer outra sessão aberta duplicada para manter apenas 1 sessão ativa
+        if (openSessions.length > 1) {
+          const extraIds = openSessions.slice(1).map((s: any) => s.id);
+          await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).in('id', extraIds);
+        }
+      }
+
+      if (!activeSession) {
         const { data: newSess } = await supabaseAdmin
           .from('chat_sessions')
           .insert({
@@ -1062,7 +1050,7 @@ setInterval(() => {
           })
           .select()
           .single();
-        if (newSess) activeSession = newSess;
+        activeSession = newSess;
       }
 
       if (!activeSession) {

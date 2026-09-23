@@ -310,24 +310,37 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     mutationFn: async ({ text, message_client_id }: { text: string; message_client_id: string }) => {
       let currentSession = session;
       if (!currentSession || currentSession.status === 'closed') {
-        const admId = client?.admin_id || (userProfile?.role === 'admin' ? userProfile.uid : (userProfile?.adminId || userProfile?.uid));
-        const empId = userProfile?.uid || admId;
-        const { data: newSess } = await supabase
+        const { data: existingOpen } = await supabase
           .from('chat_sessions')
-          .insert({
-            client_id: clientId,
-            visit_id: visit?.id || null,
-            admin_id: admId,
-            employee_id: empId,
-            status: 'open',
-            created_at: new Date().toISOString()
-          })
-          .select()
-          .single();
+          .select('*')
+          .eq('client_id', clientId)
+          .eq('status', 'open')
+          .order('created_at', { ascending: false })
+          .limit(1);
 
-        if (newSess) {
-          currentSession = newSess;
-          queryClient.setQueryData(['chat-session', clientId], { session: newSess, sessionIds: [newSess.id] });
+        if (existingOpen && existingOpen.length > 0) {
+          currentSession = existingOpen[0];
+          queryClient.setQueryData(['chat-session', clientId], { session: currentSession, sessionIds: [currentSession.id] });
+        } else {
+          const admId = client?.admin_id || (userProfile?.role === 'admin' ? userProfile.uid : (userProfile?.adminId || userProfile?.uid));
+          const empId = userProfile?.uid || admId;
+          const { data: newSess } = await supabase
+            .from('chat_sessions')
+            .insert({
+              client_id: clientId,
+              visit_id: visit?.id || null,
+              admin_id: admId,
+              employee_id: empId,
+              status: 'open',
+              created_at: new Date().toISOString()
+            })
+            .select()
+            .single();
+
+          if (newSess) {
+            currentSession = newSess;
+            queryClient.setQueryData(['chat-session', clientId], { session: newSess, sessionIds: [newSess.id] });
+          }
         }
       }
 
