@@ -873,9 +873,36 @@ setInterval(() => {
       let mediaUrl = "";
       let externalMsgId = "";
       
+      // Native WAME format with body.type === "message"
+      if (body.type === "message" && body.data) {
+        if (body.data.me || body.data.fromMe) {
+          return res.status(200).send("EVENT_RECEIVED");
+        }
+        phone = body.data.phoneNumber || "";
+        if (!phone && body.data.remoteJid) {
+          phone = String(body.data.remoteJid).split('@')[0];
+        }
+        if (body.data.id || body.data.key?.id) {
+          externalMsgId = String(body.data.id || body.data.key?.id);
+        }
+        if (body.data.messageType === "conversation" && body.data.msgContent?.conversation) {
+          content = body.data.msgContent.conversation;
+        } else if (body.data.msgContent?.extendedTextMessage?.text) {
+          content = body.data.msgContent.extendedTextMessage.text;
+        } else if (body.data.msgContent?.conversation) {
+          content = body.data.msgContent.conversation;
+        } else if (body.data.messageType === "imageMessage" || body.data.msgContent?.imageMessage) {
+          content = body.data.msgContent?.imageMessage?.caption || "📷 Imagem";
+        } else if (body.data.messageType === "audioMessage" || body.data.msgContent?.audioMessage) {
+          content = "🎵 Mensagem de Áudio";
+        } else if (body.data.text || body.data.content) {
+          content = body.data.text || body.data.content;
+        }
+      }
+
       // Native WAME format: { event: "messages.upsert", data: { key: { remoteJid, id }, message: { conversation } } }
       const nativeItem = Array.isArray(body.data) ? body.data[0] : (body.data || body);
-      if (nativeItem && (nativeItem.key || nativeItem.message)) {
+      if (!phone && nativeItem && (nativeItem.key || nativeItem.message)) {
         if (nativeItem.key?.fromMe) {
           return res.status(200).send("EVENT_RECEIVED");
         }
@@ -926,30 +953,46 @@ setInterval(() => {
       }
       
       if (!phone || !content) return res.status(200).send("EVENT_RECEIVED");
-      phone = phone.replace(/\D/g, '');
+      const cleanIncoming = phone.replace(/\D/g, '');
+      const incomingNo55 = cleanIncoming.replace(/^55/, '');
+      const incomingCore8 = cleanIncoming.slice(-8);
+      const incomingCore9 = cleanIncoming.slice(-9);
 
       // Deduplicação de mensagens recebidas
-      const dedupKey = externalMsgId ? `msg_${externalMsgId}` : `txt_${phone}_${content}`;
+      const dedupKey = externalMsgId ? `msg_${externalMsgId}` : `txt_${cleanIncoming}_${content}`;
       if (isDuplicateIncomingMsg(dedupKey)) {
         console.log("Ignorando mensagem duplicada recebida no webhook:", dedupKey);
         return res.status(200).send("EVENT_RECEIVED");
       }
       
-      const { data: clients } = await supabaseAdmin.from('clients').select('id, phone, local_phone, admin_id, employee_id');
+      const { data: clients } = await supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id, employee_id');
       const matchedClient = clients?.find(c => {
          const cp = (c.phone || '').replace(/\D/g, '');
          const lp = (c.local_phone || '').replace(/\D/g, '');
          if (!cp && !lp) return false;
-         const getCore = (num: string) => num.length >= 8 ? num.slice(-8) : num;
-         const webhookCore = getCore(phone);
-         let matchPhone = false;
-         if (cp.length > 5) matchPhone = cp.includes(phone) || phone.includes(cp) || getCore(cp) === webhookCore;
-         let matchLocal = false;
-         if (lp.length > 5) matchLocal = lp.includes(phone) || phone.includes(lp) || getCore(lp) === webhookCore;
-         return matchPhone || matchLocal;
+         const cpNo55 = cp.replace(/^55/, '');
+         const lpNo55 = lp.replace(/^55/, '');
+
+         const check = (raw: string, no55: string) => {
+           if (!raw || raw.length < 6) return false;
+           const core8 = raw.slice(-8);
+           const core9 = raw.slice(-9);
+           return raw === cleanIncoming ||
+                  no55 === incomingNo55 ||
+                  cleanIncoming.includes(raw) ||
+                  raw.includes(cleanIncoming) ||
+                  cleanIncoming.includes(no55) ||
+                  no55.includes(cleanIncoming) ||
+                  core8 === incomingCore8 ||
+                  core9 === incomingCore9;
+         };
+         return check(cp, cpNo55) || check(lp, lpNo55);
       });
       
-      if (!matchedClient) return res.status(200).send("EVENT_RECEIVED");
+      if (!matchedClient) {
+        console.log("[Webhook WAME] Nenhum cliente correspondente encontrado para o número:", phone, cleanIncoming);
+        return res.status(200).send("EVENT_RECEIVED");
+      }
 
       const { data: sessions } = await supabaseAdmin
         .from('chat_sessions')
@@ -962,7 +1005,7 @@ setInterval(() => {
 
       if (activeSession) {
         const createdTime = new Date(activeSession.created_at).getTime();
-        // Se a sessão expirou (> 30 min), fecha a anterior e cria uma nova
+        // Se a sessão expirou (> 30 min) ou está fechada, cria uma nova
         if (now - createdTime > 30 * 60 * 1000 || activeSession.status === 'closed') {
           if (activeSession.status !== 'closed') {
             await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
@@ -972,6 +1015,7 @@ setInterval(() => {
             .insert({
               client_id: matchedClient.id,
               admin_id: matchedClient.admin_id,
+              employee_id: matchedClient.employee_id || null,
               status: 'open',
               created_at: new Date().toISOString()
             })
@@ -986,6 +1030,7 @@ setInterval(() => {
           .insert({
             client_id: matchedClient.id,
             admin_id: matchedClient.admin_id,
+            employee_id: matchedClient.employee_id || null,
             status: 'open',
             created_at: new Date().toISOString()
           })
@@ -1049,7 +1094,10 @@ setInterval(() => {
       let remoteJid = msgData.key.remoteJid || "";
       if (!remoteJid) return res.status(200).send("OK");
       
-      let phone = remoteJid.split('@')[0].replace('55', '');
+      const cleanIncoming = remoteJid.split('@')[0].replace(/\D/g, '');
+      const incomingNo55 = cleanIncoming.replace(/^55/, '');
+      const incomingCore8 = cleanIncoming.slice(-8);
+      const incomingCore9 = cleanIncoming.slice(-9);
       let externalMsgId = msgData.key.id || "";
       
       let content = "";
@@ -1063,37 +1111,42 @@ setInterval(() => {
       if (!content && !mediaUrl) return res.status(200).send("OK");
 
       // Deduplicação
-      const dedupKey = externalMsgId ? `evo_${externalMsgId}` : `evo_txt_${phone}_${content}`;
+      const dedupKey = externalMsgId ? `evo_${externalMsgId}` : `evo_txt_${cleanIncoming}_${content}`;
       if (isDuplicateIncomingMsg(dedupKey)) {
         console.log("Ignorando mensagem duplicada Evolution:", dedupKey);
         return res.status(200).send("OK");
       }
 
-      const { data: clients } = await supabaseAdmin.from('clients').select('id, phone, local_phone, admin_id, employee_id');
+      const { data: clients } = await supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id, employee_id');
       if (!clients) return res.status(200).send("OK");
       
       const matchedClient = clients.find(c => {
          const cp = (c.phone || '').replace(/\D/g, '');
          const lp = (c.local_phone || '').replace(/\D/g, '');
          if (!cp && !lp) return false;
-         
-         const getCore = (num) => num.length >= 8 ? num.slice(-8) : num;
-         const webhookCore = getCore(phone);
-         
-         let matchPhone = false;
-         if (cp.length > 5) {
-            matchPhone = cp.includes(phone) || phone.includes(cp) || getCore(cp) === webhookCore;
-         }
-         
-         let matchLocal = false;
-         if (lp.length > 5) {
-            matchLocal = lp.includes(phone) || phone.includes(lp) || getCore(lp) === webhookCore;
-         }
-         
-         return matchPhone || matchLocal;
+         const cpNo55 = cp.replace(/^55/, '');
+         const lpNo55 = lp.replace(/^55/, '');
+
+         const check = (raw: string, no55: string) => {
+           if (!raw || raw.length < 6) return false;
+           const core8 = raw.slice(-8);
+           const core9 = raw.slice(-9);
+           return raw === cleanIncoming ||
+                  no55 === incomingNo55 ||
+                  cleanIncoming.includes(raw) ||
+                  raw.includes(cleanIncoming) ||
+                  cleanIncoming.includes(no55) ||
+                  no55.includes(cleanIncoming) ||
+                  core8 === incomingCore8 ||
+                  core9 === incomingCore9;
+         };
+         return check(cp, cpNo55) || check(lp, lpNo55);
       });
       
-      if (!matchedClient) return res.status(200).send("OK");
+      if (!matchedClient) {
+        console.log("[Webhook Evolution] Nenhum cliente correspondente encontrado para o número:", cleanIncoming);
+        return res.status(200).send("OK");
+      }
 
       const { data: sessions } = await supabaseAdmin
         .from('chat_sessions')
@@ -1106,7 +1159,7 @@ setInterval(() => {
 
       if (activeSession) {
         const createdTime = new Date(activeSession.created_at).getTime();
-        // Se a sessão expirou (> 30 min), fecha a anterior e cria uma nova
+        // Se a sessão expirou (> 30 min) ou está fechada, cria uma nova
         if (now - createdTime > 30 * 60 * 1000 || activeSession.status === 'closed') {
           if (activeSession.status !== 'closed') {
             await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
@@ -1116,6 +1169,7 @@ setInterval(() => {
             .insert({
               client_id: matchedClient.id,
               admin_id: matchedClient.admin_id,
+              employee_id: matchedClient.employee_id || null,
               status: 'open',
               created_at: new Date().toISOString()
             })
@@ -1130,6 +1184,7 @@ setInterval(() => {
           .insert({
             client_id: matchedClient.id,
             admin_id: matchedClient.admin_id,
+            employee_id: matchedClient.employee_id || null,
             status: 'open',
             created_at: new Date().toISOString()
           })

@@ -133,15 +133,32 @@ export default async function handler(req, res) {
       if (!activeSession) {
         const latestSess = sessions[0];
         const createdTime = new Date(latestSess.created_at).getTime();
-        if (now - createdTime <= 30 * 60 * 1000) {
+        if (now - createdTime <= 30 * 60 * 1000 && latestSess.status !== 'closed') {
           activeSession = latestSess;
         }
       }
     }
     
-    // If no active session, ignore message (rule: admin/collaborator must initiate chat)
+    // Se não há sessão ativa, cria uma nova sessão aberta para o cliente imediatamente
     if (!activeSession) {
-       console.log("[Webhook Evolution] No active chat session (<30m) for client:", matchedClient.id, matchedClient.name);
+      const { data: newSess } = await supabaseAdmin
+        .from('chat_sessions')
+        .insert({
+          client_id: matchedClient.id,
+          admin_id: matchedClient.admin_id,
+          employee_id: matchedClient.employee_id || null,
+          status: 'open',
+          created_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+      if (newSess) {
+        activeSession = newSess;
+      }
+    }
+    
+    if (!activeSession) {
+       console.log("[Webhook Evolution] Não foi possível criar ou obter sessão para:", matchedClient.id, matchedClient.name);
        return res.status(200).send("OK");
     }
 
