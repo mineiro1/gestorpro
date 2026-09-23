@@ -345,30 +345,42 @@ export default async function handler(req, res) {
        return res.status(200).send("EVENT_RECEIVED");
     }
 
-    const cleanIncomingPhone = String(phone).replace(/\D/g, '');
-    const incomingCore8 = cleanIncomingPhone.length >= 8 ? cleanIncomingPhone.slice(-8) : cleanIncomingPhone;
-    const incomingCore9 = cleanIncomingPhone.length >= 9 ? cleanIncomingPhone.slice(-9) : cleanIncomingPhone;
+  function isMatchingClientPhone(storedRaw, incomingRaw) {
+    if (!storedRaw || !incomingRaw) return false;
+    const stored = String(storedRaw).replace(/\D/g, '');
+    const incoming = String(incomingRaw).replace(/\D/g, '');
+    if (stored.length < 6 || incoming.length < 6) return false;
 
-    const { data: clients } = await supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id');
-    
-    const matchedClient = (clients || []).find(c => {
-       const cp = (c.phone || '').replace(/\D/g, '');
-       const lp = (c.local_phone || '').replace(/\D/g, '');
-       if (!cp && !lp) return false;
-       
-       const matchesNum = (stored) => {
-         if (!stored || stored.length < 6) return false;
-         const storedCore8 = stored.slice(-8);
-         const storedCore9 = stored.length >= 9 ? stored.slice(-9) : storedCore8;
-         return stored === cleanIncomingPhone ||
-                cleanIncomingPhone.includes(stored) ||
-                stored.includes(cleanIncomingPhone) ||
-                storedCore8 === incomingCore8 ||
-                storedCore9 === incomingCore9;
-       };
+    const storedNo55 = stored.replace(/^55/, '');
+    const incomingNo55 = incoming.replace(/^55/, '');
 
-       return matchesNum(cp) || matchesNum(lp);
-    });
+    if (stored === incoming || storedNo55 === incomingNo55) return true;
+
+    // Check last 8 digits (always identical regardless of 9th digit)
+    const storedLast8 = stored.slice(-8);
+    const incomingLast8 = incoming.slice(-8);
+    if (storedLast8.length === 8 && incomingLast8.length === 8 && storedLast8 === incomingLast8) {
+      const storedDDD = storedNo55.length >= 10 ? storedNo55.slice(0, 2) : '';
+      const incomingDDD = incomingNo55.length >= 10 ? incomingNo55.slice(0, 2) : '';
+      if (storedDDD && incomingDDD) {
+        return storedDDD === incomingDDD;
+      }
+      return true;
+    }
+
+    if (stored.includes(incoming) || incoming.includes(stored)) return true;
+    if (storedNo55.includes(incomingNo55) || incomingNo55.includes(storedNo55)) return true;
+
+    return false;
+  }
+
+  const cleanIncomingPhone = String(phone).replace(/\D/g, '');
+
+  const { data: clients } = await supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id, employee_id');
+  
+  const matchedClient = (clients || []).find(c => {
+     return isMatchingClientPhone(c.phone || '', cleanIncomingPhone) || isMatchingClientPhone(c.local_phone || '', cleanIncomingPhone);
+  });
     
     if (!matchedClient) {
         console.log("[Webhook WAME] Nenhum cliente encontrado para o telefone:", phone, cleanIncomingPhone);

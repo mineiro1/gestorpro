@@ -821,7 +821,6 @@ setInterval(() => {
 
   function isDuplicateIncomingMsg(uniqueKey: string): boolean {
     const now = Date.now();
-    // Limpar chaves antigas (> 30s)
     for (const [k, time] of recentProcessedMsgIds.entries()) {
       if (now - time > 30000) {
         recentProcessedMsgIds.delete(k);
@@ -831,6 +830,36 @@ setInterval(() => {
       return true;
     }
     recentProcessedMsgIds.set(uniqueKey, now);
+    return false;
+  }
+
+  // Robust phone matcher for Brazilian numbers with/without 55, with/without 9th digit, DDD match
+  function isMatchingClientPhone(storedRaw: string, incomingRaw: string): boolean {
+    if (!storedRaw || !incomingRaw) return false;
+    const stored = String(storedRaw).replace(/\D/g, '');
+    const incoming = String(incomingRaw).replace(/\D/g, '');
+    if (stored.length < 6 || incoming.length < 6) return false;
+
+    const storedNo55 = stored.replace(/^55/, '');
+    const incomingNo55 = incoming.replace(/^55/, '');
+
+    if (stored === incoming || storedNo55 === incomingNo55) return true;
+
+    // Check last 8 digits (always identical regardless of 9th digit)
+    const storedLast8 = stored.slice(-8);
+    const incomingLast8 = incoming.slice(-8);
+    if (storedLast8.length === 8 && incomingLast8.length === 8 && storedLast8 === incomingLast8) {
+      const storedDDD = storedNo55.length >= 10 ? storedNo55.slice(0, 2) : '';
+      const incomingDDD = incomingNo55.length >= 10 ? incomingNo55.slice(0, 2) : '';
+      if (storedDDD && incomingDDD) {
+        return storedDDD === incomingDDD;
+      }
+      return true;
+    }
+
+    if (stored.includes(incoming) || incoming.includes(stored)) return true;
+    if (storedNo55.includes(incomingNo55) || incomingNo55.includes(storedNo55)) return true;
+
     return false;
   }
 
@@ -846,7 +875,7 @@ setInterval(() => {
   app.post("/api/webhook/wame", async (req, res) => {
     try {
       console.log("Wame/Meta Webhook Received:", JSON.stringify(req.body));
-      const body = req.body;
+      const body = req.body || {};
 
       // 1. Process status updates (delivered / read / sent)
       await processStatusUpdates(body);
@@ -854,10 +883,12 @@ setInterval(() => {
       // Check if message was sent by us (fromMe = true) - DO NOT treat as client message!
       const isFromMe = Boolean(
         body.fromMe === true ||
+        body.me === true ||
         body.key?.fromMe === true ||
         body.data?.fromMe === true ||
+        body.data?.me === true ||
         body.data?.key?.fromMe === true ||
-        (Array.isArray(body.data) && body.data.some((d: any) => d?.key?.fromMe === true || d?.fromMe === true)) ||
+        (Array.isArray(body.data) && body.data.some((d: any) => d?.key?.fromMe === true || d?.fromMe === true || d?.me === true)) ||
         (body.entry && body.entry.some((e: any) => e?.changes?.some((c: any) => c?.value?.messages?.some((m: any) => m?.from_me === true))))
       );
 
@@ -870,7 +901,7 @@ setInterval(() => {
       let mediaUrl = "";
       let externalMsgId = "";
       
-      // Native WAME format with body.type === "message"
+      // Format 1: Native WAME format with body.type === "message"
       if (body.type === "message" && body.data) {
         if (body.data.me || body.data.fromMe) {
           return res.status(200).send("EVENT_RECEIVED");
@@ -897,30 +928,45 @@ setInterval(() => {
         }
       }
 
-      // Native WAME format: { event: "messages.upsert", data: { key: { remoteJid, id }, message: { conversation } } }
+      // Format 2: Native WAME/Baileys format: { event: "messages.upsert", data: { key: { remoteJid, id }, message: { conversation } } }
       const nativeItem = Array.isArray(body.data) ? body.data[0] : (body.data || body);
-      if (!phone && nativeItem && (nativeItem.key || nativeItem.message)) {
-        if (nativeItem.key?.fromMe) {
+      if (!phone && nativeItem && (nativeItem.key || nativeItem.message || nativeItem.msgContent)) {
+        if (nativeItem.key?.fromMe || nativeItem.fromMe || nativeItem.me) {
           return res.status(200).send("EVENT_RECEIVED");
         }
         if (nativeItem.key?.remoteJid) {
           phone = String(nativeItem.key.remoteJid).split('@')[0];
+        } else if (nativeItem.remoteJid) {
+          phone = String(nativeItem.remoteJid).split('@')[0];
+        } else if (nativeItem.phoneNumber) {
+          phone = String(nativeItem.phoneNumber);
+        } else if (nativeItem.from) {
+          phone = String(nativeItem.from).split('@')[0];
         }
-        if (nativeItem.key?.id) {
-          externalMsgId = String(nativeItem.key.id);
+
+        if (nativeItem.key?.id || nativeItem.id) {
+          externalMsgId = String(nativeItem.key?.id || nativeItem.id);
         }
-        if (nativeItem.message?.conversation) {
-          content = nativeItem.message.conversation;
-        } else if (nativeItem.message?.extendedTextMessage?.text) {
-          content = nativeItem.message.extendedTextMessage.text;
-        } else if (nativeItem.message?.audioMessage) {
+
+        const msgObj = nativeItem.message || nativeItem.msgContent;
+        if (typeof msgObj === 'string') {
+          content = msgObj;
+        } else if (msgObj?.conversation) {
+          content = msgObj.conversation;
+        } else if (msgObj?.extendedTextMessage?.text) {
+          content = msgObj.extendedTextMessage.text;
+        } else if (msgObj?.text) {
+          content = msgObj.text;
+        } else if (msgObj?.audioMessage) {
           content = "🎵 Mensagem de Áudio";
-        } else if (nativeItem.message?.imageMessage) {
-          content = "📷 Imagem";
+        } else if (msgObj?.imageMessage) {
+          content = msgObj.imageMessage?.caption || "📷 Imagem";
+        } else if (nativeItem.text || nativeItem.body || nativeItem.content) {
+          content = nativeItem.text || nativeItem.body || nativeItem.content;
         }
       }
 
-      // Meta Cloud API format
+      // Format 3: Meta Cloud API format
       if (!phone && (body.object === "whatsapp_business_account" || body.object === "wame") && body.entry && body.entry[0]?.changes) {
          const value = body.entry[0].changes[0].value;
          if (value.messages && value.messages.length > 0) {
@@ -938,22 +984,22 @@ setInterval(() => {
                content = "📷 Imagem";
             }
          }
-      } else if (!phone && body.phone && body.message) {
+      } else if (!phone && body.phone && (body.message || body.text)) {
           phone = body.phone;
-          content = body.message;
-      } else if (!phone && body.contact && body.message) {
+          content = typeof body.message === 'string' ? body.message : (body.text || body.message?.conversation || body.message?.extendedTextMessage?.text || "");
+      } else if (!phone && body.contact && (body.message || body.text)) {
           phone = body.contact;
-          content = body.message;
-      } else if (!phone && body.from && body.body) {
-          phone = body.from;
-          content = body.body;
+          content = typeof body.message === 'string' ? body.message : (body.text || "");
+      } else if (!phone && body.from && (body.body || body.message || body.text)) {
+          phone = String(body.from).split('@')[0];
+          content = body.body || (typeof body.message === 'string' ? body.message : body.text) || "";
+      } else if (!phone && body.sender && (body.text || body.message)) {
+          phone = String(body.sender).split('@')[0];
+          content = body.text || (typeof body.message === 'string' ? body.message : "");
       }
       
       if (!phone || !content) return res.status(200).send("EVENT_RECEIVED");
       const cleanIncoming = phone.replace(/\D/g, '');
-      const incomingNo55 = cleanIncoming.replace(/^55/, '');
-      const incomingCore8 = cleanIncoming.slice(-8);
-      const incomingCore9 = cleanIncoming.slice(-9);
 
       // Deduplicação de mensagens recebidas
       const dedupKey = externalMsgId ? `msg_${externalMsgId}` : `txt_${cleanIncoming}_${content}`;
@@ -964,32 +1010,15 @@ setInterval(() => {
       
       const { data: clients } = await supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id, employee_id');
       const matchedClient = clients?.find(c => {
-         const cp = (c.phone || '').replace(/\D/g, '');
-         const lp = (c.local_phone || '').replace(/\D/g, '');
-         if (!cp && !lp) return false;
-         const cpNo55 = cp.replace(/^55/, '');
-         const lpNo55 = lp.replace(/^55/, '');
-
-         const check = (raw: string, no55: string) => {
-           if (!raw || raw.length < 6) return false;
-           const core8 = raw.slice(-8);
-           const core9 = raw.slice(-9);
-           return raw === cleanIncoming ||
-                  no55 === incomingNo55 ||
-                  cleanIncoming.includes(raw) ||
-                  raw.includes(cleanIncoming) ||
-                  cleanIncoming.includes(no55) ||
-                  no55.includes(cleanIncoming) ||
-                  core8 === incomingCore8 ||
-                  core9 === incomingCore9;
-         };
-         return check(cp, cpNo55) || check(lp, lpNo55);
+         return isMatchingClientPhone(c.phone || '', cleanIncoming) || isMatchingClientPhone(c.local_phone || '', cleanIncoming);
       });
       
       if (!matchedClient) {
         console.log("[Webhook WAME] Nenhum cliente correspondente encontrado para o número:", phone, cleanIncoming);
         return res.status(200).send("EVENT_RECEIVED");
       }
+
+      console.log(`[Webhook WAME] Mensagem recebida de ${matchedClient.name} (${cleanIncoming}): "${content}"`);
 
       const { data: sessions } = await supabaseAdmin
         .from('chat_sessions')
@@ -1075,35 +1104,32 @@ setInterval(() => {
   app.post("/api/webhook/evolution", async (req, res) => {
     try {
       console.log("Evolution Webhook Received:", JSON.stringify(req.body));
-      const body = req.body;
+      const body = req.body || {};
 
       // 1. Process status updates (delivered / read / sent)
-      const hadStatus = await processStatusUpdates(body);
-      if (hadStatus) {
-        return res.status(200).send("OK");
-      }
+      await processStatusUpdates(body);
 
       const msgData = body.data || body;
       
-      if (!msgData || !msgData.key || !msgData.message) return res.status(200).send("OK");
-      if (msgData.key.fromMe) return res.status(200).send("OK");
+      if (!msgData || (!msgData.key && !msgData.message && !body.message)) return res.status(200).send("OK");
+      if (msgData.key?.fromMe || msgData.fromMe || msgData.me) return res.status(200).send("OK");
 
-      let remoteJid = msgData.key.remoteJid || "";
+      let remoteJid = msgData.key?.remoteJid || msgData.remoteJid || body.remoteJid || "";
+      if (!remoteJid && msgData.from) remoteJid = msgData.from;
       if (!remoteJid) return res.status(200).send("OK");
       
       const cleanIncoming = remoteJid.split('@')[0].replace(/\D/g, '');
-      const incomingNo55 = cleanIncoming.replace(/^55/, '');
-      const incomingCore8 = cleanIncoming.slice(-8);
-      const incomingCore9 = cleanIncoming.slice(-9);
-      let externalMsgId = msgData.key.id || "";
+      let externalMsgId = msgData.key?.id || msgData.id || "";
       
       let content = "";
-      if (msgData.message.conversation) content = msgData.message.conversation;
-      else if (msgData.message.extendedTextMessage) content = msgData.message.extendedTextMessage.text;
+      if (msgData.message?.conversation) content = msgData.message.conversation;
+      else if (msgData.message?.extendedTextMessage?.text) content = msgData.message.extendedTextMessage.text;
+      else if (typeof msgData.message === 'string') content = msgData.message;
+      else if (typeof body.message === 'string') content = body.message;
       
       let mediaUrl = "";
-      if (msgData.message.audioMessage) content = "🎵 Mensagem de Áudio";
-      else if (msgData.message.imageMessage) content = "📷 Imagem";
+      if (msgData.message?.audioMessage) content = "🎵 Mensagem de Áudio";
+      else if (msgData.message?.imageMessage) content = "📷 Imagem";
 
       if (!content && !mediaUrl) return res.status(200).send("OK");
 
@@ -1118,26 +1144,7 @@ setInterval(() => {
       if (!clients) return res.status(200).send("OK");
       
       const matchedClient = clients.find(c => {
-         const cp = (c.phone || '').replace(/\D/g, '');
-         const lp = (c.local_phone || '').replace(/\D/g, '');
-         if (!cp && !lp) return false;
-         const cpNo55 = cp.replace(/^55/, '');
-         const lpNo55 = lp.replace(/^55/, '');
-
-         const check = (raw: string, no55: string) => {
-           if (!raw || raw.length < 6) return false;
-           const core8 = raw.slice(-8);
-           const core9 = raw.slice(-9);
-           return raw === cleanIncoming ||
-                  no55 === incomingNo55 ||
-                  cleanIncoming.includes(raw) ||
-                  raw.includes(cleanIncoming) ||
-                  cleanIncoming.includes(no55) ||
-                  no55.includes(cleanIncoming) ||
-                  core8 === incomingCore8 ||
-                  core9 === incomingCore9;
-         };
-         return check(cp, cpNo55) || check(lp, lpNo55);
+         return isMatchingClientPhone(c.phone || '', cleanIncoming) || isMatchingClientPhone(c.local_phone || '', cleanIncoming);
       });
       
       if (!matchedClient) {
