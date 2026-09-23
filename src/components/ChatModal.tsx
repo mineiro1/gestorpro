@@ -309,38 +309,42 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const sendMutation = useMutation({
     mutationFn: async ({ text, message_client_id }: { text: string; message_client_id: string }) => {
       let currentSession = session;
-      if (!currentSession || currentSession.status === 'closed') {
-        const { data: existingOpen } = await supabase
+      
+      // Sempre busca se já existe alguma sessão 'open' no banco para este cliente
+      const { data: openSessions } = await supabase
+        .from('chat_sessions')
+        .select('*')
+        .eq('client_id', clientId)
+        .eq('status', 'open')
+        .order('created_at', { ascending: false });
+
+      if (openSessions && openSessions.length > 0) {
+        currentSession = openSessions[0];
+        // Se houver mais de uma sessão aberta, fecha as duplicadas excedentes
+        if (openSessions.length > 1) {
+          const extraIds = openSessions.slice(1).map(s => s.id);
+          await supabase.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).in('id', extraIds);
+        }
+        queryClient.setQueryData(['chat-session', clientId], { session: currentSession, sessionIds: [currentSession.id] });
+      } else if (!currentSession || currentSession.status === 'closed') {
+        const admId = client?.admin_id || (userProfile?.role === 'admin' ? userProfile.uid : (userProfile?.adminId || userProfile?.uid));
+        const empId = userProfile?.uid || admId;
+        const { data: newSess } = await supabase
           .from('chat_sessions')
-          .select('*')
-          .eq('client_id', clientId)
-          .eq('status', 'open')
-          .order('created_at', { ascending: false })
-          .limit(1);
+          .insert({
+            client_id: clientId,
+            visit_id: visit?.id || null,
+            admin_id: admId,
+            employee_id: empId,
+            status: 'open',
+            created_at: new Date().toISOString()
+          })
+          .select()
+          .single();
 
-        if (existingOpen && existingOpen.length > 0) {
-          currentSession = existingOpen[0];
-          queryClient.setQueryData(['chat-session', clientId], { session: currentSession, sessionIds: [currentSession.id] });
-        } else {
-          const admId = client?.admin_id || (userProfile?.role === 'admin' ? userProfile.uid : (userProfile?.adminId || userProfile?.uid));
-          const empId = userProfile?.uid || admId;
-          const { data: newSess } = await supabase
-            .from('chat_sessions')
-            .insert({
-              client_id: clientId,
-              visit_id: visit?.id || null,
-              admin_id: admId,
-              employee_id: empId,
-              status: 'open',
-              created_at: new Date().toISOString()
-            })
-            .select()
-            .single();
-
-          if (newSess) {
-            currentSession = newSess;
-            queryClient.setQueryData(['chat-session', clientId], { session: newSess, sessionIds: [newSess.id] });
-          }
+        if (newSess) {
+          currentSession = newSess;
+          queryClient.setQueryData(['chat-session', clientId], { session: newSess, sessionIds: [newSess.id] });
         }
       }
 

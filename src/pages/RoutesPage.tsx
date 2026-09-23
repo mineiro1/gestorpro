@@ -958,6 +958,8 @@ export default function RoutesPage() {
         if (newSessErr) {
           console.error("Erro ao registrar início do chat:", newSessErr);
         } else if (newSess) {
+          queryClient.setQueryData(['chat-session', client.id], { session: newSess, sessionIds: [newSess.id] });
+          queryClient.invalidateQueries({ queryKey: ['chat-session', client.id] });
           queryClient.invalidateQueries({ queryKey: ['routeData'] });
         }
       } catch (sessError) {
