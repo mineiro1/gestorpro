@@ -147,6 +147,60 @@ export default async function handler(req, res) {
       }
     }
     
+  function cleanJidToPhone(rawJid) {
+    if (!rawJid) return '';
+    const str = String(rawJid);
+    const withoutDomain = str.split('@')[0];
+    const withoutDevice = withoutDomain.split(':')[0];
+    return withoutDevice.replace(/\D/g, '');
+  }
+
+  function extractMessageData(rawMsg) {
+    if (!rawMsg) return { content: '', mediaUrl: '' };
+    if (typeof rawMsg === 'string') return { content: rawMsg, mediaUrl: '' };
+
+    // Recursively unwrap WhatsApp Baileys wrappers
+    if (rawMsg.ephemeralMessage?.message) return extractMessageData(rawMsg.ephemeralMessage.message);
+    if (rawMsg.viewOnceMessage?.message) return extractMessageData(rawMsg.viewOnceMessage.message);
+    if (rawMsg.viewOnceMessageV2?.message) return extractMessageData(rawMsg.viewOnceMessageV2.message);
+    if (rawMsg.documentWithCaptionMessage?.message) return extractMessageData(rawMsg.documentWithCaptionMessage.message);
+    if (rawMsg.editedMessage?.message?.protocolMessage?.editedMessage) return extractMessageData(rawMsg.editedMessage.message.protocolMessage.editedMessage);
+
+    if (rawMsg.conversation) return { content: rawMsg.conversation, mediaUrl: '' };
+    if (rawMsg.extendedTextMessage?.text) return { content: rawMsg.extendedTextMessage.text, mediaUrl: '' };
+    if (rawMsg.text) return { content: typeof rawMsg.text === 'string' ? rawMsg.text : (rawMsg.text?.body || ''), mediaUrl: '' };
+    if (rawMsg.body) return { content: rawMsg.body, mediaUrl: '' };
+    if (rawMsg.caption) return { content: rawMsg.caption, mediaUrl: '' };
+
+    if (rawMsg.audioMessage) {
+      return { content: '🎵 Áudio recebido', mediaUrl: rawMsg.audioMessage.url || rawMsg.audioMessage.directPath || '' };
+    }
+    if (rawMsg.imageMessage) {
+      return { content: rawMsg.imageMessage.caption || '📸 Imagem recebida', mediaUrl: rawMsg.imageMessage.url || rawMsg.imageMessage.directPath || '' };
+    }
+    if (rawMsg.videoMessage) {
+      return { content: rawMsg.videoMessage.caption || '🎥 Vídeo recebido', mediaUrl: rawMsg.videoMessage.url || rawMsg.videoMessage.directPath || '' };
+    }
+    if (rawMsg.documentMessage) {
+      return { content: `📄 Documento: ${rawMsg.documentMessage.fileName || rawMsg.documentMessage.title || 'Arquivo'}`, mediaUrl: rawMsg.documentMessage.url || '' };
+    }
+    if (rawMsg.stickerMessage) {
+      return { content: '🏷️ Figurinha recebida', mediaUrl: rawMsg.stickerMessage.url || '' };
+    }
+
+    if (rawMsg.buttonsResponseMessage?.selectedButtonId || rawMsg.buttonsResponseMessage?.selectedDisplayText) {
+      return { content: rawMsg.buttonsResponseMessage.selectedDisplayText || rawMsg.buttonsResponseMessage.selectedButtonId, mediaUrl: '' };
+    }
+    if (rawMsg.templateButtonReplyMessage?.selectedId || rawMsg.templateButtonReplyMessage?.selectedDisplayText) {
+      return { content: rawMsg.templateButtonReplyMessage.selectedDisplayText || rawMsg.templateButtonReplyMessage.selectedId, mediaUrl: '' };
+    }
+    if (rawMsg.listResponseMessage?.title || rawMsg.listResponseMessage?.singleSelectReply?.selectedRowId) {
+      return { content: rawMsg.listResponseMessage.title || rawMsg.listResponseMessage.singleSelectReply?.selectedRowId, mediaUrl: '' };
+    }
+
+    return { content: '', mediaUrl: '' };
+  }
+    
     let phone = "";
     let content = "";
     let mediaUrl = "";
@@ -172,39 +226,27 @@ export default async function handler(req, res) {
       }
 
       if (rawItem.key?.remoteJid) {
-        phone = String(rawItem.key.remoteJid).split('@')[0];
+        phone = cleanJidToPhone(rawItem.key.remoteJid);
       } else if (rawItem.remoteJid) {
-        phone = String(rawItem.remoteJid).split('@')[0];
+        phone = cleanJidToPhone(rawItem.remoteJid);
       } else if (rawItem.phoneNumber) {
-        phone = String(rawItem.phoneNumber);
+        phone = cleanJidToPhone(rawItem.phoneNumber);
+      } else if (rawItem.phone) {
+        phone = cleanJidToPhone(rawItem.phone);
       } else if (rawItem.from) {
-        phone = String(rawItem.from).split('@')[0];
+        phone = cleanJidToPhone(rawItem.from);
       } else if (rawItem.sender) {
-        phone = String(rawItem.sender).split('@')[0];
+        phone = cleanJidToPhone(rawItem.sender);
       }
 
       if (rawItem.key?.id || rawItem.id) {
         externalMsgId = String(rawItem.key?.id || rawItem.id);
       }
 
-      const msgObj = rawItem.message || rawItem.msgContent;
-      if (typeof msgObj === 'string') {
-        content = msgObj;
-      } else if (msgObj?.conversation) {
-        content = msgObj.conversation;
-      } else if (msgObj?.extendedTextMessage?.text) {
-        content = msgObj.extendedTextMessage.text;
-      } else if (msgObj?.text) {
-        content = msgObj.text;
-      } else if (msgObj?.audioMessage) {
-        content = "🎵 Mensagem de Áudio";
-      } else if (msgObj?.imageMessage) {
-        content = msgObj.imageMessage?.caption || "📷 Imagem";
-      } else if (rawItem.text || rawItem.body || rawItem.content) {
-        content = rawItem.text || rawItem.body || rawItem.content;
-      } else if (typeof rawItem.message === 'string') {
-        content = rawItem.message;
-      }
+      const msgObj = rawItem.message || rawItem.msgContent || rawItem;
+      const extracted = extractMessageData(msgObj);
+      content = extracted.content;
+      mediaUrl = extracted.mediaUrl || mediaUrl;
     }
 
     if (!phone && (body.object === "whatsapp_business_account" || body.object === "wame") && body.entry && body.entry[0]?.changes) {
@@ -214,7 +256,7 @@ export default async function handler(req, res) {
           if (msg.from_me) {
              return res.status(200).send("EVENT_RECEIVED");
           }
-          phone = msg.from;
+          phone = cleanJidToPhone(msg.from);
           if (msg.type === "text" && msg.text) {
              content = msg.text.body;
           } else if (msg.type === "audio" && msg.audio) {
@@ -235,20 +277,25 @@ export default async function handler(req, res) {
        }
     } 
     else if (!phone && body.phone && (body.message || body.text)) {
-        phone = body.phone;
-        content = typeof body.message === 'string' ? body.message : (body.text || body.message?.conversation || body.message?.extendedTextMessage?.text || "");
+        phone = cleanJidToPhone(body.phone);
+        const extracted = extractMessageData(body.message || body.text);
+        content = extracted.content || String(body.message || body.text);
     } else if (!phone && body.contact && (body.message || body.text)) {
-        phone = body.contact;
-        content = typeof body.message === 'string' ? body.message : (body.text || "");
+        phone = cleanJidToPhone(body.contact);
+        const extracted = extractMessageData(body.message || body.text);
+        content = extracted.content || String(body.message || body.text);
     } else if (!phone && body.from && (body.body || body.message || body.text)) {
-        phone = String(body.from).split('@')[0];
-        content = body.body || (typeof body.message === 'string' ? body.message : body.text) || "";
+        phone = cleanJidToPhone(body.from);
+        const extracted = extractMessageData(body.body || body.message || body.text);
+        content = extracted.content || String(body.body || body.message || body.text);
     } else if (!phone && body.sender && (body.text || body.message)) {
-        phone = String(body.sender).split('@')[0];
-        content = body.text || (typeof body.message === 'string' ? body.message : "");
+        phone = cleanJidToPhone(body.sender);
+        const extracted = extractMessageData(body.text || body.message);
+        content = extracted.content || String(body.text || body.message);
     }
     
     if (!phone || !content) {
+       console.log(`[Webhook WAME] Sem telefone ou sem conteudo extraivel: phone="${phone}", content="${content}"`);
        return res.status(200).send("EVENT_RECEIVED");
     }
 

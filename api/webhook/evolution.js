@@ -35,6 +35,60 @@ export default async function handler(req, res) {
        return res.status(200).send("OK");
     }
     
+  function cleanJidToPhone(rawJid) {
+    if (!rawJid) return '';
+    const str = String(rawJid);
+    const withoutDomain = str.split('@')[0];
+    const withoutDevice = withoutDomain.split(':')[0];
+    return withoutDevice.replace(/\D/g, '');
+  }
+
+  function extractMessageData(rawMsg) {
+    if (!rawMsg) return { content: '', mediaUrl: '' };
+    if (typeof rawMsg === 'string') return { content: rawMsg, mediaUrl: '' };
+
+    // Recursively unwrap WhatsApp Baileys wrappers
+    if (rawMsg.ephemeralMessage?.message) return extractMessageData(rawMsg.ephemeralMessage.message);
+    if (rawMsg.viewOnceMessage?.message) return extractMessageData(rawMsg.viewOnceMessage.message);
+    if (rawMsg.viewOnceMessageV2?.message) return extractMessageData(rawMsg.viewOnceMessageV2.message);
+    if (rawMsg.documentWithCaptionMessage?.message) return extractMessageData(rawMsg.documentWithCaptionMessage.message);
+    if (rawMsg.editedMessage?.message?.protocolMessage?.editedMessage) return extractMessageData(rawMsg.editedMessage.message.protocolMessage.editedMessage);
+
+    if (rawMsg.conversation) return { content: rawMsg.conversation, mediaUrl: '' };
+    if (rawMsg.extendedTextMessage?.text) return { content: rawMsg.extendedTextMessage.text, mediaUrl: '' };
+    if (rawMsg.text) return { content: typeof rawMsg.text === 'string' ? rawMsg.text : (rawMsg.text?.body || ''), mediaUrl: '' };
+    if (rawMsg.body) return { content: rawMsg.body, mediaUrl: '' };
+    if (rawMsg.caption) return { content: rawMsg.caption, mediaUrl: '' };
+
+    if (rawMsg.audioMessage) {
+      return { content: '🎵 Áudio recebido', mediaUrl: rawMsg.audioMessage.url || rawMsg.audioMessage.directPath || '' };
+    }
+    if (rawMsg.imageMessage) {
+      return { content: rawMsg.imageMessage.caption || '📸 Imagem recebida', mediaUrl: rawMsg.imageMessage.url || rawMsg.imageMessage.directPath || '' };
+    }
+    if (rawMsg.videoMessage) {
+      return { content: rawMsg.videoMessage.caption || '🎥 Vídeo recebido', mediaUrl: rawMsg.videoMessage.url || rawMsg.videoMessage.directPath || '' };
+    }
+    if (rawMsg.documentMessage) {
+      return { content: `📄 Documento: ${rawMsg.documentMessage.fileName || rawMsg.documentMessage.title || 'Arquivo'}`, mediaUrl: rawMsg.documentMessage.url || '' };
+    }
+    if (rawMsg.stickerMessage) {
+      return { content: '🏷️ Figurinha recebida', mediaUrl: rawMsg.stickerMessage.url || '' };
+    }
+
+    if (rawMsg.buttonsResponseMessage?.selectedButtonId || rawMsg.buttonsResponseMessage?.selectedDisplayText) {
+      return { content: rawMsg.buttonsResponseMessage.selectedDisplayText || rawMsg.buttonsResponseMessage.selectedButtonId, mediaUrl: '' };
+    }
+    if (rawMsg.templateButtonReplyMessage?.selectedId || rawMsg.templateButtonReplyMessage?.selectedDisplayText) {
+      return { content: rawMsg.templateButtonReplyMessage.selectedDisplayText || rawMsg.templateButtonReplyMessage.selectedId, mediaUrl: '' };
+    }
+    if (rawMsg.listResponseMessage?.title || rawMsg.listResponseMessage?.singleSelectReply?.selectedRowId) {
+      return { content: rawMsg.listResponseMessage.title || rawMsg.listResponseMessage.singleSelectReply?.selectedRowId, mediaUrl: '' };
+    }
+
+    return { content: '', mediaUrl: '' };
+  }
+
     // Ignore outgoing messages
     if (msgData.key.fromMe) {
        return res.status(200).send("OK");
@@ -46,25 +100,10 @@ export default async function handler(req, res) {
        return res.status(200).send("OK");
     }
     
-    // Naive clean for Brazilian numbers (removes 55 country code if exists)
-    let phone = remoteJid.split('@')[0].replace(/^55/, ''); 
-    
-    let content = "";
-    if (msgData.message.conversation) content = msgData.message.conversation;
-    else if (msgData.message.extendedTextMessage) content = msgData.message.extendedTextMessage?.text || "";
-    
-    let mediaUrl = "";
-    if (msgData.message.audioMessage) {
-       content = "🎵 Mensagem de Áudio";
-    } else if (msgData.message.imageMessage) {
-       content = "📷 Imagem";
-    } else if (msgData.message.documentMessage) {
-       content = "📄 Documento";
-    } else if (msgData.message.videoMessage) {
-       content = "🎥 Vídeo";
-    } else if (msgData.message.stickerMessage) {
-       content = "🖼️ Figurinha";
-    }
+    let phone = cleanJidToPhone(remoteJid);
+    const extracted = extractMessageData(msgData.message || msgData.msgContent || msgData);
+    let content = extracted.content;
+    let mediaUrl = extracted.mediaUrl || "";
 
     if (!content && !mediaUrl) {
        console.log("No text or media content, ignoring.");

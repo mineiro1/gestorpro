@@ -242,6 +242,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         });
 
         if (payload.eventType === 'INSERT' && newMsg.sender_type === 'client') {
+          queryClient.invalidateQueries({ queryKey: ['chat-messages', clientId] });
           markClientChatAsRead(clientId, supabase);
           scrollToBottom(true);
         }
