@@ -16,7 +16,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
+    const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://fgmmvrvudozzwqxzsztwo.supabase.co';
     
     // A chave secreta dividida em duas partes para o GitHub não dar falso-positivo no radar de segurança:
     const part1 = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZnbW12cnZ1ZG96endxenN6dHdvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3OTA1MjMzMSwi";
@@ -137,10 +137,15 @@ export default async function handler(req, res) {
       // Se era puramente um evento de status (sem mensagens no corpo), retorna
       const hasMessagesInBody = Boolean(
         (body.entry && body.entry.some(e => e.changes?.some(c => c.value?.messages?.length > 0))) ||
+        (Array.isArray(body) && body.some(b => b.message || b.msgContent || b.text || b.body)) ||
+        (Array.isArray(body.data) && body.data.some(d => d.message || d.msgContent || d.text || d.body)) ||
         body.data?.msgContent ||
         body.data?.message ||
+        body.data?.key ||
         body.message ||
-        body.body
+        body.text ||
+        body.body ||
+        body.content
       );
       if (!hasMessagesInBody) {
         return res.status(200).send("EVENT_RECEIVED");

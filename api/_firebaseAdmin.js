@@ -1,3 +1,4 @@
+import admin from 'firebase-admin';
 import { initializeApp, getApps, cert } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
 import fs from 'fs';
@@ -54,5 +55,6 @@ function initFirebase() {
   return { initialized: false, messaging: null };
 }
 
-export { initFirebase, getApps, getMessaging };
+export { initFirebase, getApps, getMessaging, admin };
+
 
