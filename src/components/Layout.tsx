@@ -227,50 +227,6 @@ export default function Layout() {
               return { ...old, completed: next };
             });
           }
-        } else {
-          return;
-        }
-        
-        // Prevent duplicate notifications using a ref
-        if (!notifiedVisitsRef.current) notifiedVisitsRef.current = new Set();
-        if (notifiedVisitsRef.current.has(payload.new.id)) return;
-        notifiedVisitsRef.current.add(payload.new.id);
-        
-        let admin_id = payload.new.admin_id;
-        let employee_id = payload.new.employee_id;
-        let client_id = payload.new.client_id;
-        
-        if (!admin_id || !employee_id || !client_id) {
-           const { data: fetchVisit } = await supabase.from('visits').select('admin_id, employee_id, client_id').eq('id', payload.new.id).single();
-           if (fetchVisit) {
-              admin_id = admin_id || fetchVisit.admin_id;
-              employee_id = employee_id || fetchVisit.employee_id;
-              client_id = client_id || fetchVisit.client_id;
-           }
-        }
-
-        const isAdminOrManager = userProfile.role === 'admin' || userProfile.role === 'manager';
-        const isSelf = employee_id === userProfile.uid;
-
-        if (isAdminOrManager && !isSelf) {
-          try {
-            let empName = 'Colaborador';
-            let cliName = 'Cliente';
-
-            if (employee_id) {
-              const { data: empData } = await supabase.from('users').select('name').eq('id', employee_id).single();
-              if (empData?.name) empName = empData.name;
-            }
-
-            if (client_id) {
-              const { data: cliData } = await supabase.from('clients').select('name').eq('id', client_id).single();
-              if (cliData?.name) cliName = cliData.name;
-            }
-            
-            showNotification('🏊 Visita Finalizada!', `O colaborador ${empName} finalizou o atendimento no cliente ${cliName}.`, 'atendimentos_v2');
-          } catch (e) {
-            showNotification('🏊 Visita Finalizada!', 'Um colaborador finalizou um atendimento.', 'atendimentos_v2');
-          }
         }
       }
     };
@@ -278,27 +234,15 @@ export default function Layout() {
     const handleNewJob = (payload: any) => {
       if (payload.new && payload.eventType === 'INSERT') {
         const isAssignedToMe = payload.new.employee_id === userProfile.uid;
-        const isAdminOwner = userProfile.role === 'admin' && payload.new.admin_id === userProfile.uid;
-
-        if (isAssignedToMe || isAdminOwner) {
-          const msg = isAssignedToMe
-            ? 'Um novo serviço avulso foi agendado para você!'
-            : 'Um novo serviço avulso foi criado no sistema.';
-          showNotification('Novo Serviço Avulso', msg);
+        if (isAssignedToMe) {
+          showNotification('Novo Serviço Avulso', 'Um novo serviço avulso foi agendado para você!');
         }
       }
     };
-    
-    
 
     const handleJobUpdate = async (payload: any) => {
       if (payload.new && payload.old) {
-        const isAdminOrManager = userProfile.role === 'admin' || userProfile.role === 'manager';
-        const isSelf = payload.new.employee_id === userProfile.uid;
-        
-        const wasNotCompleted = payload.old.status !== 'concluido';
         const isNowCompleted = payload.new.status === 'concluido';
-
         if (isNowCompleted) {
           queryClient.invalidateQueries({ queryKey: ['routeData'] });
           if (payload.new?.id) {
@@ -308,20 +252,6 @@ export default function Layout() {
               next.add(payload.new.id);
               return { ...old, completed: next };
             });
-          }
-        }
-
-        if (isAdminOrManager && !isSelf && isNowCompleted && !notifiedJobsRef.current.has(payload.new.id)) {
-          notifiedJobsRef.current.add(payload.new.id);
-          try {
-            const { data: empData } = await supabase.from('users').select('name').eq('id', payload.new.employee_id).single();
-            
-            const empName = empData?.name || 'Colaborador';
-            const cliName = payload.new.client_name || 'Cliente';
-            
-            showNotification('🏊 Serviço Avulso Finalizado', `O colaborador ${empName} finalizou o serviço avulso para ${cliName}.`, 'atendimentos_v2');
-          } catch (e) {
-            showNotification('🏊 Serviço Avulso Finalizado', 'Um colaborador finalizou um serviço avulso.', 'atendimentos_v2');
           }
         }
       }
