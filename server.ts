@@ -863,16 +863,7 @@ setInterval(() => {
     return false;
   }
 
-  app.get("/api/webhook/wame", (req, res) => {
-    const mode = req.query["hub.mode"];
-    const challenge = req.query["hub.challenge"];
-    if (mode === "subscribe" && challenge) {
-      return res.status(200).send(challenge);
-    }
-    return res.status(200).send("OK");
-  });
-
-  app.post("/api/webhook/wame", async (req, res) => {
+  const handleWameWebhook = async (req: any, res: any) => {
     try {
       console.log("Wame/Meta Webhook Received:", JSON.stringify(req.body));
       const body = req.body || {};
@@ -886,9 +877,8 @@ setInterval(() => {
         body.me === true ||
         body.key?.fromMe === true ||
         body.data?.fromMe === true ||
-        body.data?.me === true ||
         body.data?.key?.fromMe === true ||
-        (Array.isArray(body.data) && body.data.some((d: any) => d?.key?.fromMe === true || d?.fromMe === true || d?.me === true)) ||
+        (Array.isArray(body.data) && body.data.some((d: any) => d?.key?.fromMe === true || d?.fromMe === true)) ||
         (body.entry && body.entry.some((e: any) => e?.changes?.some((c: any) => c?.value?.messages?.some((m: any) => m?.from_me === true))))
       );
 
@@ -916,7 +906,7 @@ setInterval(() => {
       }
 
       if (rawItem) {
-        if (rawItem.key?.fromMe === true || rawItem.fromMe === true || rawItem.me === true) {
+        if (rawItem.key?.fromMe === true || rawItem.fromMe === true) {
           return res.status(200).send("EVENT_RECEIVED");
         }
 
@@ -1081,15 +1071,40 @@ setInterval(() => {
             }
          }
       }
+
+      // Dispara push notification para os responsáveis
+      const targetUserId = matchedClient.employee_id || matchedClient.admin_id;
+      if (targetUserId) {
+        sendPushToAdmin(targetUserId, `💬 ${matchedClient.name}`, content, {
+          clientId: matchedClient.id,
+          sessionId: activeSession.id,
+          type: 'chat_message',
+          channelId: 'chat_messages'
+        }).catch(err => console.error('[Push Notification Error]', err));
+      }
       
       return res.status(200).send("EVENT_RECEIVED");
     } catch(e) {
       console.error("Webhook Error:", e);
       return res.status(500).send("Error");
     }
-  });
+  };
 
-  app.post("/api/webhook/evolution", async (req, res) => {
+  const handleWameGet = (req: any, res: any) => {
+    const mode = req.query["hub.mode"];
+    const challenge = req.query["hub.challenge"];
+    if (mode === "subscribe" && challenge) {
+      return res.status(200).send(challenge);
+    }
+    return res.status(200).send("OK");
+  };
+
+  app.get("/api/webhook/wame", handleWameGet);
+  app.get("/webhook/wame", handleWameGet);
+  app.post("/api/webhook/wame", handleWameWebhook);
+  app.post("/webhook/wame", handleWameWebhook);
+
+  const handleEvolutionWebhook = async (req: any, res: any) => {
     try {
       console.log("Evolution Webhook Received:", JSON.stringify(req.body));
       const body = req.body || {};
@@ -1100,7 +1115,7 @@ setInterval(() => {
       const msgData = body.data || body;
       
       if (!msgData || (!msgData.key && !msgData.message && !body.message)) return res.status(200).send("OK");
-      if (msgData.key?.fromMe || msgData.fromMe || msgData.me) return res.status(200).send("OK");
+      if (msgData.key?.fromMe || msgData.fromMe) return res.status(200).send("OK");
 
       let remoteJid = msgData.key?.remoteJid || msgData.remoteJid || body.remoteJid || "";
       if (!remoteJid && msgData.from) remoteJid = msgData.from;
@@ -1146,31 +1161,29 @@ setInterval(() => {
         .eq('client_id', matchedClient.id)
         .order('created_at', { ascending: false });
         
-      let activeSession = sessions && sessions.length > 0 ? sessions[0] : null;
       const now = new Date().getTime();
+      let activeSession: any = null;
 
-      if (activeSession) {
+      // Localiza sessões abertas e consolida duplicadas
+      const openSessions = (sessions || []).filter((s: any) => s.status === 'open');
+      if (openSessions.length > 0) {
+        activeSession = openSessions[0];
         const createdTime = new Date(activeSession.created_at).getTime();
-        // Se a sessão expirou (> 30 min) ou está fechada, cria uma nova
-        if (now - createdTime > 30 * 60 * 1000 || activeSession.status === 'closed') {
-          if (activeSession.status !== 'closed') {
-            await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
-          }
-          const { data: newSess } = await supabaseAdmin
-            .from('chat_sessions')
-            .insert({
-              client_id: matchedClient.id,
-              admin_id: matchedClient.admin_id,
-              employee_id: matchedClient.employee_id || null,
-              status: 'open',
-              created_at: new Date().toISOString()
-            })
-            .select()
-            .single();
-          if (newSess) activeSession = newSess;
+        
+        // Se a sessão expirou (> 30 min), fecha ela
+        if (now - createdTime > 30 * 60 * 1000) {
+          await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
+          activeSession = null;
         }
-      } else {
-        // Se não existia nenhuma sessão para o cliente, cria uma sessão imediatamente
+
+        // Fecha qualquer outra sessão aberta duplicada para manter apenas 1 sessão ativa
+        if (openSessions.length > 1) {
+          const extraIds = openSessions.slice(1).map((s: any) => s.id);
+          await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).in('id', extraIds);
+        }
+      }
+
+      if (!activeSession) {
         const { data: newSess } = await supabaseAdmin
           .from('chat_sessions')
           .insert({
@@ -1182,7 +1195,7 @@ setInterval(() => {
           })
           .select()
           .single();
-        if (newSess) activeSession = newSess;
+        activeSession = newSess;
       }
 
       if (!activeSession) {
@@ -1213,13 +1226,27 @@ setInterval(() => {
             }
          }
       }
+
+      // Dispara push notification para os responsáveis
+      const targetUserId = matchedClient.employee_id || matchedClient.admin_id;
+      if (targetUserId) {
+        sendPushToAdmin(targetUserId, `💬 ${matchedClient.name}`, content, {
+          clientId: matchedClient.id,
+          sessionId: activeSession.id,
+          type: 'chat_message',
+          channelId: 'chat_messages'
+        }).catch(err => console.error('[Push Notification Error]', err));
+      }
       
       return res.status(200).send("OK");
     } catch(e) {
       console.error("Webhook Error:", e);
       return res.status(500).send("Error");
     }
-  });
+  };
+
+  app.post("/api/webhook/evolution", handleEvolutionWebhook);
+  app.post("/webhook/evolution", handleEvolutionWebhook);
 
 app.all("/api/sync-payment", async (req, res) => {
     const payment_id = req.body?.payment_id || req.query?.payment_id || req.query?.id;

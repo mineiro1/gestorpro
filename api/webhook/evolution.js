@@ -81,81 +81,91 @@ export default async function handler(req, res) {
        return res.status(200).send("OK");
     }
     
-    const cleanIncomingPhone = String(phone).replace(/\D/g, '');
-    const incomingCore8 = cleanIncomingPhone.length >= 8 ? cleanIncomingPhone.slice(-8) : cleanIncomingPhone;
-    const incomingCore9 = cleanIncomingPhone.length >= 9 ? cleanIncomingPhone.slice(-9) : cleanIncomingPhone;
+  function isMatchingClientPhone(storedRaw, incomingRaw) {
+    if (!storedRaw || !incomingRaw) return false;
+    const stored = String(storedRaw).replace(/\D/g, '');
+    const incoming = String(incomingRaw).replace(/\D/g, '');
+    if (stored.length < 6 || incoming.length < 6) return false;
 
-    const matchedClient = clients.find(c => {
-       const cp = (c.phone || '').replace(/\D/g, '');
-       const lp = (c.local_phone || '').replace(/\D/g, '');
-       if (!cp && !lp) return false;
-       
-       const matchesNum = (stored) => {
-         if (!stored || stored.length < 6) return false;
-         const storedCore8 = stored.slice(-8);
-         const storedCore9 = stored.length >= 9 ? stored.slice(-9) : storedCore8;
-         return stored === cleanIncomingPhone ||
-                cleanIncomingPhone.includes(stored) ||
-                stored.includes(cleanIncomingPhone) ||
-                storedCore8 === incomingCore8 ||
-                storedCore9 === incomingCore9;
-       };
+    const storedNo55 = stored.replace(/^55/, '');
+    const incomingNo55 = incoming.replace(/^55/, '');
 
-       return matchesNum(cp) || matchesNum(lp);
-    });
-    
-    if (!matchedClient) {
-       console.log("[Webhook Evolution] Client not found for phone:", phone, cleanIncomingPhone);
-       return res.status(200).send("OK");
+    if (stored === incoming || storedNo55 === incomingNo55) return true;
+
+    // Check last 8 digits (always identical regardless of 9th digit)
+    const storedLast8 = stored.slice(-8);
+    const incomingLast8 = incoming.slice(-8);
+    if (storedLast8.length === 8 && incomingLast8.length === 8 && storedLast8 === incomingLast8) {
+      const storedDDD = storedNo55.length >= 10 ? storedNo55.slice(0, 2) : '';
+      const incomingDDD = incomingNo55.length >= 10 ? incomingNo55.slice(0, 2) : '';
+      if (storedDDD && incomingDDD) {
+        return storedDDD === incomingDDD;
+      }
+      return true;
     }
 
-    // Check for open session
-    const { data: sessions } = await supabaseAdmin
+    if (stored.includes(incoming) || incoming.includes(stored)) return true;
+    if (storedNo55.includes(incomingNo55) || incomingNo55.includes(storedNo55)) return true;
+
+    return false;
+  }
+
+  const cleanIncomingPhone = String(phone).replace(/\D/g, '');
+
+  const matchedClient = (clients || []).find(c => {
+     return isMatchingClientPhone(c.phone || '', cleanIncomingPhone) || isMatchingClientPhone(c.local_phone || '', cleanIncomingPhone);
+  });
+    
+  if (!matchedClient) {
+     console.log("[Webhook Evolution] Client not found for phone:", phone, cleanIncomingPhone);
+     return res.status(200).send("OK");
+  }
+
+  const { data: sessions } = await supabaseAdmin
+    .from('chat_sessions')
+    .select('*')
+    .eq('client_id', matchedClient.id)
+    .order('created_at', { ascending: false });
+    
+  let activeSession = null;
+  const now = new Date().getTime();
+
+  // Localiza sessões abertas e consolida duplicadas
+  const openSessions = (sessions || []).filter((s) => s.status === 'open');
+  if (openSessions.length > 0) {
+    activeSession = openSessions[0];
+    const createdTime = new Date(activeSession.created_at).getTime();
+    
+    // Se a sessão expirou (> 30 min), fecha ela
+    if (now - createdTime > 30 * 60 * 1000) {
+      await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
+      activeSession = null;
+    }
+
+    // Fecha qualquer outra sessão aberta duplicada para manter apenas 1 sessão ativa
+    if (openSessions.length > 1) {
+      const extraIds = openSessions.slice(1).map((s) => s.id);
+      await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).in('id', extraIds);
+    }
+  }
+
+  // Se não há sessão ativa, cria uma nova sessão aberta para o cliente imediatamente
+  if (!activeSession) {
+    const { data: newSess } = await supabaseAdmin
       .from('chat_sessions')
-      .select('*')
-      .eq('client_id', matchedClient.id)
-      .order('created_at', { ascending: false });
-      
-    let activeSession = null;
-    const now = new Date().getTime();
-
-    if (sessions && sessions.length > 0) {
-      const openSess = sessions.find(s => s.status === 'open');
-      if (openSess) {
-        const createdTime = new Date(openSess.created_at).getTime();
-        if (now - createdTime <= 30 * 60 * 1000) {
-          activeSession = openSess;
-        } else {
-          await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', openSess.id);
-        }
-      }
-
-      if (!activeSession) {
-        const latestSess = sessions[0];
-        const createdTime = new Date(latestSess.created_at).getTime();
-        if (now - createdTime <= 30 * 60 * 1000 && latestSess.status !== 'closed') {
-          activeSession = latestSess;
-        }
-      }
+      .insert({
+        client_id: matchedClient.id,
+        admin_id: matchedClient.admin_id,
+        employee_id: matchedClient.employee_id || null,
+        status: 'open',
+        created_at: new Date().toISOString()
+      })
+      .select()
+      .single();
+    if (newSess) {
+      activeSession = newSess;
     }
-    
-    // Se não há sessão ativa, cria uma nova sessão aberta para o cliente imediatamente
-    if (!activeSession) {
-      const { data: newSess } = await supabaseAdmin
-        .from('chat_sessions')
-        .insert({
-          client_id: matchedClient.id,
-          admin_id: matchedClient.admin_id,
-          employee_id: matchedClient.employee_id || null,
-          status: 'open',
-          created_at: new Date().toISOString()
-        })
-        .select()
-        .single();
-      if (newSess) {
-        activeSession = newSess;
-      }
-    }
+  }
     
     if (!activeSession) {
        console.log("[Webhook Evolution] Não foi possível criar ou obter sessão para:", matchedClient.id, matchedClient.name);

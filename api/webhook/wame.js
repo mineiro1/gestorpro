@@ -167,7 +167,7 @@ export default async function handler(req, res) {
     }
 
     if (rawItem) {
-      if (rawItem.key?.fromMe === true || rawItem.fromMe === true || rawItem.me === true) {
+      if (rawItem.key?.fromMe === true || rawItem.fromMe === true) {
         return res.status(200).send("EVENT_RECEIVED");
       }
 
