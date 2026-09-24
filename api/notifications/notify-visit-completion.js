@@ -8,11 +8,8 @@ export default async function handler(req, res) {
 
   try {
     const { visitId, adminId, employeeId, clientId, clientName, techName, type, notes } = req.body || {};
-    if (!adminId) {
-      return res.status(400).json({ error: 'adminId is required' });
-    }
 
-    const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
+    const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://fgmmvrvudozzwqxzsztwo.supabase.co';
     const part1 = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZnbW12cnZ1ZG96endxenN6dHdvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3OTA1MjMzMSwi";
     const part2 = "ZXhwIjoyMDk0NjI4MzMxfQ.iB9iF3aoumsNtywpLZL_QjrBzR8QPWw7GGWQ6-Yx-Ik";
     const directKey = part1 + part2;
@@ -23,10 +20,12 @@ export default async function handler(req, res) {
     });
 
     let empName = techName || "Colaborador";
-    if (!techName && employeeId) {
+    let employeeAdminId = null;
+    if (employeeId) {
       try {
-        const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', employeeId).single();
-        if (empData?.name) empName = empData.name;
+        const { data: empData } = await supabaseAdmin.from('users').select('name, admin_id').eq('id', employeeId).single();
+        if (empData?.name && !techName) empName = empData.name;
+        if (empData?.admin_id) employeeAdminId = empData.admin_id;
       } catch (e) {}
     }
 
@@ -44,6 +43,7 @@ export default async function handler(req, res) {
     const adminIdsToTry = new Set();
     if (adminId) adminIdsToTry.add(adminId);
     if (clientAdminId) adminIdsToTry.add(clientAdminId);
+    if (employeeAdminId) adminIdsToTry.add(employeeAdminId);
 
     const { data: users } = await supabaseAdmin
       .from('users')

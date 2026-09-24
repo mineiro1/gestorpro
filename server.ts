@@ -1363,27 +1363,6 @@ app.all("/api/sync-payment", async (req, res) => {
     res.status(200).send("OK");
   });
 
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    
-    // Prevent silent SyntaxErrors: Return 404 for missing assets instead of index.html
-    app.get('/assets/*', (req, res) => {
-      res.status(404).send('Asset not found');
-    });
-
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
-  }
-
   app.get('/api/test-env', (req, res) => {
     res.json({
         hasServiceKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
@@ -1520,7 +1499,7 @@ app.all("/api/sync-payment", async (req, res) => {
   // Endpoint to immediately trigger attendance completion push notification
   app.post("/api/notifications/notify-visit-completion", async (req, res) => {
     try {
-      const { adminId, employeeId, clientId, clientName, techName, type } = req.body;
+      const { adminId, employeeId, clientId, clientName, techName, type } = req.body || {};
 
       // Deduplicação unificada por cliente/tipo
       const dedupeKey = `${type || 'visit'}_${clientId || clientName || 'unknown'}`;
@@ -1545,14 +1524,18 @@ app.all("/api/sync-payment", async (req, res) => {
 
       const targetAdminId = clientAdminId || adminId;
       if (!targetAdminId) {
-        return res.status(400).json({ error: "Missing adminId and clientId" });
+        // Fallback: se adminId não for passado, busca o primeiro admin ativo no sistema
+        const { data: defaultAdmin } = await supabaseAdmin.from('users').select('id').eq('role', 'admin').limit(1).single();
+        if (!defaultAdmin) {
+          return res.status(400).json({ error: "Missing adminId and clientId" });
+        }
       }
 
       const isJob = type === 'job';
       const title = isJob ? '🏊 Serviço Avulso Finalizado' : '🏊 Visita Finalizada!';
       const body = `O colaborador ${empName} finalizou o atendimento no cliente ${resolvedClientName}.`;
 
-      const sent = await sendPushToAdmin(targetAdminId, title, body, {
+      const sent = await sendPushToAdmin(targetAdminId || '', title, body, {
         url: '/routes',
         channelId: 'atendimentos_v2',
         type: isJob ? 'job_completed' : 'visit_completed',
@@ -1570,7 +1553,7 @@ app.all("/api/sync-payment", async (req, res) => {
   // Endpoint to send a test push notification to verify Capacitor setup
   app.post("/api/notifications/test-push", async (req, res) => {
     try {
-      const { adminId } = req.body;
+      const { adminId } = req.body || {};
       if (!adminId) return res.status(400).json({ error: "Missing adminId" });
 
       const { data: user } = await supabaseAdmin.from('users').select('fcm_token, name').eq('id', adminId).single();
@@ -1605,6 +1588,16 @@ app.all("/api/sync-payment", async (req, res) => {
       fcmInitialized,
       hasServiceAccount: fs.existsSync('./service-account.json') || !!process.env.FIREBASE_SERVICE_ACCOUNT
     });
+  });
+
+  // Endpoint manual caso o admin deseje forçar a limpeza ou chamar via cron webhook
+  app.post("/api/chat/purge-midnight", async (req, res) => {
+    try {
+      await purgeOldChatMessages();
+      return res.json({ success: true, message: "Mensagens anteriores à meia-noite de hoje foram deletadas." });
+    } catch (e: any) {
+      return res.status(500).json({ error: e.message });
+    }
   });
 
   // Background listener for Push Notifications (incoming client chat messages, finished visits, one-off jobs)
@@ -1765,15 +1758,26 @@ app.all("/api/sync-payment", async (req, res) => {
   purgeOldChatMessages();
   scheduleMidnightPurge();
 
-  // Endpoint manual caso o admin deseje forçar a limpeza ou chamar via cron webhook
-  app.post("/api/chat/purge-midnight", async (req, res) => {
-    try {
-      await purgeOldChatMessages();
-      return res.json({ success: true, message: "Mensagens anteriores à meia-noite de hoje foram deletadas." });
-    } catch (e: any) {
-      return res.status(500).json({ error: e.message });
-    }
-  });
+  // Vite middleware for development (must be mounted AFTER all API routes)
+  if (process.env.NODE_ENV !== "production") {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    
+    // Prevent silent SyntaxErrors: Return 404 for missing assets instead of index.html
+    app.get('/assets/*', (req, res) => {
+      res.status(404).send('Asset not found');
+    });
+
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
