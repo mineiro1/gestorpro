@@ -186,7 +186,8 @@ export default function Layout() {
     const showNotification = async (title: string, body: string, channelId: string = 'atendimentos') => {
       // Play custom sound if app is foreground
       try {
-        const audio = new Audio('/notificacao.mp3');
+        const soundSrc = channelId === 'chat_messages' ? '/chat_notification.mp3' : '/notificacao.mp3';
+        const audio = new Audio(soundSrc);
         audio.play().catch(e => console.log("Audio play blocked by browser policy:", e));
       } catch (err) {
         console.error("Audio error", err);
@@ -283,10 +284,12 @@ export default function Layout() {
 
               if (sessionData.client_id) {
                  const { data: clientData } = await supabase.from('clients').select('name').eq('id', sessionData.client_id).single();
-                 const cName = clientData?.name || 'Cliente';
-                 showNotification(cName, 'Você acaba de receber uma nova mensagem.');
+                 const rawName = clientData?.name || 'Cliente';
+                 const nameParts = rawName.trim().split(/\s+/).filter(Boolean);
+                 const cName = nameParts.length > 1 ? `${nameParts[0]} ${nameParts[1]}` : (nameParts[0] || 'Cliente');
+                 showNotification(`💬 ${cName}`, 'Você acaba de receber uma nova mensagem.', 'chat_messages');
               } else {
-                 showNotification('Nova Mensagem', 'Você recebeu uma nova mensagem no chat.');
+                 showNotification('💬 Nova Mensagem', 'Você recebeu uma nova mensagem no chat.', 'chat_messages');
               }
             } catch(e) {
                console.warn('[Layout] Chat message notification check warning:', e);

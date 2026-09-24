@@ -495,7 +495,7 @@ export default async function handler(req, res) {
                       channelId: 'chat_messages',
                       title: `💬 ${clientDisplayName}`,
                       body: content || (mediaUrl ? '📷 Foto/Áudio recebido' : 'Nova mensagem'),
-                      sound: 'notificacao.mp3',
+                      sound: 'chat_notification.mp3',
                       priority: 'max',
                       visibility: 'public',
                       defaultSound: false,

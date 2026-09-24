@@ -1435,6 +1435,11 @@ app.all("/api/sync-payment", async (req, res) => {
       for (const token of tokens) {
         if (fcmInitialized) {
           try {
+            const isChat = data?.channelId === 'chat_messages' || data?.type === 'chat_message';
+            const soundName = isChat ? 'chat_notification' : 'notificacao';
+            const soundFile = isChat ? 'chat_notification.mp3' : 'notificacao.mp3';
+            const channelTarget = data?.channelId || (isChat ? 'chat_messages' : 'atendimentos_v2');
+
             await getMessaging().send({
               token,
               notification: {
@@ -1446,20 +1451,20 @@ app.all("/api/sync-payment", async (req, res) => {
                 body,
                 ...data,
                 click_action: 'FCM_PLUGIN_ACTIVITY',
-                url: data.url || '/routes',
-                channelId: data.channelId || 'atendimentos_v2',
-                channel_id: data.channelId || 'atendimentos_v2',
-                sound: 'notificacao'
+                url: data.url || (isChat ? '/messages' : '/routes'),
+                channelId: channelTarget,
+                channel_id: channelTarget,
+                sound: soundName
               },
               android: {
                 priority: 'high',
                 ttl: 2419200,
                 directBootOk: true,
                 notification: {
-                  channelId: data.channelId || 'atendimentos_v2',
+                  channelId: channelTarget,
                   title,
                   body,
-                  sound: 'notificacao',
+                  sound: soundName,
                   priority: 'max',
                   visibility: 'public',
                   defaultSound: false,
@@ -1476,7 +1481,7 @@ app.all("/api/sync-payment", async (req, res) => {
                 },
                 payload: {
                   aps: {
-                    sound: 'notificacao.mp3',
+                    sound: soundFile,
                     badge: 1,
                     contentAvailable: true,
                     alert: {

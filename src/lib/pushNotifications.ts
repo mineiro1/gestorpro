@@ -59,7 +59,7 @@ export async function setupPushNotificationChannels(): Promise<void> {
         description: 'Notificações de mensagens recebidas de clientes',
         importance: 5 as const,
         visibility: 1 as const,
-        sound: 'notificacao.mp3',
+        sound: 'chat_notification.mp3',
         vibration: true,
         lights: true,
         lightColor: '#2563eb',
@@ -172,9 +172,11 @@ export async function initCapacitorPushNotifications(
       async (notification: PushNotificationSchema) => {
         console.log('[Capacitor Push] Notificação recebida em primeiro plano:', notification);
 
-        // Play audio alert
+        // Play audio alert (differentiates chat messages from visit completions)
         try {
-          const audio = new Audio('/notificacao.mp3');
+          const isChat = notification.data?.channelId === 'chat_messages' || notification.data?.type === 'chat_message';
+          const soundSrc = isChat ? '/chat_notification.mp3' : '/notificacao.mp3';
+          const audio = new Audio(soundSrc);
           audio.play().catch(() => {});
         } catch (e) {}
 
