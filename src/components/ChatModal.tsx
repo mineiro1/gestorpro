@@ -617,14 +617,14 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     sendMutation.mutate({ text: trimmed, message_client_id });
   };
 
-  // Tratamento de Seleção de Foto / Vídeo
+  // Tratamento de Seleção de Foto / Vídeo com compressão automática de imagem
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Tamanho máximo 25MB
-    if (file.size > 25 * 1024 * 1024) {
-      alert('O arquivo selecionado deve ter no máximo 25MB.');
+    // Tamanho máximo 30MB
+    if (file.size > 30 * 1024 * 1024) {
+      alert('O arquivo selecionado deve ter no máximo 30MB.');
       return;
     }
 
@@ -636,18 +636,69 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const base64 = reader.result as string;
-      setSelectedMedia({
-        file,
-        previewUrl: base64,
-        type: isVideo ? 'video' : 'image',
-        mimeType: file.type || (isVideo ? 'video/mp4' : 'image/jpeg'),
-        base64
-      });
-    };
-    reader.readAsDataURL(file);
+    // Se for imagem, fazemos compressão no Canvas para envio rápido e confiável no WhatsApp
+    if (isImage) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const img = new Image();
+        img.onload = () => {
+          const maxDim = 1280;
+          let width = img.width;
+          let height = img.height;
+
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, width, height);
+            const compressedBase64 = canvas.toDataURL('image/jpeg', 0.8);
+            setSelectedMedia({
+              file,
+              previewUrl: compressedBase64,
+              type: 'image',
+              mimeType: 'image/jpeg',
+              base64: compressedBase64
+            });
+          } else {
+            const rawBase64 = event.target?.result as string;
+            setSelectedMedia({
+              file,
+              previewUrl: rawBase64,
+              type: 'image',
+              mimeType: file.type || 'image/jpeg',
+              base64: rawBase64
+            });
+          }
+        };
+        img.src = event.target?.result as string;
+      };
+      reader.readAsDataURL(file);
+    } else {
+      // Se for vídeo
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64 = reader.result as string;
+        setSelectedMedia({
+          file,
+          previewUrl: base64,
+          type: 'video',
+          mimeType: file.type || 'video/mp4',
+          base64
+        });
+      };
+      reader.readAsDataURL(file);
+    }
   };
 
   const handleRemoveMedia = () => {
@@ -660,7 +711,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     setRecordingError(null);
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error('Seu navegador não possui suporte para gravação de áudio.');
+        throw new Error('O seu dispositivo ou navegador não suporta a gravação de áudio ou a conexão não é segura (HTTPS).');
       }
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -696,7 +747,12 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       }, 1000);
     } catch (err: any) {
       console.error('[ChatModal] Erro ao iniciar gravação de áudio:', err);
-      setRecordingError(err.message || 'Permissão de microfone negada ou indisponível.');
+      const isDenied = err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError' || String(err.message).toLowerCase().includes('permission');
+      if (isDenied) {
+        setRecordingError('Permissão do microfone negada. Clique no cadeado na barra de endereço do navegador ou nas configurações do app para permitir o acesso ao microfone.');
+      } else {
+        setRecordingError(err.message || 'Não foi possível acessar o microfone.');
+      }
     }
   };
 
