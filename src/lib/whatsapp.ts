@@ -177,44 +177,37 @@ export const sendMetaMessage = async (
     };
 
     if (mediaBase64 && mimeType) {
-      const dataUri = mediaBase64.startsWith('data:') ? mediaBase64 : `data:${mimeType};base64,${mediaBase64}`;
-      const rawBase64 = mediaBase64.includes('base64,') ? mediaBase64.split('base64,')[1] : mediaBase64;
+      const isPublicUrl = mediaBase64.startsWith('http://') || mediaBase64.startsWith('https://');
+      const mediaUrlToSend = isPublicUrl ? mediaBase64 : mediaBase64;
       
       if (mimeType.startsWith('audio/')) {
-        url = `${baseUrl}/${waSettings.metaToken}/message/voice`;
+        url = `${baseUrl}/${waSettings.metaToken}/message/audio`;
         bodyObj = {
           to: targetNumber,
-          audio: dataUri,
-          media: dataUri,
-          base64: rawBase64,
-          voice: true
+          url: mediaUrlToSend,
+          ptt: true
         };
       } else if (mimeType.startsWith('image/')) {
         url = `${baseUrl}/${waSettings.metaToken}/message/image`;
         bodyObj = {
           to: targetNumber,
-          image: dataUri,
-          media: dataUri,
-          base64: rawBase64,
+          url: mediaUrlToSend,
           caption: text || ''
         };
       } else if (mimeType.startsWith('video/')) {
         url = `${baseUrl}/${waSettings.metaToken}/message/video`;
         bodyObj = {
           to: targetNumber,
-          video: dataUri,
-          media: dataUri,
-          base64: rawBase64,
+          url: mediaUrlToSend,
           caption: text || ''
         };
       } else {
-        url = `${baseUrl}/${waSettings.metaToken}/message/doc`;
+        url = `${baseUrl}/${waSettings.metaToken}/message/document`;
         bodyObj = {
           to: targetNumber,
-          document: dataUri,
-          media: dataUri,
-          base64: rawBase64,
-          caption: text || ''
+          url: mediaUrlToSend,
+          caption: text || '',
+          fileName: 'anexo'
         };
       }
     }

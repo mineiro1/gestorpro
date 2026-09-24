@@ -131,26 +131,47 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
 
       // Tentativa 2: Fallback direto no Supabase
       if (loadedMsgs.length === 0) {
-        const { data: sData } = await supabase
-          .from('chat_sessions')
-          .select('id')
-          .eq('client_id', clientId);
+        try {
+          const { data: sData } = await supabase
+            .from('chat_sessions')
+            .select('id')
+            .eq('client_id', clientId);
 
-        if (sData && sData.length > 0) {
-          const sessionIds = sData.map((s) => s.id);
-          const { data: directMsgs } = await supabase
-            .from('chat_messages')
-            .select('*')
-            .in('session_id', sessionIds)
-            .order('created_at', { ascending: true });
-          if (directMsgs) loadedMsgs = directMsgs;
-        }
+          if (sData && sData.length > 0) {
+            const sessionIds = sData.map((s) => s.id);
+            const { data: directMsgs } = await supabase
+              .from('chat_messages')
+              .select('*')
+              .in('session_id', sessionIds)
+              .order('created_at', { ascending: true });
+            if (directMsgs) loadedMsgs = directMsgs;
+          }
+        } catch (e) {}
       }
 
-      // Deduplicação e filtragem
+      // Deduplicação e preservação de mensagens otimistas locais
+      const previous = queryClient.getQueryData<any[]>(['chat-messages', clientId]) || [];
       const map = new Map<string, any>();
+
+      // Manter mensagens locais temporárias até confirmação
+      previous.forEach((m) => {
+        if (m && m.id && (String(m.id).startsWith('temp-') || String(m.id).startsWith('msg_'))) {
+          map.set(m.id, m);
+        }
+      });
+
       (loadedMsgs || []).forEach((m) => {
         if (m && m.id && m.sender_type !== 'read') {
+          let meta: any = {};
+          try {
+            meta = typeof m.media_url === 'string' && m.media_url.startsWith('{') ? JSON.parse(m.media_url) : {};
+          } catch (e) {}
+
+          const clientMsgId = meta.message_client_id;
+          if (clientMsgId) {
+            map.delete(`temp-${clientMsgId}`);
+            map.delete(`msg_${clientMsgId}`);
+          }
           map.set(m.id, m);
         }
       });
@@ -574,9 +595,27 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       setTimeout(runSyncStatus, 1200);
       setTimeout(runSyncStatus, 2500);
     },
-    onError: (err) => {
+    onError: (err: any, variables, context) => {
       console.error('[ChatModal] Erro ao enviar mensagem:', err);
-      queryClient.invalidateQueries({ queryKey: ['chat-messages', clientId] });
+      if (context?.tempId) {
+        queryClient.setQueryData(['chat-messages', clientId], (prev: any[] | undefined) => {
+          if (!prev) return prev;
+          return prev.map(m => {
+            if (m.id === context.tempId) {
+              return {
+                ...m,
+                media_url: JSON.stringify({
+                  status: 'failed',
+                  error: err?.message || 'Falha no envio',
+                  message_client_id: variables.message_client_id,
+                  url: variables.mediaBase64
+                })
+              };
+            }
+            return m;
+          });
+        });
+      }
     },
     onSettled: () => {
       isSendingRef.current = false;
