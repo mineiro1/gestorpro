@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { getApiUrl } from './apiConfig';
 
 // Client-side idempotency cache to prevent duplicate dispatches within 30 seconds
 const clientRecentSends = new Map<string, { timestamp: number; result: any }>();
@@ -45,6 +46,24 @@ export async function uploadMediaToPublicStorage(
   if (mediaBase64.startsWith('http://') || mediaBase64.startsWith('https://')) {
     return mediaBase64;
   }
+
+  // 1. Tentar upload via backend autenticado (com service role key, sem restrição de RLS)
+  try {
+    const uploadUrl = getApiUrl('/api/chat/upload');
+    const res = await fetch(uploadUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mediaBase64, mimeType })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.publicUrl) return data.publicUrl;
+    }
+  } catch (apiErr) {
+    console.warn('[uploadMediaToPublicStorage] Erro no upload via backend:', apiErr);
+  }
+
+  // 2. Fallback: Supabase Storage direto
   try {
     const rawBase64 = mediaBase64.includes('base64,') ? mediaBase64.split('base64,')[1] : mediaBase64;
     const byteCharacters = atob(rawBase64);
@@ -78,7 +97,7 @@ export async function uploadMediaToPublicStorage(
       if (data?.publicUrl) return data.publicUrl;
     }
   } catch (e) {
-    console.warn('[uploadMediaToPublicStorage] Erro no upload:', e);
+    console.warn('[uploadMediaToPublicStorage] Erro no upload direto:', e);
   }
   return mediaBase64;
 }
