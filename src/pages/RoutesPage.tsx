@@ -1313,6 +1313,7 @@ export default function RoutesPage() {
       };
 
       let savedToDb = false;
+      let recordedVisitId: string | null = null;
 
       if (!navigator.onLine) {
          handleSaveOffline();
@@ -1328,6 +1329,7 @@ export default function RoutesPage() {
             }).eq('id', targetClient.id);
             if (oneOffError) throw oneOffError;
             savedToDb = true;
+            recordedVisitId = targetClient.id;
             
             if (!needsReturn) {
               try {
@@ -1346,7 +1348,7 @@ export default function RoutesPage() {
               .eq('date', routeDate)
               .limit(1);
 
-            let recordedVisitId = existingAgendada?.[0]?.id || null;
+            recordedVisitId = existingAgendada?.[0]?.id || null;
             if (existingAgendada && existingAgendada.length > 0) {
               const { error: updateErr } = await supabase.from('visits').update({
                 admin_id: adminId,

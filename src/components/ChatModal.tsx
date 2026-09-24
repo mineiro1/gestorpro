@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { X, Send, User, MessageCircle, Clock } from 'lucide-react';
+import { X, Send, User, MessageCircle, Clock, Phone, Mic, Square, Paperclip, Image as ImageIcon, Trash2, Check, Loader2 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { MediaViewer, AudioViewer } from './chat/MediaViewer';
 import { MessageStatus, parseMessageStatus } from './chat/MessageStatus';
@@ -15,6 +15,25 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const [newMessage, setNewMessage] = useState('');
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
 
+  // Estados para Mídia e Áudio
+  const [selectedMedia, setSelectedMedia] = useState<{
+    file: File;
+    previewUrl: string;
+    type: 'image' | 'video';
+    mimeType: string;
+    base64: string;
+  } | null>(null);
+
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [recordingError, setRecordingError] = useState<string | null>(null);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<any>(null);
+  const audioStreamRef = useRef<MediaStream | null>(null);
+
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isInitialScrollDoneRef = useRef(false);
@@ -23,6 +42,8 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const recentSentTextRef = useRef<Map<string, number>>(new Map());
 
   const clientId = client?.id;
+  const clientPhone = client?.local_phone || client?.phone || '';
+  const cleanPhoneDigits = clientPhone ? String(clientPhone).replace(/\D/g, '') : '';
 
   const scrollToBottom = useCallback((smooth = true) => {
     if (messagesContainerRef.current) {
@@ -77,7 +98,6 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     queryFn: async () => {
       if (!clientId) return [];
       
-      // Busca todas as sessões do cliente
       const { data: sData } = await supabase
         .from('chat_sessions')
         .select('id')
@@ -110,7 +130,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       );
     },
     enabled: !!isOpen && !!clientId,
-    refetchInterval: 2500, // Polling de mensagens leve em segundo plano
+    refetchInterval: 2500,
     refetchOnWindowFocus: true,
     staleTime: 1000,
   });
@@ -203,7 +223,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     return () => clearInterval(interval);
   }, [isOpen, clientId, unreadTechMsgIds.length, runSyncStatus]);
 
-  // 4. Inscrição em Tempo Real (Supabase Realtime) com Atualização Atômica do Cache
+  // 4. Inscrição em Tempo Real (Supabase Realtime)
   useEffect(() => {
     if (!isOpen || !clientId) return;
 
@@ -221,11 +241,9 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         const newMsg = (payload.new || payload.old) as any;
         if (!newMsg || newMsg.sender_type === 'read') return;
 
-        // Atualiza diretamente o cache do React Query sem duplicar mensagens
         queryClient.setQueryData(['chat-messages', clientId], (prev: any[] | undefined) => {
           let list = prev ? [...prev] : [];
 
-          // Remove mensagens temporárias otimistas que coincidam
           if (newMsg.sender_type === 'tech') {
             list = list.filter(m => !m.id || !String(m.id).startsWith('temp-') || m.content !== newMsg.content);
           }
@@ -306,9 +324,31 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     }
   }, [messages, scrollToBottom]);
 
-  // 5. React Query Mutation: Envio Otimista e Estável de Mensagens com Idempotência
+  // Cleanup na desmontagem / fechamento do modal
+  useEffect(() => {
+    return () => {
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      if (audioStreamRef.current) {
+        audioStreamRef.current.getTracks().forEach(t => t.stop());
+      }
+    };
+  }, []);
+
+  // 5. React Query Mutation: Envio de Texto, Fotos, Vídeos e Áudio com Idempotência
   const sendMutation = useMutation({
-    mutationFn: async ({ text, message_client_id }: { text: string; message_client_id: string }) => {
+    mutationFn: async ({
+      text,
+      message_client_id,
+      mediaBase64,
+      mimeType,
+      isAudio
+    }: {
+      text: string;
+      message_client_id: string;
+      mediaBase64?: string;
+      mimeType?: string;
+      isAudio?: boolean;
+    }) => {
       let currentSession = session;
       
       // Sempre busca se já existe alguma sessão 'open' no banco para este cliente
@@ -321,7 +361,6 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
 
       if (openSessions && openSessions.length > 0) {
         currentSession = openSessions[0];
-        // Se houver mais de uma sessão aberta, fecha as duplicadas excedentes
         if (openSessions.length > 1) {
           const extraIds = openSessions.slice(1).map(s => s.id);
           await supabase.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).in('id', extraIds);
@@ -352,12 +391,18 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       const sessionId = currentSession?.id;
       if (!sessionId) throw new Error('Não foi possível iniciar a sessão de chat');
 
-      const initialMetadata = { status: 'sending', message_client_id };
+      const initialMetadata = {
+        status: 'sending',
+        message_client_id,
+        url: mediaBase64 || undefined
+      };
+
       const { data: insertedMsg, error: insertErr } = await supabase
         .from('chat_messages')
         .insert({
           session_id: sessionId,
           sender_type: 'tech',
+          sender_name: userProfile?.name || 'Colaborador',
           content: text,
           media_url: JSON.stringify(initialMetadata)
         })
@@ -397,7 +442,6 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         }
       }
 
-      const clientPhone = client.local_phone || client.phone || '';
       let externalId = '';
       let sentSuccess = false;
       let sendError: string | null = null;
@@ -415,7 +459,9 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
               waSettings: currentSettings,
               messageId: insertedMsg.id,
               senderName: userProfile?.name || 'Colaborador',
-              message_client_id
+              message_client_id,
+              mediaBase64,
+              mimeType
             })
           });
 
@@ -434,17 +480,17 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
           console.warn('[ChatModal] Falha ao contatar backend, acionando fallback direto:', apiErr);
         }
 
-        // Tentativa 2: Fallback direto no navegador / APK Nativo
+        // Tentativa 2: Fallback direto no navegador
         if (!sentSuccess) {
           try {
             if (currentSettings.useMetaApi && currentSettings.metaToken) {
-              const metaRes = await sendMetaMessage(clientPhone, text, currentSettings, message_client_id);
+              const metaRes = await sendMetaMessage(clientPhone, text, currentSettings, message_client_id, mediaBase64, mimeType);
               if (metaRes) {
                 sentSuccess = true;
                 externalId = metaRes.id || metaRes.messages?.[0]?.id || metaRes.key?.id || '';
               }
             } else if (currentSettings.useEvolutionApi && currentSettings.evolutionApiKey) {
-              const evoRes = await sendEvolutionMessage(clientPhone, text, currentSettings, message_client_id);
+              const evoRes = await sendEvolutionMessage(clientPhone, text, currentSettings, message_client_id, mediaBase64, mimeType);
               if (evoRes) {
                 sentSuccess = true;
                 externalId = evoRes.key?.id || evoRes.id || evoRes.messageId || '';
@@ -465,11 +511,11 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         status: sentSuccess ? 'sent' : 'failed',
         external_id: externalId || undefined,
         message_client_id,
+        url: mediaBase64 || undefined,
         sent_at: sentSuccess ? new Date().toISOString() : undefined,
         error: sentSuccess ? undefined : (sendError || 'Falha no envio')
       };
 
-      // Atualiza diretamente no Supabase com permissão do usuário autenticado
       try {
         await supabase
           .from('chat_messages')
@@ -481,21 +527,21 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         console.warn('[ChatModal] Erro ao sincronizar status pós-envio:', dbUpdateErr);
       }
 
-      if (!sentSuccess && sendError) {
-        console.error('[ChatModal] Mensagem não pôde ser entregue:', sendError);
-      }
-
       return { ...insertedMsg, media_url: JSON.stringify(updatedMetadata) };
     },
-    onMutate: async ({ text, message_client_id }: { text: string; message_client_id: string }) => {
-      // Atualização Otimista Instantânea (0ms)
+    onMutate: async ({ text, message_client_id, mediaBase64 }) => {
       const tempId = `temp-${message_client_id}`;
       const optimisticMsg = {
         id: tempId,
         session_id: session?.id || 'temp-sess',
         sender_type: 'tech',
+        sender_name: userProfile?.name || 'Colaborador',
         content: text,
-        media_url: JSON.stringify({ status: 'sending', message_client_id }),
+        media_url: JSON.stringify({
+          status: 'sending',
+          message_client_id,
+          url: mediaBase64 || undefined
+        }),
         created_at: new Date().toISOString()
       };
 
@@ -507,7 +553,6 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       return { tempId };
     },
     onSuccess: (newInsertedMsg, _vars, context) => {
-      // Atualiza o cache local substituindo o tempId pelo registro real
       queryClient.setQueryData(['chat-messages', clientId], (prev: any[] | undefined) => {
         if (!prev) return [newInsertedMsg];
         const filtered = prev.filter(m => m.id !== context?.tempId && m.id !== newInsertedMsg.id);
@@ -518,7 +563,6 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
 
       queryClient.invalidateQueries({ queryKey: ['chat-messages', clientId] });
       queryClient.invalidateQueries({ queryKey: ['chat-session', clientId] });
-      // Dispara checagem rápida de status após o envio
       setTimeout(runSyncStatus, 400);
       setTimeout(runSyncStatus, 1200);
       setTimeout(runSyncStatus, 2500);
@@ -532,23 +576,188 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     }
   });
 
-  const handleSendMessage = (textToSend: string) => {
-    const trimmed = textToSend.trim();
-    if (!trimmed || isSendingRef.current || sendMutation.isPending) return;
+  // Função para envio de mensagem de texto simples ou com mídia anexada
+  const handleSendMessage = (textToSend?: string) => {
+    const rawText = textToSend !== undefined ? textToSend : newMessage;
+    const trimmed = rawText.trim();
 
-    // Proteção de Idempotência no frontend: previne múltiplos envios idênticos em menos de 3s
+    if (!trimmed && !selectedMedia) return;
+    if (isSendingRef.current || sendMutation.isPending) return;
+
+    isSendingRef.current = true;
+    const message_client_id = `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+    if (selectedMedia) {
+      const mediaToSend = selectedMedia;
+      setSelectedMedia(null);
+      setNewMessage('');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+
+      const content = trimmed || (mediaToSend.type === 'video' ? '🎥 Vídeo' : '📸 Foto');
+      sendMutation.mutate({
+        text: content,
+        message_client_id,
+        mediaBase64: mediaToSend.base64,
+        mimeType: mediaToSend.mimeType
+      });
+      return;
+    }
+
+    // Proteção de Idempotência para textos repetidos < 3s
     const now = Date.now();
     const lastTime = recentSentTextRef.current.get(trimmed) || 0;
     if (now - lastTime < 3000) {
       console.warn('[ChatModal] Ignorando envio repetido no cliente:', trimmed);
+      isSendingRef.current = false;
       return;
     }
     recentSentTextRef.current.set(trimmed, now);
 
-    isSendingRef.current = true;
     setNewMessage('');
-    const message_client_id = `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     sendMutation.mutate({ text: trimmed, message_client_id });
+  };
+
+  // Tratamento de Seleção de Foto / Vídeo
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Tamanho máximo 25MB
+    if (file.size > 25 * 1024 * 1024) {
+      alert('O arquivo selecionado deve ter no máximo 25MB.');
+      return;
+    }
+
+    const isVideo = file.type.startsWith('video/');
+    const isImage = file.type.startsWith('image/');
+
+    if (!isImage && !isVideo) {
+      alert('Por favor, selecione apenas imagens ou vídeos.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = reader.result as string;
+      setSelectedMedia({
+        file,
+        previewUrl: base64,
+        type: isVideo ? 'video' : 'image',
+        mimeType: file.type || (isVideo ? 'video/mp4' : 'image/jpeg'),
+        base64
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleRemoveMedia = () => {
+    setSelectedMedia(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  // Gravação de Áudio (Voz)
+  const startAudioRecording = async () => {
+    setRecordingError(null);
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('Seu navegador não possui suporte para gravação de áudio.');
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioStreamRef.current = stream;
+      audioChunksRef.current = [];
+
+      let mimeType = 'audio/webm';
+      if (typeof MediaRecorder !== 'undefined') {
+        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+          mimeType = 'audio/webm;codecs=opus';
+        } else if (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')) {
+          mimeType = 'audio/ogg;codecs=opus';
+        } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+          mimeType = 'audio/mp4';
+        }
+      }
+
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
+      };
+
+      recorder.start(100);
+      setIsRecording(true);
+      setRecordingSeconds(0);
+
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds((prev) => prev + 1);
+      }, 1000);
+    } catch (err: any) {
+      console.error('[ChatModal] Erro ao iniciar gravação de áudio:', err);
+      setRecordingError(err.message || 'Permissão de microfone negada ou indisponível.');
+    }
+  };
+
+  const cancelAudioRecording = () => {
+    if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    if (audioStreamRef.current) {
+      audioStreamRef.current.getTracks().forEach(t => t.stop());
+      audioStreamRef.current = null;
+    }
+    setIsRecording(false);
+    setRecordingSeconds(0);
+    audioChunksRef.current = [];
+  };
+
+  const stopAndSendAudio = () => {
+    if (!mediaRecorderRef.current || mediaRecorderRef.current.state === 'inactive') return;
+
+    if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+
+    const recorder = mediaRecorderRef.current;
+    recorder.onstop = async () => {
+      try {
+        const mimeType = recorder.mimeType || 'audio/webm';
+        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
+
+        if (audioBlob.size < 500) {
+          console.warn('[ChatModal] Áudio muito curto ou vazio.');
+          return;
+        }
+
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const base64Data = reader.result as string;
+          const message_client_id = `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+          sendMutation.mutate({
+            text: '🎤 Mensagem de voz',
+            message_client_id,
+            mediaBase64: base64Data,
+            mimeType,
+            isAudio: true
+          });
+        };
+        reader.readAsDataURL(audioBlob);
+      } catch (e) {
+        console.error('[ChatModal] Erro ao processar áudio:', e);
+      } finally {
+        if (audioStreamRef.current) {
+          audioStreamRef.current.getTracks().forEach(t => t.stop());
+          audioStreamRef.current = null;
+        }
+        setIsRecording(false);
+        setRecordingSeconds(0);
+        audioChunksRef.current = [];
+      }
+    };
+
+    recorder.stop();
   };
 
   const formatTime = (seconds: number) => {
@@ -580,7 +789,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
                   </span>
                 ) : (
                   <span className="text-xs text-blue-100/80 font-medium">
-                    WhatsApp
+                    WhatsApp {clientPhone ? `• ${clientPhone}` : ''}
                   </span>
                 )}
               </div>
@@ -615,7 +824,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
               <MessageCircle size={40} className="stroke-[1.5] text-gray-300" />
               <p className="text-sm font-medium">Nenhuma mensagem nesta conversa.</p>
               <p className="text-xs text-gray-400 text-center max-w-[240px]">
-                Envie uma mensagem abaixo para iniciar o atendimento no WhatsApp.
+                Envie uma mensagem de texto, foto, vídeo ou áudio abaixo para iniciar o atendimento.
               </p>
             </div>
           ) : (
@@ -634,6 +843,16 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
               } catch (e) {
                 realMediaUrl = msg.media_url || '';
               }
+
+              const isAudioMsg = (
+                realMediaUrl.includes('audio') ||
+                realMediaUrl.startsWith('data:audio') ||
+                msg.content?.includes('Áudio') ||
+                msg.content?.includes('voz') ||
+                realMediaUrl.includes('.ogg') ||
+                realMediaUrl.includes('.mp3') ||
+                realMediaUrl.includes('.webm')
+              ) && !realMediaUrl.includes('image') && !realMediaUrl.includes('video');
 
               return (
                 <div 
@@ -654,18 +873,23 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
                     )}
                     
                     {realMediaUrl ? (
-                      (realMediaUrl.includes('audio') || msg.content.includes('Áudio') || realMediaUrl.includes('.ogg') || realMediaUrl.includes('.mp3')) && !realMediaUrl.includes('image') ? (
-                        <div>
-                          <p className="text-sm text-gray-500 mb-1">{msg.content}</p>
+                      isAudioMsg ? (
+                        <div className="space-y-1">
+                          <p className="text-xs opacity-80">{msg.content || '🎤 Mensagem de voz'}</p>
                           <AudioViewer url={realMediaUrl} className="max-w-[220px] md:max-w-[300px]" />
                         </div>
                       ) : (
-                        <MediaViewer 
-                          url={realMediaUrl} 
-                          alt="Mídia" 
-                          onLoad={() => scrollToBottom(false)}
-                          className="max-w-full md:max-w-[300px] max-h-[300px] object-cover rounded-lg cursor-pointer hover:opacity-90" 
-                        />
+                        <div className="space-y-1">
+                          <MediaViewer 
+                            url={realMediaUrl} 
+                            alt="Mídia" 
+                            onLoad={() => scrollToBottom(false)}
+                            className="max-w-full md:max-w-[300px] max-h-[300px] object-cover rounded-lg cursor-pointer hover:opacity-90" 
+                          />
+                          {msg.content && msg.content !== '📸 Foto' && msg.content !== '🎥 Vídeo' && (
+                            <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                          )}
+                        </div>
                       )
                     ) : (
                       <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
@@ -691,46 +915,154 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
 
         {/* Input & Quick Actions Footer */}
         <div className="p-4 bg-white border-t border-gray-100 rounded-b-xl shrink-0">
-          <div className="flex gap-2 mb-3 overflow-x-auto pb-1 scrollbar-hide">
-            <button 
-              onClick={() => handleSendMessage("Olá, estou indo realizar a limpeza da sua piscina.")} 
-              disabled={sendMutation.isPending}
-              className="whitespace-nowrap px-3 py-1.5 bg-blue-50 text-blue-700 text-xs font-semibold rounded-full hover:bg-blue-100 transition-colors disabled:opacity-50"
-            >
-              🚗 Estou a caminho
-            </button>
-            <button 
-              onClick={() => handleSendMessage("Cheguei, estou aguardando aqui na frente")} 
-              disabled={sendMutation.isPending}
-              className="whitespace-nowrap px-3 py-1.5 bg-blue-50 text-blue-700 text-xs font-semibold rounded-full hover:bg-blue-100 transition-colors disabled:opacity-50"
-            >
-              📍 Cheguei
-            </button>
-          </div>
-          
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
-              value={newMessage}
-              onChange={(e) => setNewMessage(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSendMessage(newMessage);
-                }
-              }}
-              placeholder="Digite uma mensagem..."
-              disabled={sendMutation.isPending}
-              className="flex-1 bg-gray-100 border-transparent focus:bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 rounded-full px-4 py-2 text-sm transition-all disabled:bg-gray-50"
-            />
-            <button 
-              onClick={() => handleSendMessage(newMessage)}
-              disabled={!newMessage.trim() || sendMutation.isPending}
-              className="bg-primary text-white p-2.5 rounded-full hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center min-w-[40px] min-h-[40px] shadow-sm"
-            >
-              <Send size={18} className={sendMutation.isPending ? 'animate-pulse' : ''} />
-            </button>
-          </div>
+          {/* Respostas Rápidas */}
+          {!isRecording && (
+            <div className="flex gap-2 mb-3 overflow-x-auto pb-1 scrollbar-hide">
+              <button 
+                onClick={() => handleSendMessage("Olá, estou indo realizar a limpeza da sua piscina.")} 
+                disabled={sendMutation.isPending}
+                className="whitespace-nowrap px-3 py-1.5 bg-blue-50 text-blue-700 text-xs font-semibold rounded-full hover:bg-blue-100 transition-colors disabled:opacity-50"
+              >
+                🚗 Estou a caminho
+              </button>
+              <button 
+                onClick={() => handleSendMessage("Cheguei, estou aguardando aqui na frente")} 
+                disabled={sendMutation.isPending}
+                className="whitespace-nowrap px-3 py-1.5 bg-blue-50 text-blue-700 text-xs font-semibold rounded-full hover:bg-blue-100 transition-colors disabled:opacity-50"
+              >
+                📍 Cheguei
+              </button>
+            </div>
+          )}
+
+          {/* Prévia de Foto / Vídeo Selecionado */}
+          {selectedMedia && (
+            <div className="mb-3 p-2 bg-gray-50 border border-gray-200 rounded-xl flex items-center justify-between gap-3 animate-in fade-in">
+              <div className="flex items-center gap-2 overflow-hidden">
+                {selectedMedia.type === 'image' ? (
+                  <img src={selectedMedia.previewUrl} alt="Prévia" className="w-12 h-12 rounded-lg object-cover border border-gray-300" />
+                ) : (
+                  <div className="w-12 h-12 bg-gray-900 text-white rounded-lg flex items-center justify-center font-bold text-xs">
+                    VÍDEO
+                  </div>
+                )}
+                <div className="text-xs truncate">
+                  <p className="font-semibold text-gray-800 truncate">{selectedMedia.file.name}</p>
+                  <p className="text-gray-500">{(selectedMedia.file.size / 1024 / 1024).toFixed(1)} MB • {selectedMedia.type === 'video' ? 'Vídeo' : 'Foto'}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleRemoveMedia}
+                className="p-1.5 text-gray-500 hover:text-red-500 rounded-lg hover:bg-red-50 transition-colors"
+                title="Remover mídia"
+              >
+                <X size={18} />
+              </button>
+            </div>
+          )}
+
+          {/* Erro de Microfone */}
+          {recordingError && (
+            <div className="mb-2 p-2 bg-red-50 text-red-600 text-xs rounded-lg flex items-center justify-between">
+              <span>{recordingError}</span>
+              <button onClick={() => setRecordingError(null)} className="text-red-700 font-bold ml-2">×</button>
+            </div>
+          )}
+
+          {/* Modo de Gravação de Áudio Ativo */}
+          {isRecording ? (
+            <div className="flex items-center gap-3 bg-red-50/80 border border-red-200 rounded-full px-4 py-2 animate-in fade-in">
+              <div className="flex items-center gap-2 flex-1">
+                <span className="w-3 h-3 rounded-full bg-red-500 animate-ping" />
+                <span className="text-xs font-semibold text-red-700">Gravando áudio:</span>
+                <span className="text-xs font-mono font-bold text-red-800">{formatTime(recordingSeconds)}</span>
+              </div>
+              
+              <button
+                type="button"
+                onClick={cancelAudioRecording}
+                className="p-2 text-gray-500 hover:text-red-600 hover:bg-red-100 rounded-full transition-colors"
+                title="Cancelar gravação"
+              >
+                <Trash2 size={18} />
+              </button>
+
+              <button
+                type="button"
+                onClick={stopAndSendAudio}
+                disabled={sendMutation.isPending}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white p-2 rounded-full transition-colors flex items-center justify-center shadow-xs"
+                title="Enviar áudio"
+              >
+                <Check size={18} />
+              </button>
+            </div>
+          ) : (
+            /* Barra Normal de Envio */
+            <div className="flex items-center gap-2">
+              {/* Input oculto de arquivo */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*,video/*"
+                onChange={handleFileSelect}
+                className="hidden"
+              />
+
+              {/* Botão de Anexo (Fotos / Vídeos) */}
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={sendMutation.isPending}
+                className="text-gray-500 hover:text-primary hover:bg-gray-100 p-2.5 rounded-full transition-colors"
+                title="Anexar foto ou vídeo"
+              >
+                <Paperclip size={19} />
+              </button>
+
+              {/* Botão de Gravar Áudio */}
+              <button
+                type="button"
+                onClick={startAudioRecording}
+                disabled={sendMutation.isPending}
+                className="text-gray-500 hover:text-red-500 hover:bg-red-50 p-2.5 rounded-full transition-colors"
+                title="Gravar mensagem de áudio"
+              >
+                <Mic size={19} />
+              </button>
+
+              {/* Campo de Texto */}
+              <input
+                type="text"
+                value={newMessage}
+                onChange={(e) => setNewMessage(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSendMessage();
+                  }
+                }}
+                placeholder={selectedMedia ? "Adicione uma legenda opcional..." : "Digite uma mensagem..."}
+                disabled={sendMutation.isPending}
+                className="flex-1 bg-gray-100 border-transparent focus:bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 rounded-full px-4 py-2 text-sm transition-all disabled:bg-gray-50"
+              />
+
+              {/* Botão de Envio */}
+              <button 
+                onClick={() => handleSendMessage()}
+                disabled={(!newMessage.trim() && !selectedMedia) || sendMutation.isPending}
+                className="bg-primary text-white p-2.5 rounded-full hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center min-w-[40px] min-h-[40px] shadow-sm"
+                title="Enviar"
+              >
+                {sendMutation.isPending ? (
+                  <Loader2 size={18} className="animate-spin" />
+                ) : (
+                  <Send size={18} />
+                )}
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

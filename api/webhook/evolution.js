@@ -122,15 +122,21 @@ export default async function handler(req, res) {
        return res.status(200).send("OK");
     }
 
-    // Match the client in DB
-    const { data: clients, error: clientsError } = await supabaseAdmin
-       .from('clients')
-       .select('id, name, phone, local_phone, admin_id');
-       
-    if (clientsError || !clients) {
+    // Match the client or agenda contact in DB
+    const [{ data: clients, error: clientsError }, { data: agendaContacts }] = await Promise.all([
+      supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id'),
+      supabaseAdmin.from('agenda_contacts').select('id, name, phone, admin_id')
+    ]);
+        
+    if (clientsError && !agendaContacts) {
        console.error("Error fetching clients", clientsError);
        return res.status(200).send("OK");
     }
+
+    const allTargets = [
+      ...(clients || []).map(c => ({ ...c, is_agenda: false })),
+      ...(agendaContacts || []).map(a => ({ ...a, local_phone: '', is_agenda: true }))
+    ];
     
   function isMatchingClientPhone(storedRaw, incomingRaw) {
     if (!storedRaw || !incomingRaw) return false;
@@ -163,7 +169,7 @@ export default async function handler(req, res) {
 
   const cleanIncomingPhone = String(phone).replace(/\D/g, '');
 
-  const matchedClient = (clients || []).find(c => {
+  const matchedClient = (allTargets || []).find(c => {
      return isMatchingClientPhone(c.phone || '', cleanIncomingPhone) || isMatchingClientPhone(c.local_phone || '', cleanIncomingPhone);
   });
     

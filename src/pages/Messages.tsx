@@ -27,6 +27,7 @@ interface ConversationSummary {
   clientId: string;
   clientName: string;
   clientPhone: string;
+  type?: 'client' | 'agenda';
   sessionId?: string;
   lastMessage?: string;
   lastMessageTime?: string;
@@ -39,10 +40,11 @@ export default function Messages() {
   const { userProfile, isAdmin, isManager } = useAuth();
   
   const adminId = userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId;
-  const refreshTrigger = useRealtimeUpdates(['clients', 'chat_sessions'], 'admin_id', adminId);
+  const refreshTrigger = useRealtimeUpdates(['clients', 'chat_sessions', 'agenda_contacts'], 'admin_id', adminId);
 
   // Tab selection: 'conversations' vs 'broadcast'
   const [activeTab, setActiveTab] = useState<'conversations' | 'broadcast'>('conversations');
+  const [conversationFilter, setConversationFilter] = useState<'all' | 'client' | 'agenda'>('all');
 
   // Broadcast state
   const [clients, setClients] = useState<any[]>([]);
@@ -61,134 +63,148 @@ export default function Messages() {
   const [chatModalOpen, setChatModalOpen] = useState(false);
 
   // Fetch recipients and initial conversations
-  useEffect(() => {
+  const fetchRecipientsAndConversations = async () => {
     if (!userProfile) return;
+    try {
+      const currentAdminId = isAdmin ? userProfile.uid : userProfile.adminId;
+      
+      // 1. Fetch clients
+      let snapClients;
+      if (userProfile.role === 'employee') {
+        snapClients = await supabase.from('clients').select('*').eq('admin_id', currentAdminId).eq('employee_id', userProfile.uid);
+      } else {
+        snapClients = await supabase.from('clients').select('*').eq('admin_id', currentAdminId);
+      }
+      
+      let clientsData: any[] = [];
+      if (snapClients.data) {
+        clientsData = snapClients.data.map((doc: any) => ({ id: doc.id, type: 'client', ...doc }));
+      }
+      
+      // Fetch agenda contacts (only for admin/manager)
+      let agendaData: any[] = [];
+      if (isAdmin || isManager) {
+        const snapAgenda = await supabase.from('agenda_contacts').select('*').eq('admin_id', currentAdminId);
+        if (snapAgenda.data) {
+          agendaData = snapAgenda.data.map((doc: any) => ({ id: doc.id, type: 'agenda', ...doc }));
+        }
+      }
 
-    const fetchRecipientsAndConversations = async () => {
-      try {
-        const currentAdminId = isAdmin ? userProfile.uid : userProfile.adminId;
-        
-        // 1. Fetch clients
-        let snapClients;
-        if (userProfile.role === 'employee') {
-          snapClients = await supabase.from('clients').select('*').eq('admin_id', currentAdminId).eq('employee_id', userProfile.uid);
-        } else {
-          snapClients = await supabase.from('clients').select('*').eq('admin_id', currentAdminId);
-        }
-        
-        let clientsData: any[] = [];
-        if (snapClients.data) {
-          clientsData = snapClients.data.map((doc: any) => ({ id: doc.id, type: 'client', ...doc }));
-        }
-        
-        // Fetch agenda contacts (only for admin/manager)
-        let agendaData: any[] = [];
-        if (isAdmin || isManager) {
-          const snapAgenda = await supabase.from('agenda_contacts').select('*').eq('admin_id', currentAdminId);
-          if (snapAgenda.data) {
-            agendaData = snapAgenda.data.map((doc: any) => ({ id: doc.id, type: 'agenda', ...doc }));
+      const combinedData = [...clientsData, ...agendaData];
+      combinedData.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      setClients(combinedData);
+
+      // 2. Fetch recent chat messages and sessions to build conversation summaries
+      const { data: recentMsgs } = await supabase
+        .from('chat_messages')
+        .select('id, session_id, sender_type, content, media_url, created_at')
+        .order('created_at', { ascending: false })
+        .limit(500);
+
+      const targetIds = combinedData.map((c) => c.id).filter(Boolean);
+      
+      // 2. Fetch chat sessions for current admin or admin's clients/contacts
+      let allSessionsQuery = supabase
+        .from('chat_sessions')
+        .select('id, client_id, status, created_at');
+
+      if (targetIds.length > 0) {
+        allSessionsQuery = allSessionsQuery.or(`admin_id.eq.${currentAdminId},client_id.in.(${targetIds.join(',')})`);
+      } else {
+        allSessionsQuery = allSessionsQuery.eq('admin_id', currentAdminId);
+      }
+
+      const { data: allSessions } = await allSessionsQuery;
+
+      const sessionClientMap = new Map<string, string>();
+      if (allSessions) {
+        allSessions.forEach((s) => {
+          if (s.id && s.client_id) {
+            sessionClientMap.set(s.id, s.client_id);
           }
-        }
+        });
+      }
 
-        const combinedData = [...clientsData, ...agendaData];
-        combinedData.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-        setClients(combinedData);
+      // Aggregate by client & agenda contact
+      const clientSummaries = new Map<string, ConversationSummary>();
 
-        // 2. Fetch recent chat messages and sessions to build conversation summaries
-        const { data: recentMsgs } = await supabase
-          .from('chat_messages')
-          .select('id, session_id, sender_type, content, media_url, created_at')
-          .order('created_at', { ascending: false })
-          .limit(500);
+      // Initialize with clients
+      clientsData.forEach((c) => {
+        clientSummaries.set(c.id, {
+          clientId: c.id,
+          clientName: c.name || 'Cliente',
+          clientPhone: c.phone || '',
+          type: 'client',
+          unreadCount: 0,
+        });
+      });
 
-        const clientIds = clientsData.map((c) => c.id).filter(Boolean);
-        
-        // 2. Fetch chat sessions for current admin or admin's clients
-        let allSessionsQuery = supabase
-          .from('chat_sessions')
-          .select('id, client_id, status, created_at');
-
-        if (clientIds.length > 0) {
-          allSessionsQuery = allSessionsQuery.or(`admin_id.eq.${currentAdminId},client_id.in.(${clientIds.join(',')})`);
-        } else {
-          allSessionsQuery = allSessionsQuery.eq('admin_id', currentAdminId);
-        }
-
-        const { data: allSessions } = await allSessionsQuery;
-
-        const sessionClientMap = new Map<string, string>();
-        if (allSessions) {
-          allSessions.forEach((s) => {
-            if (s.id && s.client_id) {
-              sessionClientMap.set(s.id, s.client_id);
-            }
-          });
-        }
-
-        // Aggregate by client
-        const clientSummaries = new Map<string, ConversationSummary>();
-
-        // Initialize with clients
-        clientsData.forEach((c) => {
+      // Initialize with agenda contacts
+      agendaData.forEach((c) => {
+        if (!clientSummaries.has(c.id)) {
           clientSummaries.set(c.id, {
             clientId: c.id,
-            clientName: c.name || 'Cliente',
+            clientName: c.name || 'Contato da Agenda',
             clientPhone: c.phone || '',
+            type: 'agenda',
             unreadCount: 0,
           });
-        });
+        }
+      });
 
-        if (recentMsgs) {
-          // Process messages from latest to oldest
-          for (const msg of recentMsgs) {
-            const cId = sessionClientMap.get(msg.session_id);
-            if (!cId || !clientSummaries.has(cId)) continue;
+      if (recentMsgs) {
+        // Process messages from latest to oldest
+        for (const msg of recentMsgs) {
+          const cId = sessionClientMap.get(msg.session_id);
+          if (!cId || !clientSummaries.has(cId)) continue;
 
-            const existing = clientSummaries.get(cId)!;
+          const existing = clientSummaries.get(cId)!;
 
-            if (!existing.lastMessage) {
-              existing.sessionId = msg.session_id;
-              existing.lastMessage = msg.content || (msg.media_url ? '📷 Mídia' : '');
-              existing.lastMessageTime = msg.created_at;
-              existing.lastSenderType = msg.sender_type;
-              existing.lastStatus = parseMessageStatus(msg, recentMsgs);
+          if (!existing.lastMessage) {
+            existing.sessionId = msg.session_id;
+            existing.lastMessage = msg.content || (msg.media_url ? '📷 Mídia' : '');
+            existing.lastMessageTime = msg.created_at;
+            existing.lastSenderType = msg.sender_type;
+            existing.lastStatus = parseMessageStatus(msg, recentMsgs);
+          }
+
+          if (msg.sender_type === 'client') {
+            let isUnread = true;
+            if (msg.media_url) {
+              try {
+                const parsed = JSON.parse(msg.media_url);
+                if (parsed.read_by_tech || parsed.status === 'read') isUnread = false;
+              } catch (e) {}
             }
-
-            if (msg.sender_type === 'client') {
-              let isUnread = true;
-              if (msg.media_url) {
-                try {
-                  const parsed = JSON.parse(msg.media_url);
-                  if (parsed.read_by_tech || parsed.status === 'read') isUnread = false;
-                } catch (e) {}
-              }
-              if (isUnread) {
-                existing.unreadCount = (existing.unreadCount || 0) + 1;
-              }
+            if (isUnread) {
+              existing.unreadCount = (existing.unreadCount || 0) + 1;
             }
           }
         }
-
-        const convList = Array.from(clientSummaries.values()).sort((a, b) => {
-          // Unread first, then by last message time, then alphabetical
-          if (a.unreadCount > 0 && b.unreadCount === 0) return -1;
-          if (b.unreadCount > 0 && a.unreadCount === 0) return 1;
-          if (a.lastMessageTime && b.lastMessageTime) {
-            return new Date(b.lastMessageTime).getTime() - new Date(a.lastMessageTime).getTime();
-          }
-          if (a.lastMessageTime) return -1;
-          if (b.lastMessageTime) return 1;
-          return a.clientName.localeCompare(b.clientName);
-        });
-
-        setConversations(convList);
-      } catch (error) {
-        console.error('Error fetching messages page data:', error);
-      } finally {
-        setLoading(false);
       }
-    };
 
+      const convList = Array.from(clientSummaries.values()).sort((a, b) => {
+        // Unread first, then by last message time, then alphabetical
+        if (a.unreadCount > 0 && b.unreadCount === 0) return -1;
+        if (b.unreadCount > 0 && a.unreadCount === 0) return 1;
+        if (a.lastMessageTime && b.lastMessageTime) {
+          return new Date(b.lastMessageTime).getTime() - new Date(a.lastMessageTime).getTime();
+        }
+        if (a.lastMessageTime) return -1;
+        if (b.lastMessageTime) return 1;
+        return a.clientName.localeCompare(b.clientName);
+      });
+
+      setConversations(convList);
+    } catch (error) {
+      console.error('Error fetching messages page data:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!userProfile) return;
     fetchRecipientsAndConversations();
   }, [userProfile, isAdmin, isManager, refreshTrigger]);
 
@@ -248,11 +264,18 @@ export default function Messages() {
   }, [userProfile]);
 
   const handleOpenChat = (clientSummary: ConversationSummary) => {
+    const currentAdminId = isAdmin ? userProfile?.uid : (userProfile?.adminId || userProfile?.uid);
     const fullClient = clients.find((c) => c.id === clientSummary.clientId) || {
       id: clientSummary.clientId,
       name: clientSummary.clientName,
       phone: clientSummary.clientPhone,
+      admin_id: currentAdminId,
+      employee_id: userProfile?.role === 'employee' ? userProfile?.uid : currentAdminId,
+      type: clientSummary.type || 'client'
     };
+
+    if (!fullClient.admin_id) fullClient.admin_id = currentAdminId;
+    if (!fullClient.employee_id) fullClient.employee_id = userProfile?.role === 'employee' ? userProfile?.uid : currentAdminId;
     
     // Clear unread count locally
     setConversations((prev) =>
@@ -378,7 +401,7 @@ export default function Messages() {
 
   const handleSendBroadcast = async () => {
     if (selectedClients.size === 0) {
-      alert("Por favor, selecione pelo menos um cliente.");
+      alert("Por favor, selecione pelo menos um destinatário.");
       return;
     }
     if (!messageText.trim() && !mediaFile) {
@@ -396,9 +419,10 @@ export default function Messages() {
     }
     
     const isEvolution = waSettings?.useEvolutionApi;
+    const isMetaOrWame = waSettings?.useMetaApi;
 
-    if (!isEvolution && mediaFile) {
-      alert("Avisos com mídia só são suportados automaticamente pela Evolution API. No modo WhatsApp Web, a mídia não será carregada (apenas o texto).");
+    if (!isEvolution && !isMetaOrWame && mediaFile) {
+      alert("Avisos com mídia no modo WhatsApp Web não suportam anexo automático (apenas o texto).");
     }
 
     setSending(true);
@@ -409,7 +433,7 @@ export default function Messages() {
 
     let base64Media = '';
     let mimeType = '';
-    if (mediaFile && isEvolution) {
+    if (mediaFile && (isEvolution || isMetaOrWame)) {
       try {
         base64Media = await fileToBase64(mediaFile);
         mimeType = mediaFile.type;
@@ -423,7 +447,7 @@ export default function Messages() {
     const targets = clients.filter(c => selectedClients.has(c.id));
     targets.forEach(c => setSendStatuses(prev => ({ ...prev, [c.id]: 'pending' })));
 
-    if (!isEvolution && !waSettings?.useMetaApi) {
+    if (!isEvolution && !isMetaOrWame) {
       alert(`Serão enviadas ${targets.length} mensagens pelo WhatsApp Web. Você terá que clicar em enviar para cada uma que for aberta.`);
       
       for (const client of targets) {
@@ -474,14 +498,9 @@ export default function Messages() {
         alertMsg += `\n\nÚltimo erro: ${lastError}`;
       }
       alert(alertMsg);
-    } else if (waSettings?.useMetaApi) {
-      if (mediaFile) {
-        alert("Não é possível enviar imagens e vídeos utilizando a API Oficial da Meta nas mensagens em lote. O envio será cancelado.");
-        setSending(false);
-        return;
-      }
-      if (!waSettings.metaToken) {
-        alert("O Token/Key da API Oficial (Meta) é obrigatório.");
+    } else if (isMetaOrWame) {
+      if (!waSettings?.metaToken) {
+        alert("O Token/Key da API Oficial (Meta / WAME) é obrigatório.");
         setSending(false);
         return;
       }
@@ -497,11 +516,11 @@ export default function Messages() {
         setSendStatuses(prev => ({ ...prev, [client.id]: 'sending' }));
         try {
           const personalizedText = messageText.replace(/\{nome\}/g, client.name || '');
-          await sendMetaMessage(client.phone, personalizedText, waSettings || {});
+          await sendMetaMessage(client.phone, personalizedText, waSettings || {}, undefined, base64Media, mimeType);
           setSendStatuses(prev => ({ ...prev, [client.id]: 'success' }));
           successCount++;
         } catch (e: any) {
-          console.error("Erro Meta:", e);
+          console.error("Erro WAME/Meta:", e);
           setSendStatuses(prev => ({ ...prev, [client.id]: 'error' }));
           errorCount++;
           lastError = e?.message || 'Erro desconhecido';
@@ -509,7 +528,7 @@ export default function Messages() {
         await new Promise(r => setTimeout(r, 1000));
       }
       
-      let alertMsg = `Envios API Meta concluídos!\nSucesso: ${successCount}\nErros: ${errorCount}`;
+      let alertMsg = `Envios WAME / API concluídos!\nSucesso: ${successCount}\nErros: ${errorCount}`;
       if (errorCount > 0) {
         alertMsg += `\n\nÚltimo erro: ${lastError}`;
       }
@@ -520,12 +539,18 @@ export default function Messages() {
   };
 
   const filteredConversations = conversations.filter((c) => {
+    const matchesFilter =
+      conversationFilter === 'all' ||
+      (conversationFilter === 'client' && (c.type === 'client' || !c.type)) ||
+      (conversationFilter === 'agenda' && c.type === 'agenda');
+
     const term = conversationSearch.toLowerCase();
-    return (
+    const matchesSearch =
       (c.clientName || '').toLowerCase().includes(term) ||
       (c.clientPhone || '').includes(term) ||
-      (c.lastMessage || '').toLowerCase().includes(term)
-    );
+      (c.lastMessage || '').toLowerCase().includes(term);
+
+    return matchesFilter && matchesSearch;
   });
 
   const allSelected = clients.length > 0 && selectedClients.size === clients.length;
@@ -590,35 +615,74 @@ export default function Messages() {
       {/* TAB 1: CONVERSATIONS & CHAT */}
       {activeTab === 'conversations' && (
         <div className="space-y-4">
-          {/* Search bar & status legend */}
-          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col md:flex-row md:items-center justify-between gap-3">
-            <div className="relative flex-1 max-w-md">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-              <input
-                id="search-conversation-input"
-                type="text"
-                placeholder="Buscar cliente, telefone ou mensagem..."
-                value={conversationSearch}
-                onChange={(e) => setConversationSearch(e.target.value)}
-                className="w-full pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-all"
-              />
+          {/* Search bar, filter pills & status legend */}
+          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col gap-3">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+              <div className="relative flex-1 max-w-md">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                <input
+                  id="search-conversation-input"
+                  type="text"
+                  placeholder="Buscar cliente, agenda, telefone ou mensagem..."
+                  value={conversationSearch}
+                  onChange={(e) => setConversationSearch(e.target.value)}
+                  className="w-full pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-all"
+                />
+              </div>
+
+              {/* Status Legend */}
+              <div className="flex flex-wrap items-center gap-3 text-xs text-gray-600 bg-gray-50 px-3 py-2 rounded-lg border border-gray-100">
+                <span className="font-semibold text-gray-500">Status dos tiques:</span>
+                <div className="flex items-center gap-1" title="Mensagem enviada">
+                  <MessageStatus status="sent" size={14} />
+                  <span>Enviada (1 cinza)</span>
+                </div>
+                <div className="flex items-center gap-1" title="Mensagem entregue">
+                  <MessageStatus status="delivered" size={14} />
+                  <span>Entregue (2 cinzas)</span>
+                </div>
+                <div className="flex items-center gap-1" title="Mensagem lida pelo cliente">
+                  <MessageStatus status="read" size={14} />
+                  <span className="text-[#0284c7] font-medium">Lida (2 azuis)</span>
+                </div>
+              </div>
             </div>
 
-            {/* Status Legend */}
-            <div className="flex flex-wrap items-center gap-3 text-xs text-gray-600 bg-gray-50 px-3 py-2 rounded-lg border border-gray-100">
-              <span className="font-semibold text-gray-500">Status dos tiques:</span>
-              <div className="flex items-center gap-1" title="Mensagem enviada">
-                <MessageStatus status="sent" size={14} />
-                <span>Enviada (1 cinza)</span>
-              </div>
-              <div className="flex items-center gap-1" title="Mensagem entregue">
-                <MessageStatus status="delivered" size={14} />
-                <span>Entregue (2 cinzas)</span>
-              </div>
-              <div className="flex items-center gap-1" title="Mensagem lida pelo cliente">
-                <MessageStatus status="read" size={14} />
-                <span className="text-[#0284c7] font-medium">Lida (2 azuis)</span>
-              </div>
+            {/* Filter buttons: Todos, Clientes, Agenda */}
+            <div className="flex items-center gap-2 pt-2 border-t border-gray-100">
+              <span className="text-xs font-semibold text-gray-500 mr-1">Filtrar por:</span>
+              <button
+                onClick={() => setConversationFilter('all')}
+                className={`px-3 py-1 rounded-full text-xs font-semibold transition-all ${
+                  conversationFilter === 'all'
+                    ? 'bg-primary text-white shadow-sm'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                Todos ({conversations.length})
+              </button>
+              <button
+                onClick={() => setConversationFilter('client')}
+                className={`px-3 py-1 rounded-full text-xs font-semibold transition-all ${
+                  conversationFilter === 'client'
+                    ? 'bg-primary text-white shadow-sm'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                Clientes ({conversations.filter(c => c.type === 'client' || !c.type).length})
+              </button>
+              {(isAdmin || isManager) && (
+                <button
+                  onClick={() => setConversationFilter('agenda')}
+                  className={`px-3 py-1 rounded-full text-xs font-semibold transition-all ${
+                    conversationFilter === 'agenda'
+                      ? 'bg-amber-600 text-white shadow-sm'
+                      : 'bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200'
+                  }`}
+                >
+                  Agenda de Contatos ({conversations.filter(c => c.type === 'agenda').length})
+                </button>
+              )}
             </div>
           </div>
 
@@ -629,12 +693,13 @@ export default function Messages() {
                 <MessageSquare size={48} className="mx-auto text-gray-300 mb-3" />
                 <p className="text-gray-600 font-medium text-base">Nenhuma conversa encontrada</p>
                 <p className="text-gray-400 text-sm mt-1">
-                  Inicie um atendimento nas Rotas ou envie uma mensagem para ver as conversas aqui.
+                  Inicie um atendimento nas Rotas ou abra uma conversa para ver as mensagens aqui.
                 </p>
               </div>
             ) : (
               filteredConversations.map((conv) => {
                 const isTechLast = conv.lastSenderType === 'tech' || conv.lastSenderType === 'admin';
+                const isAgenda = conv.type === 'agenda';
                 return (
                   <div
                     key={conv.clientId}
@@ -645,14 +710,29 @@ export default function Messages() {
                     <div>
                       <div className="flex items-start justify-between gap-2 mb-2">
                         <div className="flex items-center gap-2.5">
-                          <div className="w-10 h-10 rounded-full bg-primary/10 text-primary flex items-center justify-center font-bold text-sm shrink-0 group-hover:bg-primary group-hover:text-white transition-colors">
+                          <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm shrink-0 transition-colors ${
+                            isAgenda 
+                              ? 'bg-amber-100 text-amber-800 group-hover:bg-amber-600 group-hover:text-white' 
+                              : 'bg-primary/10 text-primary group-hover:bg-primary group-hover:text-white'
+                          }`}>
                             {conv.clientName.substring(0, 2).toUpperCase()}
                           </div>
                           <div>
-                            <h3 className="font-bold text-gray-800 text-sm group-hover:text-primary transition-colors line-clamp-1">
-                              {conv.clientName}
-                            </h3>
-                            <p className="text-xs text-gray-400 font-mono flex items-center gap-1">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <h3 className="font-bold text-gray-800 text-sm group-hover:text-primary transition-colors line-clamp-1">
+                                {conv.clientName}
+                              </h3>
+                              {isAgenda ? (
+                                <span className="text-[10px] bg-amber-50 text-amber-700 font-semibold px-2 py-0.5 rounded-full border border-amber-200">
+                                  Agenda
+                                </span>
+                              ) : (
+                                <span className="text-[10px] bg-blue-50 text-blue-700 font-semibold px-2 py-0.5 rounded-full border border-blue-200">
+                                  Cliente
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-gray-400 font-mono flex items-center gap-1 mt-0.5">
                               <Phone size={11} /> {conv.clientPhone || 'Sem telefone'}
                             </p>
                           </div>

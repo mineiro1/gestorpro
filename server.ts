@@ -213,14 +213,14 @@ setInterval(() => {
 
   app.post("/api/chat/send", async (req, res) => {
     try {
-      let { text, clientPhone, waSettings, messageId, sessionId, senderName, message_client_id } = req.body;
-      if (!text || !clientPhone) return res.status(400).json({ error: "Missing fields" });
+      let { text, clientPhone, waSettings, messageId, sessionId, senderName, message_client_id, mediaBase64, mimeType, mediaUrl } = req.body;
+      if ((!text && !mediaBase64 && !mediaUrl) || !clientPhone) return res.status(400).json({ error: "Missing fields" });
 
       const cleanDigits = String(clientPhone).replace(/\D/g, '');
       const targetNumber = cleanDigits.startsWith('55') ? cleanDigits : `55${cleanDigits}`;
 
       // Gerar ou sanitizar message_client_id para controle estrito de idempotência
-      const clientMsgId = String(message_client_id || req.headers['x-idempotency-key'] || (messageId ? `mid_${messageId}` : `txt_${targetNumber}_${text.trim().substring(0, 30)}`));
+      const clientMsgId = String(message_client_id || req.headers['x-idempotency-key'] || (messageId ? `mid_${messageId}` : `txt_${targetNumber}_${(text || '').trim().substring(0, 30)}_${mediaBase64 ? 'media' : 'txt'}`));
       const now = Date.now();
 
       // 1. Verificação de Idempotência em Memória (< 30 segundos)
@@ -297,23 +297,50 @@ setInterval(() => {
       let sendSuccess = false;
       let lastSendError = '';
 
-      // Send via Evolution API (Single attempt to exact number, NO textMessage duplicate field)
+      // Send via Evolution API
       if (waSettings?.useEvolutionApi && waSettings?.evolutionApiUrl && waSettings?.evolutionApiKey && waSettings?.evolutionInstanceName) {
         let baseUrl = waSettings.evolutionApiUrl.trim().replace(/\/$/, '');
         if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
 
+        let evoUrl = `${baseUrl}/message/sendText/${waSettings.evolutionInstanceName}`;
+        let evoBody: any = {
+          number: targetNumber,
+          text: text || '',
+          options: { delay: 500, presence: 'composing', linkPreview: false }
+        };
+
+        if (mediaBase64 && mimeType) {
+          const dataUri = mediaBase64.startsWith('data:') ? mediaBase64 : `data:${mimeType};base64,${mediaBase64}`;
+          const rawBase64 = mediaBase64.includes('base64,') ? mediaBase64.split('base64,')[1] : mediaBase64;
+          if (mimeType.startsWith('audio/')) {
+            evoUrl = `${baseUrl}/message/sendWhatsAppAudio/${waSettings.evolutionInstanceName}`;
+            evoBody = {
+              number: targetNumber,
+              audio: dataUri,
+              base64: rawBase64,
+              options: { delay: 500, presence: 'recording', encoding: true }
+            };
+          } else {
+            evoUrl = `${baseUrl}/message/sendMedia/${waSettings.evolutionInstanceName}`;
+            const mediatype = mimeType.startsWith('video/') ? 'video' : (mimeType.startsWith('image/') ? 'image' : 'document');
+            evoBody = {
+              number: targetNumber,
+              media: dataUri,
+              base64: rawBase64,
+              mediatype: mediatype,
+              caption: text || ''
+            };
+          }
+        }
+
         try {
-          const response = await fetch(`${baseUrl}/message/sendText/${waSettings.evolutionInstanceName}`, {
+          const response = await fetch(evoUrl, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               'apikey': waSettings.evolutionApiKey
             },
-            body: JSON.stringify({
-              number: targetNumber,
-              text: text,
-              options: { delay: 500, presence: 'composing', linkPreview: false }
-            })
+            body: JSON.stringify(evoBody)
           });
 
           if (response.ok) {
@@ -349,14 +376,57 @@ setInterval(() => {
         if (isWame) {
            url = `${baseUrl}/${waSettings.metaToken}/message/text`;
            headers = { 'Content-Type': 'application/json' };
-           body = JSON.stringify({
+           let bodyObj: any = {
              to: targetNumber,
-             text: text,
+             text: text || '',
              linkPreview: false,
              preview_url: false,
              previewUrl: false,
              options: { linkPreview: false }
-           });
+           };
+
+           if (mediaBase64 && mimeType) {
+             const dataUri = mediaBase64.startsWith('data:') ? mediaBase64 : `data:${mimeType};base64,${mediaBase64}`;
+             const rawBase64 = mediaBase64.includes('base64,') ? mediaBase64.split('base64,')[1] : mediaBase64;
+             if (mimeType.startsWith('audio/')) {
+               url = `${baseUrl}/${waSettings.metaToken}/message/voice`;
+               bodyObj = {
+                 to: targetNumber,
+                 audio: dataUri,
+                 media: dataUri,
+                 base64: rawBase64,
+                 voice: true
+               };
+             } else if (mimeType.startsWith('image/')) {
+               url = `${baseUrl}/${waSettings.metaToken}/message/image`;
+               bodyObj = {
+                 to: targetNumber,
+                 image: dataUri,
+                 media: dataUri,
+                 base64: rawBase64,
+                 caption: text || ''
+               };
+             } else if (mimeType.startsWith('video/')) {
+               url = `${baseUrl}/${waSettings.metaToken}/message/video`;
+               bodyObj = {
+                 to: targetNumber,
+                 video: dataUri,
+                 media: dataUri,
+                 base64: rawBase64,
+                 caption: text || ''
+               };
+             } else {
+               url = `${baseUrl}/${waSettings.metaToken}/message/doc`;
+               bodyObj = {
+                 to: targetNumber,
+                 document: dataUri,
+                 media: dataUri,
+                 base64: rawBase64,
+                 caption: text || ''
+               };
+             }
+           }
+           body = JSON.stringify(bodyObj);
         } else {
            const phoneId = waSettings.metaPhoneNumberId ? `/${waSettings.metaPhoneNumberId}` : '';
            url = `${baseUrl}${phoneId}/messages`;
@@ -369,7 +439,7 @@ setInterval(() => {
               recipient_type: "individual",
               to: targetNumber,
               type: "text",
-              text: { preview_url: false, body: text }
+              text: { preview_url: false, body: text || '' }
            });
         }
         
@@ -1038,13 +1108,22 @@ setInterval(() => {
         return res.status(200).send("EVENT_RECEIVED");
       }
       
-      const { data: clients } = await supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id, employee_id');
-      const matchedClient = clients?.find(c => {
+      const [{ data: clients }, { data: agendaContacts }] = await Promise.all([
+        supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id, employee_id'),
+        supabaseAdmin.from('agenda_contacts').select('id, name, phone, admin_id')
+      ]);
+
+      const allTargets = [
+        ...(clients || []).map((c: any) => ({ ...c, is_agenda: false })),
+        ...(agendaContacts || []).map((a: any) => ({ ...a, local_phone: '', employee_id: a.admin_id, is_agenda: true }))
+      ];
+
+      const matchedClient = allTargets.find((c: any) => {
          return isMatchingClientPhone(c.phone || '', cleanIncoming) || isMatchingClientPhone(c.local_phone || '', cleanIncoming);
       });
       
       if (!matchedClient) {
-        console.log("[Webhook WAME] Nenhum cliente correspondente encontrado para o número:", phone, cleanIncoming);
+        console.log("[Webhook WAME] Nenhum cliente ou contato da agenda correspondente encontrado para o número:", phone, cleanIncoming);
         return res.status(200).send("EVENT_RECEIVED");
       }
 
@@ -1084,7 +1163,7 @@ setInterval(() => {
           .insert({
             client_id: matchedClient.id,
             admin_id: matchedClient.admin_id,
-            employee_id: matchedClient.employee_id || null,
+            employee_id: matchedClient.employee_id || matchedClient.admin_id,
             status: 'open',
             created_at: new Date().toISOString()
           })
@@ -1194,15 +1273,22 @@ setInterval(() => {
         return res.status(200).send("OK");
       }
 
-      const { data: clients } = await supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id, employee_id');
-      if (!clients) return res.status(200).send("OK");
-      
-      const matchedClient = clients.find(c => {
+      const [{ data: clients }, { data: agendaContacts }] = await Promise.all([
+        supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id, employee_id'),
+        supabaseAdmin.from('agenda_contacts').select('id, name, phone, admin_id')
+      ]);
+
+      const allTargets = [
+        ...(clients || []).map((c: any) => ({ ...c, is_agenda: false })),
+        ...(agendaContacts || []).map((a: any) => ({ ...a, local_phone: '', employee_id: a.admin_id, is_agenda: true }))
+      ];
+
+      const matchedClient = allTargets.find((c: any) => {
          return isMatchingClientPhone(c.phone || '', cleanIncoming) || isMatchingClientPhone(c.local_phone || '', cleanIncoming);
       });
       
       if (!matchedClient) {
-        console.log("[Webhook Evolution] Nenhum cliente correspondente encontrado para o número:", cleanIncoming);
+        console.log("[Webhook Evolution] Nenhum cliente ou contato da agenda correspondente encontrado para o número:", cleanIncoming);
         return res.status(200).send("OK");
       }
 
@@ -1240,7 +1326,7 @@ setInterval(() => {
           .insert({
             client_id: matchedClient.id,
             admin_id: matchedClient.admin_id,
-            employee_id: matchedClient.employee_id || null,
+            employee_id: matchedClient.employee_id || matchedClient.admin_id,
             status: 'open',
             created_at: new Date().toISOString()
           })

@@ -19,14 +19,14 @@ export default async function handler(req, res) {
   }
 
   try {
-    let { text, clientPhone, waSettings, messageId, sessionId, senderName, message_client_id } = req.body;
-    if (!text || !clientPhone) return res.status(400).json({ error: "Missing fields" });
+    let { text, clientPhone, waSettings, messageId, sessionId, senderName, message_client_id, mediaBase64, mimeType, mediaUrl } = req.body;
+    if ((!text && !mediaBase64 && !mediaUrl) || !clientPhone) return res.status(400).json({ error: "Missing fields" });
 
     const cleanDigits = String(clientPhone).replace(/\D/g, '');
     const targetNumber = cleanDigits.startsWith('55') ? cleanDigits : `55${cleanDigits}`;
 
     // Gerar ou sanitizar message_client_id para controle estrito de idempotência
-    const clientMsgId = String(message_client_id || req.headers['x-idempotency-key'] || (messageId ? `mid_${messageId}` : `txt_${targetNumber}_${text.trim().substring(0, 30)}`));
+    const clientMsgId = String(message_client_id || req.headers['x-idempotency-key'] || (messageId ? `mid_${messageId}` : `txt_${targetNumber}_${(text || '').trim().substring(0, 30)}_${mediaBase64 ? 'media' : 'txt'}`));
     const now = Date.now();
 
     // 1. Verificação de Idempotência em Memória (< 30 segundos)
@@ -126,23 +126,50 @@ export default async function handler(req, res) {
     let sendSuccess = false;
     let lastSendError = '';
 
-    // Envio ÚNICO via Evolution API (sem loops de tentativas com/sem 9 para não duplicar)
+    // Envio ÚNICO via Evolution API
     if (waSettings?.useEvolutionApi && waSettings?.evolutionApiUrl && waSettings?.evolutionApiKey && waSettings?.evolutionInstanceName) {
       let baseUrl = waSettings.evolutionApiUrl.trim().replace(/\/$/, '');
       if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
 
+      let evoUrl = `${baseUrl}/message/sendText/${waSettings.evolutionInstanceName}`;
+      let evoBody = {
+        number: targetNumber,
+        text: text || '',
+        options: { delay: 500, presence: 'composing', linkPreview: false }
+      };
+
+      if (mediaBase64 && mimeType) {
+        const dataUri = mediaBase64.startsWith('data:') ? mediaBase64 : `data:${mimeType};base64,${mediaBase64}`;
+        const rawBase64 = mediaBase64.includes('base64,') ? mediaBase64.split('base64,')[1] : mediaBase64;
+        if (mimeType.startsWith('audio/')) {
+          evoUrl = `${baseUrl}/message/sendWhatsAppAudio/${waSettings.evolutionInstanceName}`;
+          evoBody = {
+            number: targetNumber,
+            audio: dataUri,
+            base64: rawBase64,
+            options: { delay: 500, presence: 'recording', encoding: true }
+          };
+        } else {
+          evoUrl = `${baseUrl}/message/sendMedia/${waSettings.evolutionInstanceName}`;
+          const mediatype = mimeType.startsWith('video/') ? 'video' : (mimeType.startsWith('image/') ? 'image' : 'document');
+          evoBody = {
+            number: targetNumber,
+            media: dataUri,
+            base64: rawBase64,
+            mediatype: mediatype,
+            caption: text || ''
+          };
+        }
+      }
+
       try {
-        const response = await fetch(`${baseUrl}/message/sendText/${waSettings.evolutionInstanceName}`, {
+        const response = await fetch(evoUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'apikey': waSettings.evolutionApiKey
           },
-          body: JSON.stringify({
-            number: targetNumber,
-            text: text,
-            options: { delay: 500, presence: 'composing', linkPreview: false }
-          })
+          body: JSON.stringify(evoBody)
         });
 
         if (response.ok) {
@@ -178,14 +205,57 @@ export default async function handler(req, res) {
       if (isWame) {
         url = `${baseUrl}/${waSettings.metaToken}/message/text`;
         headers = { 'Content-Type': 'application/json' };
-        body = JSON.stringify({
+        let bodyObj = {
           to: targetNumber,
-          text: text,
+          text: text || '',
           linkPreview: false,
           preview_url: false,
           previewUrl: false,
           options: { linkPreview: false }
-        });
+        };
+
+        if (mediaBase64 && mimeType) {
+          const dataUri = mediaBase64.startsWith('data:') ? mediaBase64 : `data:${mimeType};base64,${mediaBase64}`;
+          const rawBase64 = mediaBase64.includes('base64,') ? mediaBase64.split('base64,')[1] : mediaBase64;
+          if (mimeType.startsWith('audio/')) {
+            url = `${baseUrl}/${waSettings.metaToken}/message/voice`;
+            bodyObj = {
+              to: targetNumber,
+              audio: dataUri,
+              media: dataUri,
+              base64: rawBase64,
+              voice: true
+            };
+          } else if (mimeType.startsWith('image/')) {
+            url = `${baseUrl}/${waSettings.metaToken}/message/image`;
+            bodyObj = {
+              to: targetNumber,
+              image: dataUri,
+              media: dataUri,
+              base64: rawBase64,
+              caption: text || ''
+            };
+          } else if (mimeType.startsWith('video/')) {
+            url = `${baseUrl}/${waSettings.metaToken}/message/video`;
+            bodyObj = {
+              to: targetNumber,
+              video: dataUri,
+              media: dataUri,
+              base64: rawBase64,
+              caption: text || ''
+            };
+          } else {
+            url = `${baseUrl}/${waSettings.metaToken}/message/doc`;
+            bodyObj = {
+              to: targetNumber,
+              document: dataUri,
+              media: dataUri,
+              base64: rawBase64,
+              caption: text || ''
+            };
+          }
+        }
+        body = JSON.stringify(bodyObj);
       } else {
         const phoneId = waSettings.metaPhoneNumberId ? `/${waSettings.metaPhoneNumberId}` : '';
         url = `${baseUrl}${phoneId}/messages`;
@@ -198,7 +268,7 @@ export default async function handler(req, res) {
           recipient_type: "individual",
           to: targetNumber,
           type: "text",
-          text: { preview_url: false, body: text }
+          text: { preview_url: false, body: text || '' }
         });
       }
 

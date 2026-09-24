@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { Edit2, Trash2, Plus, X } from 'lucide-react';
+import { Edit2, Trash2, Plus, X, MessageCircle } from 'lucide-react';
 import { useRealtimeUpdates } from '../hooks/useRealtimeUpdates';
+import { ChatModal } from '../components/ChatModal';
 
 export default function Agenda() {
   const { userProfile, isAdmin, isManager } = useAuth();
@@ -17,6 +18,10 @@ export default function Agenda() {
   
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [contactToDelete, setContactToDelete] = useState<string | null>(null);
+
+  // Chat Modal State
+  const [chatModalOpen, setChatModalOpen] = useState(false);
+  const [activeChatContact, setActiveChatContact] = useState<any | null>(null);
 
   // Form state
   const [name, setName] = useState('');
@@ -42,6 +47,19 @@ export default function Agenda() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleOpenChat = (contact: any) => {
+    const currentAdminId = isAdmin ? userProfile?.uid : (userProfile?.adminId || userProfile?.uid);
+    setActiveChatContact({
+      id: contact.id,
+      name: contact.name,
+      phone: contact.phone,
+      admin_id: currentAdminId,
+      employee_id: userProfile?.role === 'employee' ? userProfile?.uid : currentAdminId,
+      type: 'agenda'
+    });
+    setChatModalOpen(true);
   };
 
   const handleOpenModal = (contact = null) => {
@@ -171,6 +189,14 @@ export default function Agenda() {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                         <button
+                          onClick={() => handleOpenChat(c)}
+                          className="text-emerald-600 hover:text-emerald-800 mr-4 inline-flex items-center gap-1 font-semibold"
+                          title="Abrir Chat com o contato"
+                        >
+                          <MessageCircle size={18} />
+                          <span className="hidden sm:inline">Chat</span>
+                        </button>
+                        <button
                           onClick={() => handleOpenModal(c)}
                           className="text-blue-600 hover:text-blue-900 mr-4"
                           title="Editar contato"
@@ -273,6 +299,18 @@ export default function Agenda() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Chat Modal for Agenda Contact */}
+      {chatModalOpen && activeChatContact && (
+        <ChatModal
+          isOpen={chatModalOpen}
+          onClose={() => {
+            setChatModalOpen(false);
+            setActiveChatContact(null);
+          }}
+          client={activeChatContact}
+        />
       )}
     </div>
   );

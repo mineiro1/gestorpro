@@ -335,14 +335,22 @@ export default async function handler(req, res) {
 
   const cleanIncomingPhone = String(phone).replace(/\D/g, '');
 
-  const { data: clients } = await supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id, employee_id');
+  const [{ data: clients }, { data: agendaContacts }] = await Promise.all([
+    supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id, employee_id'),
+    supabaseAdmin.from('agenda_contacts').select('id, name, phone, admin_id')
+  ]);
   
-  const matchedClient = (clients || []).find(c => {
+  const allTargets = [
+    ...(clients || []).map(c => ({ ...c, is_agenda: false })),
+    ...(agendaContacts || []).map(a => ({ ...a, local_phone: '', employee_id: a.admin_id, is_agenda: true }))
+  ];
+
+  const matchedClient = allTargets.find(c => {
      return isMatchingClientPhone(c.phone || '', cleanIncomingPhone) || isMatchingClientPhone(c.local_phone || '', cleanIncomingPhone);
   });
     
     if (!matchedClient) {
-        console.log("[Webhook WAME] Nenhum cliente encontrado para o telefone:", phone, cleanIncomingPhone);
+        console.log("[Webhook WAME] Nenhum cliente ou contato da agenda encontrado para o telefone:", phone, cleanIncomingPhone);
         return res.status(200).send("EVENT_RECEIVED");
     }
 

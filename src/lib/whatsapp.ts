@@ -35,7 +35,14 @@ export const openWhatsApp = (phone: string, text: string = "") => {
   }
 };
 
-export const sendEvolutionMessage = async (phone: string, text: string, waSettings: any, message_client_id?: string) => {
+export const sendEvolutionMessage = async (
+  phone: string,
+  text: string,
+  waSettings: any,
+  message_client_id?: string,
+  mediaBase64?: string,
+  mimeType?: string
+) => {
   if (!waSettings.evolutionApiUrl || !waSettings.evolutionApiKey || !waSettings.evolutionInstanceName) {
     throw new Error("Credenciais da Evolution API incompletas nas configurações.");
   }
@@ -46,7 +53,7 @@ export const sendEvolutionMessage = async (phone: string, text: string, waSettin
   }
 
   // Idempotency check: key based on message_client_id or target + text
-  const idempotencyKey = message_client_id || `evo_${targetNumber}_${text.trim()}`;
+  const idempotencyKey = message_client_id || `evo_${targetNumber}_${(text || '').trim()}_${mediaBase64 ? 'media' : 'txt'}`;
   const now = Date.now();
   if (clientRecentSends.has(idempotencyKey)) {
     const cached = clientRecentSends.get(idempotencyKey)!;
@@ -60,7 +67,38 @@ export const sendEvolutionMessage = async (phone: string, text: string, waSettin
   if (baseUrl && !baseUrl.startsWith('http')) {
     baseUrl = 'https://' + baseUrl;
   }
-  const url = `${baseUrl}/message/sendText/${waSettings.evolutionInstanceName}`;
+  
+  let url = `${baseUrl}/message/sendText/${waSettings.evolutionInstanceName}`;
+  let bodyObj: any = {
+    number: targetNumber,
+    text: text,
+    options: { delay: 1000, presence: "composing", linkPreview: false }
+  };
+
+  if (mediaBase64 && mimeType) {
+    const dataUri = mediaBase64.startsWith('data:') ? mediaBase64 : `data:${mimeType};base64,${mediaBase64}`;
+    const rawBase64 = mediaBase64.includes('base64,') ? mediaBase64.split('base64,')[1] : mediaBase64;
+    
+    if (mimeType.startsWith('audio/')) {
+      url = `${baseUrl}/message/sendWhatsAppAudio/${waSettings.evolutionInstanceName}`;
+      bodyObj = {
+        number: targetNumber,
+        audio: dataUri,
+        base64: rawBase64,
+        options: { delay: 1000, presence: "recording", encoding: true }
+      };
+    } else {
+      url = `${baseUrl}/message/sendMedia/${waSettings.evolutionInstanceName}`;
+      const mediatype = mimeType.startsWith('video/') ? 'video' : (mimeType.startsWith('image/') ? 'image' : 'document');
+      bodyObj = {
+        number: targetNumber,
+        media: dataUri,
+        base64: rawBase64,
+        mediatype: mediatype,
+        caption: text || ''
+      };
+    }
+  }
   
   try {
     const response = await fetch(url, {
@@ -69,15 +107,11 @@ export const sendEvolutionMessage = async (phone: string, text: string, waSettin
         'Content-Type': 'application/json',
         'apikey': waSettings.evolutionApiKey
       },
-      body: JSON.stringify({
-        number: targetNumber,
-        text: text,
-        options: { delay: 1000, presence: "composing", linkPreview: false }
-      })
+      body: JSON.stringify(bodyObj)
     });
 
     if (response.ok) {
-      const result = await response.json();
+      const result = await response.json().catch(() => ({ success: true }));
       clientRecentSends.set(idempotencyKey, { timestamp: Date.now(), result });
       return result;
     } else {
@@ -96,7 +130,14 @@ export const sendEvolutionMessage = async (phone: string, text: string, waSettin
   }
 };
 
-export const sendMetaMessage = async (phone: string, text: string, waSettings: any, message_client_id?: string) => {
+export const sendMetaMessage = async (
+  phone: string,
+  text: string,
+  waSettings: any,
+  message_client_id?: string,
+  mediaBase64?: string,
+  mimeType?: string
+) => {
   if (!waSettings.metaToken) {
     throw new Error("O Token/Key da API Oficial (Meta) é obrigatório.");
   }
@@ -107,7 +148,7 @@ export const sendMetaMessage = async (phone: string, text: string, waSettings: a
   }
 
   // Idempotency check
-  const idempotencyKey = message_client_id || `meta_${targetNumber}_${text.trim()}`;
+  const idempotencyKey = message_client_id || `meta_${targetNumber}_${(text || '').trim()}_${mediaBase64 ? 'media' : 'txt'}`;
   const now = Date.now();
   if (clientRecentSends.has(idempotencyKey)) {
     const cached = clientRecentSends.get(idempotencyKey)!;
@@ -124,25 +165,69 @@ export const sendMetaMessage = async (phone: string, text: string, waSettings: a
   const isWame = baseUrl && !baseUrl.includes('graph.facebook.com');
 
   if (isWame) {
-    const url = `${baseUrl}/${waSettings.metaToken}/message/text`;
+    let url = `${baseUrl}/${waSettings.metaToken}/message/text`;
     const headers = { 'Content-Type': 'application/json' };
+    let bodyObj: any = {
+      to: targetNumber,
+      text: text,
+      linkPreview: false,
+      preview_url: false,
+      previewUrl: false,
+      options: { linkPreview: false }
+    };
+
+    if (mediaBase64 && mimeType) {
+      const dataUri = mediaBase64.startsWith('data:') ? mediaBase64 : `data:${mimeType};base64,${mediaBase64}`;
+      const rawBase64 = mediaBase64.includes('base64,') ? mediaBase64.split('base64,')[1] : mediaBase64;
+      
+      if (mimeType.startsWith('audio/')) {
+        url = `${baseUrl}/${waSettings.metaToken}/message/voice`;
+        bodyObj = {
+          to: targetNumber,
+          audio: dataUri,
+          media: dataUri,
+          base64: rawBase64,
+          voice: true
+        };
+      } else if (mimeType.startsWith('image/')) {
+        url = `${baseUrl}/${waSettings.metaToken}/message/image`;
+        bodyObj = {
+          to: targetNumber,
+          image: dataUri,
+          media: dataUri,
+          base64: rawBase64,
+          caption: text || ''
+        };
+      } else if (mimeType.startsWith('video/')) {
+        url = `${baseUrl}/${waSettings.metaToken}/message/video`;
+        bodyObj = {
+          to: targetNumber,
+          video: dataUri,
+          media: dataUri,
+          base64: rawBase64,
+          caption: text || ''
+        };
+      } else {
+        url = `${baseUrl}/${waSettings.metaToken}/message/doc`;
+        bodyObj = {
+          to: targetNumber,
+          document: dataUri,
+          media: dataUri,
+          base64: rawBase64,
+          caption: text || ''
+        };
+      }
+    }
     
     try {
       const response = await fetch(url, {
         method: 'POST',
         headers,
-        body: JSON.stringify({
-          to: targetNumber,
-          text: text,
-          linkPreview: false,
-          preview_url: false,
-          previewUrl: false,
-          options: { linkPreview: false }
-        })
+        body: JSON.stringify(bodyObj)
       });
 
       if (response.ok) {
-        const result = await response.json();
+        const result = await response.json().catch(() => ({ success: true }));
         clientRecentSends.set(idempotencyKey, { timestamp: Date.now(), result });
         return result;
       }
@@ -166,19 +251,36 @@ export const sendMetaMessage = async (phone: string, text: string, waSettings: a
       'Authorization': `Bearer ${waSettings.metaToken}`,
       'Content-Type': 'application/json'
     };
-    const body = JSON.stringify({
+    let bodyObj: any = {
       messaging_product: "whatsapp",
       recipient_type: "individual",
       to: targetNumber,
       type: "text",
       text: { preview_url: false, body: text }
-    });
+    };
+
+    if (mediaBase64 && mimeType) {
+      const isVideo = mimeType.startsWith('video/');
+      const mediaType = isVideo ? 'video' : 'image';
+      if (mediaBase64.startsWith('http')) {
+        bodyObj = {
+          messaging_product: "whatsapp",
+          recipient_type: "individual",
+          to: targetNumber,
+          type: mediaType,
+          [mediaType]: {
+            caption: text || '',
+            link: mediaBase64
+          }
+        };
+      }
+    }
     
     try {
-      const response = await fetch(url, { method: 'POST', headers, body });
+      const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(bodyObj) });
 
       if (response.ok) {
-        const result = await response.json();
+        const result = await response.json().catch(() => ({ success: true }));
         clientRecentSends.set(idempotencyKey, { timestamp: Date.now(), result });
         return result;
       }

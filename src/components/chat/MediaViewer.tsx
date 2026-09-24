@@ -54,6 +54,20 @@ export const MediaViewer = ({ url, alt, className, onLoad }: { url: string, alt:
     return <div className={`flex items-center justify-center bg-red-50 text-red-400 text-sm p-4 ${className}`}>Mídia indisponível</div>;
   }
 
+  const isVideo = mediaData.startsWith('data:video') || mediaData.endsWith('.mp4') || mediaData.endsWith('.mov') || mediaData.endsWith('.webm') || url.includes('video');
+
+  if (isVideo) {
+    return (
+      <video
+        src={mediaData}
+        controls
+        playsInline
+        className={className}
+        onLoadedData={onLoad}
+      />
+    );
+  }
+
   return (
     <a href={mediaData} target="_blank" rel="noopener noreferrer">
       <img src={mediaData} alt={alt} className={className} onLoad={onLoad} />
