@@ -350,66 +350,37 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       isAudio?: boolean;
     }) => {
       let currentSession = session;
-      
-      // Sempre busca se já existe alguma sessão 'open' no banco para este cliente
-      const { data: openSessions } = await supabase
-        .from('chat_sessions')
-        .select('*')
-        .eq('client_id', clientId)
-        .eq('status', 'open')
-        .order('created_at', { ascending: false });
+      const admId = client?.admin_id || (userProfile?.role === 'admin' ? userProfile.uid : (userProfile?.adminId || userProfile?.uid));
+      const empId = userProfile?.uid || admId;
 
-      if (openSessions && openSessions.length > 0) {
-        currentSession = openSessions[0];
-        if (openSessions.length > 1) {
-          const extraIds = openSessions.slice(1).map(s => s.id);
-          await supabase.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).in('id', extraIds);
-        }
-        queryClient.setQueryData(['chat-session', clientId], { session: currentSession, sessionIds: [currentSession.id] });
-      } else if (!currentSession || currentSession.status === 'closed') {
-        const admId = client?.admin_id || (userProfile?.role === 'admin' ? userProfile.uid : (userProfile?.adminId || userProfile?.uid));
-        const empId = userProfile?.uid || admId;
-        const { data: newSess } = await supabase
-          .from('chat_sessions')
-          .insert({
-            client_id: clientId,
-            visit_id: visit?.id || null,
-            admin_id: admId,
-            employee_id: empId,
-            status: 'open',
-            created_at: new Date().toISOString()
-          })
-          .select()
-          .single();
+      // 1. Garantir que temos uma sessão ativa via API Backend Segura (/api/chat/session/ensure)
+      if (!currentSession || currentSession.status === 'closed' || !currentSession.id) {
+        try {
+          const sessionRes = await fetch(getApiUrl('/api/chat/session/ensure'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              clientId,
+              adminId: admId,
+              employeeId: empId,
+              visitId: visit?.id || null
+            })
+          });
 
-        if (newSess) {
-          currentSession = newSess;
-          queryClient.setQueryData(['chat-session', clientId], { session: newSess, sessionIds: [newSess.id] });
+          if (sessionRes.ok) {
+            const sessData = await sessionRes.json().catch(() => null);
+            if (sessData?.session) {
+              currentSession = sessData.session;
+              queryClient.setQueryData(['chat-session', clientId], { session: currentSession, sessionIds: [currentSession.id] });
+            }
+          }
+        } catch (sessEnsureErr) {
+          console.warn('[ChatModal] Aviso ao garantir sessão via API:', sessEnsureErr);
         }
       }
 
+      // Fallback de sessão caso a API não tenha respondido
       const sessionId = currentSession?.id;
-      if (!sessionId) throw new Error('Não foi possível iniciar a sessão de chat');
-
-      const initialMetadata = {
-        status: 'sending',
-        message_client_id,
-        url: mediaBase64 || undefined
-      };
-
-      const { data: insertedMsg, error: insertErr } = await supabase
-        .from('chat_messages')
-        .insert({
-          session_id: sessionId,
-          sender_type: 'tech',
-          sender_name: userProfile?.name || 'Colaborador',
-          content: text,
-          media_url: JSON.stringify(initialMetadata)
-        })
-        .select()
-        .single();
-
-      if (insertErr) throw insertErr;
 
       // Resolve configurações de WhatsApp
       let currentSettings = { ...(waSettings || {}), ...(userProfile?.whatsappSettings || {}) };
@@ -422,7 +393,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
               .from('users')
               .select('whatsapp_settings')
               .eq('id', adminId)
-              .single();
+              .maybeSingle();
             if (adminData?.whatsapp_settings) {
               currentSettings = { ...currentSettings, ...adminData.whatsapp_settings };
             }
@@ -445,9 +416,11 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       let externalId = '';
       let sentSuccess = false;
       let sendError: string | null = null;
+      let insertedMessageId: string | null = null;
 
       if (clientPhone) {
         // Tentativa 1: Envio primário via Backend Seguro (/api/chat/send)
+        // O backend cuida da inserção autorizada no Supabase e do disparo WhatsApp (Evolution / Meta)
         try {
           const sendEndpoint = getApiUrl('/api/chat/send');
           const apiRes = await fetch(sendEndpoint, {
@@ -456,8 +429,9 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
             body: JSON.stringify({
               text,
               clientPhone,
+              clientId,
+              sessionId,
               waSettings: currentSettings,
-              messageId: insertedMsg.id,
               senderName: userProfile?.name || 'Colaborador',
               message_client_id,
               mediaBase64,
@@ -470,8 +444,10 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
             if (apiData?.success) {
               sentSuccess = true;
               if (apiData?.externalId) externalId = apiData.externalId;
+              if (apiData?.messageId) insertedMessageId = apiData.messageId;
             } else if (apiData?.error) {
               sendError = apiData.error;
+              if (apiData?.messageId) insertedMessageId = apiData.messageId;
             }
           } else {
             console.warn('[ChatModal] Servidor backend retornou HTTP', apiRes.status);
@@ -480,8 +456,8 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
           console.warn('[ChatModal] Falha ao contatar backend, acionando fallback direto:', apiErr);
         }
 
-        // Tentativa 2: Fallback direto no navegador
-        if (!sentSuccess) {
+        // Tentativa 2: Fallback direto no navegador (caso o backend esteja inacessível)
+        if (!sentSuccess && !insertedMessageId) {
           try {
             if (currentSettings.useMetaApi && currentSettings.metaToken) {
               const metaRes = await sendMetaMessage(clientPhone, text, currentSettings, message_client_id, mediaBase64, mimeType);
@@ -507,7 +483,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         sendError = 'Cliente não possui telefone cadastrado.';
       }
 
-      const updatedMetadata = {
+      const finalMetadata = {
         status: sentSuccess ? 'sent' : 'failed',
         external_id: externalId || undefined,
         message_client_id,
@@ -516,18 +492,17 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         error: sentSuccess ? undefined : (sendError || 'Falha no envio')
       };
 
-      try {
-        await supabase
-          .from('chat_messages')
-          .update({
-            media_url: JSON.stringify(updatedMetadata)
-          })
-          .eq('id', insertedMsg.id);
-      } catch (dbUpdateErr) {
-        console.warn('[ChatModal] Erro ao sincronizar status pós-envio:', dbUpdateErr);
-      }
+      const finalMsgObject = {
+        id: insertedMessageId || `msg_${message_client_id}`,
+        session_id: sessionId || 'unknown',
+        sender_type: 'tech',
+        sender_name: userProfile?.name || 'Colaborador',
+        content: text,
+        media_url: JSON.stringify(finalMetadata),
+        created_at: new Date().toISOString()
+      };
 
-      return { ...insertedMsg, media_url: JSON.stringify(updatedMetadata) };
+      return finalMsgObject;
     },
     onMutate: async ({ text, message_client_id, mediaBase64 }) => {
       const tempId = `temp-${message_client_id}`;

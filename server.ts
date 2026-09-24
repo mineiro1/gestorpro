@@ -207,7 +207,77 @@ setInterval(() => {
       if (!clientId) return res.status(400).json({ error: "Missing clientId" });
       await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('client_id', clientId).eq('status', 'open');
       return res.json({ success: true });
-    } catch(e) {
+    } catch(e: any) {
+      return res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/chat/session/ensure", async (req, res) => {
+    try {
+      const { clientId, adminId, employeeId, visitId } = req.body;
+      if (!clientId) return res.status(400).json({ error: "Missing clientId" });
+
+      // 1. Procurar sessão open existente
+      const { data: openSessions } = await supabaseAdmin
+        .from('chat_sessions')
+        .select('*')
+        .eq('client_id', clientId)
+        .eq('status', 'open')
+        .order('created_at', { ascending: false });
+
+      if (openSessions && openSessions.length > 0) {
+        const currentSession = openSessions[0];
+        if (openSessions.length > 1) {
+          const extraIds = openSessions.slice(1).map(s => s.id);
+          await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).in('id', extraIds);
+        }
+        return res.json({ success: true, session: currentSession });
+      }
+
+      // 2. Descobrir dados do cliente se adminId ou employeeId não foram passados
+      let resolvedAdminId = adminId;
+      let resolvedEmpId = employeeId || adminId;
+      let clientName = null;
+
+      const { data: clientRow } = await supabaseAdmin.from('clients').select('admin_id, employee_id, name').eq('id', clientId).maybeSingle();
+      if (clientRow) {
+        resolvedAdminId = resolvedAdminId || clientRow.admin_id;
+        resolvedEmpId = resolvedEmpId || clientRow.employee_id || clientRow.admin_id;
+        clientName = clientRow.name;
+      }
+
+      // Se ainda não temos adminId, buscar o primeiro usuário admin ativo
+      if (!resolvedAdminId || !resolvedEmpId) {
+        const { data: anyAdmin } = await supabaseAdmin.from('users').select('id').eq('role', 'admin').limit(1).maybeSingle();
+        if (anyAdmin?.id) {
+          resolvedAdminId = resolvedAdminId || anyAdmin.id;
+          resolvedEmpId = resolvedEmpId || anyAdmin.id;
+        }
+      }
+
+      // 3. Criar nova sessão de atendimento
+      const { data: newSession, error: createErr } = await supabaseAdmin
+        .from('chat_sessions')
+        .insert({
+          client_id: clientId,
+          visit_id: visitId || null,
+          admin_id: resolvedAdminId,
+          employee_id: resolvedEmpId,
+          client_name: clientName,
+          status: 'open',
+          created_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      if (createErr) {
+        console.error("[/api/chat/session/ensure] Erro ao criar sessão:", createErr);
+        return res.status(500).json({ error: createErr.message });
+      }
+
+      return res.json({ success: true, session: newSession });
+    } catch (e: any) {
+      console.error("[/api/chat/session/ensure] Erro inesperado:", e);
       return res.status(500).json({ error: e.message });
     }
   });
@@ -523,18 +593,27 @@ setInterval(() => {
         try {
           const { data: existingSessions } = await supabaseAdmin
             .from('chat_sessions')
-            .select('id')
+            .select('id, status')
             .eq('client_id', req.body.clientId)
             .order('created_at', { ascending: false })
-            .limit(1);
+            .limit(5);
 
-          let sessId = existingSessions?.[0]?.id;
+          let sessId = existingSessions?.find(s => s.status === 'open')?.id || existingSessions?.[0]?.id;
           if (!sessId) {
-            const { data: clientRow } = await supabaseAdmin.from('clients').select('admin_id, name').eq('id', req.body.clientId).single();
+            const { data: clientRow } = await supabaseAdmin.from('clients').select('admin_id, employee_id, name').eq('id', req.body.clientId).maybeSingle();
+            let adminId = clientRow?.admin_id;
+            let employeeId = clientRow?.employee_id || adminId;
+
+            if (!adminId) {
+              const { data: anyAdmin } = await supabaseAdmin.from('users').select('id').eq('role', 'admin').limit(1).maybeSingle();
+              adminId = anyAdmin?.id;
+              employeeId = adminId;
+            }
+
             const { data: createdSess } = await supabaseAdmin.from('chat_sessions').insert({
               client_id: req.body.clientId,
-              admin_id: clientRow?.admin_id || null,
-              employee_id: clientRow?.admin_id || null,
+              admin_id: adminId || null,
+              employee_id: employeeId || null,
               client_name: clientRow?.name || null,
               status: 'open',
               created_at: new Date().toISOString()
