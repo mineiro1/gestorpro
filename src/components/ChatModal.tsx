@@ -445,9 +445,11 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
               sentSuccess = true;
               if (apiData?.externalId) externalId = apiData.externalId;
               if (apiData?.messageId) insertedMessageId = apiData.messageId;
+              if (apiData?.message) return apiData.message;
             } else if (apiData?.error) {
               sendError = apiData.error;
               if (apiData?.messageId) insertedMessageId = apiData.messageId;
+              if (apiData?.message) return apiData.message;
             }
           } else {
             console.warn('[ChatModal] Servidor backend retornou HTTP', apiRes.status);
@@ -862,11 +864,12 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
             messages.map((msg: any) => {
               const deliveryStatus = parseMessageStatus(msg, messages);
               let realMediaUrl = '';
+              let parsedMeta: any = {};
               try {
                 if (typeof msg.media_url === 'string') {
                   if (msg.media_url.startsWith('{')) {
-                    const parsed = JSON.parse(msg.media_url);
-                    realMediaUrl = parsed.url || '';
+                    parsedMeta = JSON.parse(msg.media_url);
+                    realMediaUrl = parsedMeta.url || '';
                   } else {
                     realMediaUrl = msg.media_url;
                   }
@@ -874,6 +877,8 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
               } catch (e) {
                 realMediaUrl = msg.media_url || '';
               }
+
+              const senderDisplayName = parsedMeta?.sender_name || msg.sender_name || (msg.sender_type === 'tech' ? (userProfile?.name || 'Colaborador') : (client.name || 'Cliente'));
 
               const isAudioMsg = (
                 realMediaUrl.includes('audio') ||
@@ -897,9 +902,9 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
                         : 'bg-white text-gray-800 border border-gray-100 rounded-bl-xs'
                     }`}
                   >
-                    {msg.sender_name && (
+                    {senderDisplayName && (
                       <div className={`text-[10px] font-semibold mb-1 ${msg.sender_type === 'tech' ? 'text-blue-200' : 'text-primary'}`}>
-                        {msg.sender_name}
+                        {senderDisplayName}
                       </div>
                     )}
                     

@@ -237,13 +237,11 @@ setInterval(() => {
       // 2. Descobrir dados do cliente se adminId ou employeeId não foram passados
       let resolvedAdminId = adminId;
       let resolvedEmpId = employeeId || adminId;
-      let clientName = null;
 
-      const { data: clientRow } = await supabaseAdmin.from('clients').select('admin_id, employee_id, name').eq('id', clientId).maybeSingle();
+      const { data: clientRow } = await supabaseAdmin.from('clients').select('admin_id, employee_id').eq('id', clientId).maybeSingle();
       if (clientRow) {
         resolvedAdminId = resolvedAdminId || clientRow.admin_id;
         resolvedEmpId = resolvedEmpId || clientRow.employee_id || clientRow.admin_id;
-        clientName = clientRow.name;
       }
 
       // Se ainda não temos adminId, buscar o primeiro usuário admin ativo
@@ -255,7 +253,7 @@ setInterval(() => {
         }
       }
 
-      // 3. Criar nova sessão de atendimento
+      // 3. Criar nova sessão de atendimento (somente colunas válidas no schema)
       const { data: newSession, error: createErr } = await supabaseAdmin
         .from('chat_sessions')
         .insert({
@@ -263,7 +261,6 @@ setInterval(() => {
           visit_id: visitId || null,
           admin_id: resolvedAdminId,
           employee_id: resolvedEmpId,
-          client_name: clientName,
           status: 'open',
           created_at: new Date().toISOString()
         })
@@ -345,7 +342,7 @@ setInterval(() => {
         console.warn("[Idempotência] Erro ao consultar duplicidade no banco:", dbCheckErr);
       }
 
-      // Registra lock provisório para evitar concorrência simultânea (cliques duplos em < 100ms)
+      // Registra lock provisório para evitar concorrência simultânea
       processedMessageClientIds.set(clientMsgId, {
         timestamp: now,
         externalId: '',
@@ -361,6 +358,45 @@ setInterval(() => {
         const validAdmin = adminUsers?.find(u => u.whatsapp_settings?.evolutionApiKey || u.whatsapp_settings?.metaToken);
         if (validAdmin?.whatsapp_settings) {
           waSettings = validAdmin.whatsapp_settings;
+        }
+      }
+
+      // 3. Se houver mídia em base64, fazer upload para o Supabase Storage (bucket 'chat-media') para obter uma URL pública estável
+      let publicMediaUrl = mediaUrl || '';
+      if (mediaBase64 && !publicMediaUrl) {
+        try {
+          const rawBase64 = mediaBase64.includes('base64,') ? mediaBase64.split('base64,')[1] : mediaBase64;
+          const buffer = Buffer.from(rawBase64, 'base64');
+          
+          let ext = 'bin';
+          if (mimeType?.includes('png')) ext = 'png';
+          else if (mimeType?.includes('jpeg') || mimeType?.includes('jpg')) ext = 'jpg';
+          else if (mimeType?.includes('webp')) ext = 'webp';
+          else if (mimeType?.includes('mp4')) ext = 'mp4';
+          else if (mimeType?.includes('webm')) ext = 'webm';
+          else if (mimeType?.includes('ogg')) ext = 'ogg';
+          else if (mimeType?.includes('mp3') || mimeType?.includes('mpeg')) ext = 'mp3';
+          else if (mimeType?.includes('pdf')) ext = 'pdf';
+
+          const fileName = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
+          
+          const { error: uploadErr } = await supabaseAdmin.storage
+            .from('chat-media')
+            .upload(fileName, buffer, {
+              contentType: mimeType || 'application/octet-stream',
+              upsert: true
+            });
+
+          if (!uploadErr) {
+            const { data: pubData } = supabaseAdmin.storage.from('chat-media').getPublicUrl(fileName);
+            if (pubData?.publicUrl) {
+              publicMediaUrl = pubData.publicUrl;
+            }
+          } else {
+            console.warn("[/api/chat/send] Erro upload Storage Supabase:", uploadErr);
+          }
+        } catch (storageErr) {
+          console.error("[/api/chat/send] Falha no processamento de mídia storage:", storageErr);
         }
       }
 
@@ -380,24 +416,25 @@ setInterval(() => {
           options: { delay: 500, presence: 'composing', linkPreview: false }
         };
 
-        if (mediaBase64 && mimeType) {
-          const dataUri = mediaBase64.startsWith('data:') ? mediaBase64 : `data:${mimeType};base64,${mediaBase64}`;
-          const rawBase64 = mediaBase64.includes('base64,') ? mediaBase64.split('base64,')[1] : mediaBase64;
-          if (mimeType.startsWith('audio/')) {
+        if (mediaBase64 || publicMediaUrl) {
+          const rawBase64 = mediaBase64?.includes('base64,') ? mediaBase64.split('base64,')[1] : (mediaBase64 || '');
+          const mediaSource = publicMediaUrl || (mediaBase64 ? (mediaBase64.startsWith('data:') ? mediaBase64 : `data:${mimeType};base64,${mediaBase64}`) : '');
+          
+          if (mimeType?.startsWith('audio/')) {
             evoUrl = `${baseUrl}/message/sendWhatsAppAudio/${waSettings.evolutionInstanceName}`;
             evoBody = {
               number: targetNumber,
-              audio: dataUri,
-              base64: rawBase64,
+              audio: mediaSource,
+              base64: rawBase64 || undefined,
               options: { delay: 500, presence: 'recording', encoding: true }
             };
           } else {
             evoUrl = `${baseUrl}/message/sendMedia/${waSettings.evolutionInstanceName}`;
-            const mediatype = mimeType.startsWith('video/') ? 'video' : (mimeType.startsWith('image/') ? 'image' : 'document');
+            const mediatype = mimeType?.startsWith('video/') ? 'video' : (mimeType?.startsWith('image/') ? 'image' : 'document');
             evoBody = {
               number: targetNumber,
-              media: dataUri,
-              base64: rawBase64,
+              media: mediaSource,
+              base64: rawBase64 || undefined,
               mediatype: mediatype,
               caption: text || ''
             };
@@ -445,59 +482,50 @@ setInterval(() => {
         
         let url, headers, body;
         if (isWame) {
-           url = `${baseUrl}/${waSettings.metaToken}/message/text`;
            headers = { 'Content-Type': 'application/json' };
-           let bodyObj: any = {
-             to: targetNumber,
-             text: text || '',
-             linkPreview: false,
-             preview_url: false,
-             previewUrl: false,
-             options: { linkPreview: false }
-           };
-
-           if (mediaBase64 && mimeType) {
-             const dataUri = mediaBase64.startsWith('data:') ? mediaBase64 : `data:${mimeType};base64,${mediaBase64}`;
-             const rawBase64 = mediaBase64.includes('base64,') ? mediaBase64.split('base64,')[1] : mediaBase64;
-             if (mimeType.startsWith('audio/')) {
-               url = `${baseUrl}/${waSettings.metaToken}/message/voice`;
-               bodyObj = {
-                 to: targetNumber,
-                 audio: dataUri,
-                 media: dataUri,
-                 base64: rawBase64,
-                 voice: true
-               };
-             } else if (mimeType.startsWith('image/')) {
+           
+           if (publicMediaUrl || mediaBase64) {
+             const mediaTargetUrl = publicMediaUrl || mediaBase64;
+             if (mimeType?.startsWith('image/')) {
                url = `${baseUrl}/${waSettings.metaToken}/message/image`;
-               bodyObj = {
+               body = JSON.stringify({
                  to: targetNumber,
-                 image: dataUri,
-                 media: dataUri,
-                 base64: rawBase64,
+                 url: mediaTargetUrl,
                  caption: text || ''
-               };
-             } else if (mimeType.startsWith('video/')) {
+               });
+             } else if (mimeType?.startsWith('video/')) {
                url = `${baseUrl}/${waSettings.metaToken}/message/video`;
-               bodyObj = {
+               body = JSON.stringify({
                  to: targetNumber,
-                 video: dataUri,
-                 media: dataUri,
-                 base64: rawBase64,
+                 url: mediaTargetUrl,
                  caption: text || ''
-               };
+               });
+             } else if (mimeType?.startsWith('audio/')) {
+               url = `${baseUrl}/${waSettings.metaToken}/message/audio`;
+               body = JSON.stringify({
+                 to: targetNumber,
+                 url: mediaTargetUrl
+               });
              } else {
-               url = `${baseUrl}/${waSettings.metaToken}/message/doc`;
-               bodyObj = {
+               url = `${baseUrl}/${waSettings.metaToken}/message/document`;
+               body = JSON.stringify({
                  to: targetNumber,
-                 document: dataUri,
-                 media: dataUri,
-                 base64: rawBase64,
+                 url: mediaTargetUrl,
+                 mimetype: mimeType || 'application/octet-stream',
+                 filename: 'arquivo',
                  caption: text || ''
-               };
+               });
              }
+           } else {
+             url = `${baseUrl}/${waSettings.metaToken}/message/text`;
+             body = JSON.stringify({
+               to: targetNumber,
+               text: text || '',
+               linkPreview: false,
+               preview_url: false,
+               options: { linkPreview: false }
+             });
            }
-           body = JSON.stringify(bodyObj);
         } else {
            const phoneId = waSettings.metaPhoneNumberId ? `/${waSettings.metaPhoneNumberId}` : '';
            url = `${baseUrl}${phoneId}/messages`;
@@ -542,9 +570,13 @@ setInterval(() => {
         status: sendSuccess ? 'sent' : 'failed',
         external_id: externalId || undefined,
         message_client_id: clientMsgId,
+        url: publicMediaUrl || mediaBase64 || undefined,
+        sender_name: senderName || 'Colaborador',
         sent_at: sendSuccess ? new Date().toISOString() : undefined,
         error: sendSuccess ? undefined : (lastSendError || 'Falha no envio')
       };
+
+      let insertedRow: any = null;
 
       // Atualiza o registro da mensagem no banco ou cria caso não exista
       if (messageId) {
@@ -560,7 +592,7 @@ setInterval(() => {
             try { meta = JSON.parse(currentMsg.media_url); } catch(e) {}
           }
 
-          await supabaseAdmin
+          const { data: updated } = await supabaseAdmin
             .from('chat_messages')
             .update({
               media_url: JSON.stringify({
@@ -568,7 +600,10 @@ setInterval(() => {
                 ...mediaPayload
               })
             })
-            .eq('id', messageId);
+            .eq('id', messageId)
+            .select()
+            .single();
+          if (updated) insertedRow = updated;
         } catch (dbErr) {
           console.error("[/api/chat/send] Erro ao atualizar external_id no banco:", dbErr);
         }
@@ -579,13 +614,15 @@ setInterval(() => {
             .insert({
               session_id: sessionId,
               sender_type: 'tech',
-              sender_name: senderName || 'Colaborador',
               content: text,
               media_url: JSON.stringify(mediaPayload)
             })
             .select()
             .single();
-          if (created) messageId = created.id;
+          if (created) {
+            messageId = created.id;
+            insertedRow = created;
+          }
         } catch (dbErr) {
           console.error("[/api/chat/send] Erro ao inserir mensagem no banco:", dbErr);
         }
@@ -600,7 +637,7 @@ setInterval(() => {
 
           let sessId = existingSessions?.find(s => s.status === 'open')?.id || existingSessions?.[0]?.id;
           if (!sessId) {
-            const { data: clientRow } = await supabaseAdmin.from('clients').select('admin_id, employee_id, name').eq('id', req.body.clientId).maybeSingle();
+            const { data: clientRow } = await supabaseAdmin.from('clients').select('admin_id, employee_id').eq('id', req.body.clientId).maybeSingle();
             let adminId = clientRow?.admin_id;
             let employeeId = clientRow?.employee_id || adminId;
 
@@ -614,7 +651,6 @@ setInterval(() => {
               client_id: req.body.clientId,
               admin_id: adminId || null,
               employee_id: employeeId || null,
-              client_name: clientRow?.name || null,
               status: 'open',
               created_at: new Date().toISOString()
             }).select('id').single();
@@ -627,13 +663,15 @@ setInterval(() => {
               .insert({
                 session_id: sessId,
                 sender_type: 'tech',
-                sender_name: senderName || 'Colaborador',
                 content: text,
                 media_url: JSON.stringify(mediaPayload)
               })
               .select()
               .single();
-            if (created) messageId = created.id;
+            if (created) {
+              messageId = created.id;
+              insertedRow = created;
+            }
           }
         } catch (dbErr) {
           console.error("[/api/chat/send] Erro ao associar sessão/mensagem de relatório no banco:", dbErr);
@@ -651,6 +689,7 @@ setInterval(() => {
         success: sendSuccess,
         externalId: externalId || undefined,
         messageId,
+        message: insertedRow,
         message_client_id: clientMsgId,
         error: sendSuccess ? undefined : lastSendError
       });
