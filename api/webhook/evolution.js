@@ -92,6 +92,15 @@ export default async function handler(req, res) {
     return { content: '', mediaUrl: '' };
   }
 
+  // Helper para extrair primeiro e segundo nome
+  function formatFirstTwoNames(fullName) {
+    if (!fullName || typeof fullName !== 'string') return 'Cliente';
+    const parts = fullName.trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return 'Cliente';
+    if (parts.length === 1) return parts[0];
+    return `${parts[0]} ${parts[1]}`;
+  }
+
     // Ignore outgoing messages
     if (msgData.key.fromMe) {
        return res.status(200).send("OK");
@@ -116,7 +125,7 @@ export default async function handler(req, res) {
     // Match the client in DB
     const { data: clients, error: clientsError } = await supabaseAdmin
        .from('clients')
-       .select('id, phone, local_phone, admin_id');
+       .select('id, name, phone, local_phone, admin_id');
        
     if (clientsError || !clients) {
        console.error("Error fetching clients", clientsError);
@@ -255,17 +264,19 @@ export default async function handler(req, res) {
 
          if (fcmTokens.length > 0) {
            const { initialized, messaging } = initFirebase();
+           const clientDisplayName = formatFirstTwoNames(matchedClient.name);
+
            if (initialized && messaging) {
              for (const token of fcmTokens) {
                try {
                  await messaging.send({
                    token,
                    notification: {
-                     title: `💬 ${matchedClient.name || 'Cliente'}`,
+                     title: `💬 ${clientDisplayName}`,
                      body: content || (mediaUrl ? '📷 Foto/Áudio recebido' : 'Nova mensagem')
                    },
                    data: {
-                     title: `💬 ${matchedClient.name || 'Cliente'}`,
+                     title: `💬 ${clientDisplayName}`,
                      body: content || (mediaUrl ? '📷 Foto/Áudio recebido' : 'Nova mensagem'),
                      sessionId: String(activeSession.id),
                      clientId: String(matchedClient.id),
@@ -279,7 +290,7 @@ export default async function handler(req, res) {
                      directBootOk: true,
                      notification: {
                        channelId: 'chat_messages',
-                       title: `💬 ${matchedClient.name || 'Cliente'}`,
+                       title: `💬 ${clientDisplayName}`,
                        body: content || (mediaUrl ? '📷 Foto/Áudio recebido' : 'Nova mensagem'),
                        sound: 'notificacao.mp3',
                        priority: 'max',

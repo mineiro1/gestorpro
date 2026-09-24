@@ -1125,7 +1125,8 @@ setInterval(() => {
       // Dispara push notification para os responsáveis
       const targetUserId = matchedClient.employee_id || matchedClient.admin_id;
       if (targetUserId) {
-        sendPushToAdmin(targetUserId, `💬 ${matchedClient.name}`, content, {
+        const clientDisplayName = formatFirstTwoNames(matchedClient.name);
+        sendPushToAdmin(targetUserId, `💬 ${clientDisplayName}`, content, {
           clientId: matchedClient.id,
           sessionId: activeSession.id,
           type: 'chat_message',
@@ -1280,7 +1281,8 @@ setInterval(() => {
       // Dispara push notification para os responsáveis
       const targetUserId = matchedClient.employee_id || matchedClient.admin_id;
       if (targetUserId) {
-        sendPushToAdmin(targetUserId, `💬 ${matchedClient.name}`, content, {
+        const clientDisplayName = formatFirstTwoNames(matchedClient.name);
+        sendPushToAdmin(targetUserId, `💬 ${clientDisplayName}`, content, {
           clientId: matchedClient.id,
           sessionId: activeSession.id,
           type: 'chat_message',
@@ -1369,6 +1371,15 @@ app.all("/api/sync-payment", async (req, res) => {
         hasAnonKey: !!process.env.VITE_SUPABASE_ANON_KEY
     });
   });
+
+  // Helper to extract the first two names from a full client name
+  function formatFirstTwoNames(fullName: string | null | undefined): string {
+    if (!fullName || typeof fullName !== 'string') return 'Cliente';
+    const parts = fullName.trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return 'Cliente';
+    if (parts.length === 1) return parts[0];
+    return `${parts[0]} ${parts[1]}`;
+  }
 
   // Cache para evitar notificações duplicadas (chave -> timestamp)
   const recentPushCache = new Map<string, number>();
@@ -1686,9 +1697,10 @@ app.all("/api/sync-payment", async (req, res) => {
           }
 
           if (session && session.admin_id) {
+             const clientDisplayName = formatFirstTwoNames(session.client_name);
              await sendPushToAdmin(
                session.admin_id,
-               `💬 ${session.client_name || 'Cliente'}`,
+               `💬 ${clientDisplayName}`,
                newMsg.content || 'Mensagem de texto recebida',
                {
                  url: '/messages',
