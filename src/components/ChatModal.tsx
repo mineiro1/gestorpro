@@ -69,6 +69,21 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     queryKey: ['chat-session', clientId],
     queryFn: async () => {
       if (!clientId) return null;
+      try {
+        const sessionUrl = getApiUrl(`/api/chat/session/${clientId}`);
+        const res = await fetch(sessionUrl);
+        if (res.ok) {
+          const sJson = await res.json();
+          if (sJson?.session) {
+            const allSessions = sJson.allSessions || [sJson.session];
+            const sessionIds = Array.from(new Set(allSessions.map((s: any) => s.id)));
+            return { session: sJson.session, sessionIds };
+          }
+        }
+      } catch (apiErr) {
+        console.warn('[ChatModal] Falha ao consultar sessão via backend:', apiErr);
+      }
+
       const [check, sessionsRes] = await Promise.all([
         checkDailyChatAvailability(clientId, supabase),
         supabase
@@ -98,23 +113,38 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     queryFn: async () => {
       if (!clientId) return [];
       
-      const { data: sData } = await supabase
-        .from('chat_sessions')
-        .select('id')
-        .eq('client_id', clientId);
+      let loadedMsgs: any[] = [];
 
-      if (!sData || sData.length === 0) return [];
-      const sessionIds = sData.map((s) => s.id);
+      // Tentativa 1: Via backend endpoint autenticado
+      try {
+        const msgsUrl = getApiUrl(`/api/chat/messages/${clientId}`);
+        const res = await fetch(msgsUrl);
+        if (res.ok) {
+          const mJson = await res.json();
+          if (Array.isArray(mJson?.messages)) {
+            loadedMsgs = mJson.messages;
+          }
+        }
+      } catch (apiErr) {
+        console.warn('[ChatModal] Falha ao carregar mensagens via backend:', apiErr);
+      }
 
-      const { data: loadedMsgs, error } = await supabase
-        .from('chat_messages')
-        .select('*')
-        .in('session_id', sessionIds)
-        .order('created_at', { ascending: true });
+      // Tentativa 2: Fallback direto no Supabase
+      if (loadedMsgs.length === 0) {
+        const { data: sData } = await supabase
+          .from('chat_sessions')
+          .select('id')
+          .eq('client_id', clientId);
 
-      if (error) {
-        console.error('[ChatModal] Erro ao carregar mensagens:', error);
-        return [];
+        if (sData && sData.length > 0) {
+          const sessionIds = sData.map((s) => s.id);
+          const { data: directMsgs } = await supabase
+            .from('chat_messages')
+            .select('*')
+            .in('session_id', sessionIds)
+            .order('created_at', { ascending: true });
+          if (directMsgs) loadedMsgs = directMsgs;
+        }
       }
 
       // Deduplicação e filtragem

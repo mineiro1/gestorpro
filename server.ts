@@ -201,6 +201,64 @@ setInterval(() => {
   }
 }, 60000);
 
+  app.get("/api/chat/messages/:clientId", async (req, res) => {
+    try {
+      const { clientId } = req.params;
+      if (!clientId) return res.status(400).json({ error: "Missing clientId" });
+
+      const { data: sData } = await supabaseAdmin
+        .from('chat_sessions')
+        .select('id')
+        .eq('client_id', clientId);
+
+      if (!sData || sData.length === 0) {
+        return res.json({ success: true, messages: [] });
+      }
+
+      const sessionIds = sData.map((s) => s.id);
+
+      const { data: loadedMsgs, error } = await supabaseAdmin
+        .from('chat_messages')
+        .select('*')
+        .in('session_id', sessionIds)
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        console.error("[/api/chat/messages] Erro ao buscar mensagens:", error);
+        return res.status(500).json({ error: error.message });
+      }
+
+      return res.json({ success: true, messages: loadedMsgs || [] });
+    } catch (e: any) {
+      console.error("[/api/chat/messages] Erro inesperado:", e);
+      return res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get("/api/chat/session/:clientId", async (req, res) => {
+    try {
+      const { clientId } = req.params;
+      if (!clientId) return res.status(400).json({ error: "Missing clientId" });
+
+      const { data: allSessions, error } = await supabaseAdmin
+        .from('chat_sessions')
+        .select('id, status, created_at, closed_at, client_id, admin_id, employee_id, visit_id')
+        .eq('client_id', clientId)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error("[/api/chat/session] Erro ao buscar sessões:", error);
+        return res.status(500).json({ error: error.message });
+      }
+
+      const active = (allSessions || []).find(s => s.status === 'open' || s.status === 'active') || allSessions?.[0] || null;
+      return res.json({ success: true, session: active, allSessions: allSessions || [] });
+    } catch (e: any) {
+      console.error("[/api/chat/session] Erro inesperado:", e);
+      return res.status(500).json({ error: e.message });
+    }
+  });
+
   app.post("/api/chat/close", async (req, res) => {
     try {
       const { clientId } = req.body;
