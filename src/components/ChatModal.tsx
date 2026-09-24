@@ -7,7 +7,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { evaluateSessionExpiry, checkDailyChatAvailability, markClientChatAsRead } from '../lib/chatSessionUtils';
 import { getApiUrl } from '../lib/apiConfig';
-import { sendMetaMessage, sendEvolutionMessage } from '../lib/whatsapp';
+import { sendMetaMessage, sendEvolutionMessage, checkWhatsAppMessageStatus, uploadMediaToPublicStorage } from '../lib/whatsapp';
 
 export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const { userProfile } = useAuth();
@@ -257,6 +257,42 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
             });
             return changed ? next : prev;
           });
+        }
+      } else {
+        // Fallback direto: Checar status na API do WhatsApp (WAME / Evolution) diretamente pelo cliente
+        const currentMsgs = queryClient.getQueryData<any[]>(['chat-messages', clientId]) || messages || [];
+        const pendingMsgs = currentMsgs.filter(m => m.sender_type === 'tech' && unreadTechMsgIds.includes(m.id));
+        
+        for (const m of pendingMsgs) {
+          let meta: any = {};
+          try {
+            meta = typeof m.media_url === 'string' && m.media_url.startsWith('{') ? JSON.parse(m.media_url) : {};
+          } catch(e) {}
+          
+          if (meta.external_id) {
+            const newStatus = await checkWhatsAppMessageStatus(meta.external_id, currentSettings);
+            if (newStatus && newStatus !== meta.status) {
+              queryClient.setQueryData(['chat-messages', clientId], (prev: any[] | undefined) => {
+                if (!prev) return prev;
+                return prev.map(item => {
+                  if (item.id === m.id) {
+                    return {
+                      ...item,
+                      media_url: JSON.stringify({ ...meta, status: newStatus, status_updated_at: new Date().toISOString() }),
+                      status: newStatus
+                    };
+                  }
+                  return item;
+                });
+              });
+
+              try {
+                await supabase.from('chat_messages').update({
+                  media_url: JSON.stringify({ ...meta, status: newStatus, status_updated_at: new Date().toISOString() })
+                }).eq('id', m.id);
+              } catch(e) {}
+            }
+          }
         }
       }
     } catch (err) {
@@ -536,14 +572,43 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         sendError = 'Cliente não possui telefone cadastrado.';
       }
 
+      let finalMediaUrl = mediaBase64 || undefined;
+      if (mediaBase64 && !mediaBase64.startsWith('http')) {
+        try {
+          finalMediaUrl = await uploadMediaToPublicStorage(mediaBase64, mimeType || 'image/jpeg');
+        } catch(e) {}
+      }
+
       const finalMetadata = {
         status: sentSuccess ? 'sent' : 'failed',
         external_id: externalId || undefined,
         message_client_id,
-        url: mediaBase64 || undefined,
+        url: finalMediaUrl,
         sent_at: sentSuccess ? new Date().toISOString() : undefined,
         error: sentSuccess ? undefined : (sendError || 'Falha no envio')
       };
+
+      // Se ainda não temos insertedMessageId e temos sessão, salva direto no Supabase
+      if (!insertedMessageId && sessionId) {
+        try {
+          const { data: directInserted } = await supabase
+            .from('chat_messages')
+            .insert({
+              session_id: sessionId,
+              sender_type: 'tech',
+              content: text,
+              media_url: JSON.stringify(finalMetadata)
+            })
+            .select()
+            .single();
+
+          if (directInserted?.id) {
+            insertedMessageId = directInserted.id;
+          }
+        } catch (dbInsErr) {
+          console.warn('[ChatModal] Erro ao gravar mensagem diretamente no banco:', dbInsErr);
+        }
+      }
 
       const finalMsgObject = {
         id: insertedMessageId || `msg_${message_client_id}`,
@@ -554,6 +619,10 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         media_url: JSON.stringify(finalMetadata),
         created_at: new Date().toISOString()
       };
+
+      if (!sentSuccess && !insertedMessageId) {
+        throw new Error(sendError || 'Falha no envio via WhatsApp');
+      }
 
       return finalMsgObject;
     },

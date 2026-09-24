@@ -1,3 +1,5 @@
+import { supabase } from './supabase';
+
 // Client-side idempotency cache to prevent duplicate dispatches within 30 seconds
 const clientRecentSends = new Map<string, { timestamp: number; result: any }>();
 
@@ -34,6 +36,119 @@ export const openWhatsApp = (phone: string, text: string = "") => {
     window.open(webUrl, '_blank');
   }
 };
+
+export async function uploadMediaToPublicStorage(
+  mediaBase64: string,
+  mimeType: string
+): Promise<string> {
+  if (!mediaBase64) return '';
+  if (mediaBase64.startsWith('http://') || mediaBase64.startsWith('https://')) {
+    return mediaBase64;
+  }
+  try {
+    const rawBase64 = mediaBase64.includes('base64,') ? mediaBase64.split('base64,')[1] : mediaBase64;
+    const byteCharacters = atob(rawBase64);
+    const byteNumbers = new Array(byteCharacters.length);
+    for (let i = 0; i < byteCharacters.length; i++) {
+      byteNumbers[i] = byteCharacters.charCodeAt(i);
+    }
+    const byteArray = new Uint8Array(byteNumbers);
+    const blob = new Blob([byteArray], { type: mimeType });
+
+    let ext = 'bin';
+    if (mimeType.includes('png')) ext = 'png';
+    else if (mimeType.includes('jpeg') || mimeType.includes('jpg')) ext = 'jpg';
+    else if (mimeType.includes('webp')) ext = 'webp';
+    else if (mimeType.includes('mp4')) ext = 'mp4';
+    else if (mimeType.includes('webm')) ext = 'webm';
+    else if (mimeType.includes('ogg')) ext = 'ogg';
+    else if (mimeType.includes('mp3') || mimeType.includes('mpeg')) ext = 'mp3';
+    else if (mimeType.includes('pdf')) ext = 'pdf';
+
+    const fileName = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
+    const { error } = await supabase.storage
+      .from('chat-media')
+      .upload(fileName, blob, {
+        contentType: mimeType,
+        upsert: true
+      });
+
+    if (!error) {
+      const { data } = supabase.storage.from('chat-media').getPublicUrl(fileName);
+      if (data?.publicUrl) return data.publicUrl;
+    }
+  } catch (e) {
+    console.warn('[uploadMediaToPublicStorage] Erro no upload:', e);
+  }
+  return mediaBase64;
+}
+
+export async function checkWhatsAppMessageStatus(
+  externalId: string,
+  waSettings: any
+): Promise<'sent' | 'delivered' | 'read' | null> {
+  if (!externalId) return null;
+
+  try {
+    // 1. WAME / Meta API
+    if (waSettings?.useMetaApi && waSettings?.metaToken) {
+      let baseUrl = (waSettings.metaServerUrl || 'https://graph.facebook.com/v19.0').trim().replace(/\/$/, '');
+      if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
+      const isWame = baseUrl && !baseUrl.includes('graph.facebook.com');
+
+      if (isWame) {
+        const url = `${baseUrl}/${waSettings.metaToken}/message/${externalId}`;
+        const res = await fetch(url);
+        if (res.ok) {
+          const data = await res.json();
+          const label = String(data?.data?.statusLabel || data?.statusLabel || '').toLowerCase().trim();
+          const numStatus = data?.data?.status ?? data?.status;
+          if (label === 'read' || label === 'played' || label === 'viewed' || numStatus === 4 || numStatus === 5) {
+            return 'read';
+          }
+          if (label === 'delivered' || numStatus === 3) {
+            return 'delivered';
+          }
+          if (label === 'sent' || numStatus === 2) {
+            return 'sent';
+          }
+        }
+      }
+    } else if (waSettings?.useEvolutionApi && waSettings?.evolutionApiUrl && waSettings?.evolutionApiKey && waSettings?.evolutionInstanceName) {
+      // 2. Evolution API
+      let baseUrl = waSettings.evolutionApiUrl.trim().replace(/\/$/, '');
+      if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
+      const url = `${baseUrl}/chat/findMessages/${waSettings.evolutionInstanceName}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': waSettings.evolutionApiKey
+        },
+        body: JSON.stringify({
+          where: { key: { id: externalId } }
+        })
+      });
+      if (res.ok) {
+        const evoData = await res.json();
+        const rec = evoData?.messages?.records?.[0] || evoData?.records?.[0] || (Array.isArray(evoData) ? evoData[0] : evoData);
+        const raw = String(rec?.status ?? rec?.statusLabel ?? rec?.ack ?? '').toUpperCase().trim();
+        if (raw === '4' || raw === '5' || raw === 'READ' || raw === 'PLAYED' || raw === 'READ_RECEIPT' || raw === 'VIEWED') {
+          return 'read';
+        }
+        if (raw === '3' || raw === 'DELIVERY_ACK' || raw === 'DELIVERED' || raw === 'RECEIVED') {
+          return 'delivered';
+        }
+        if (raw === '2' || raw === 'SERVER_ACK' || raw === 'SENT') {
+          return 'sent';
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[checkWhatsAppMessageStatus] Erro ao checar status:', e);
+  }
+  return null;
+}
 
 export const sendEvolutionMessage = async (
   phone: string,
@@ -178,7 +293,7 @@ export const sendMetaMessage = async (
 
     if (mediaBase64 && mimeType) {
       const isPublicUrl = mediaBase64.startsWith('http://') || mediaBase64.startsWith('https://');
-      const mediaUrlToSend = isPublicUrl ? mediaBase64 : mediaBase64;
+      const mediaUrlToSend = isPublicUrl ? mediaBase64 : await uploadMediaToPublicStorage(mediaBase64, mimeType);
       
       if (mimeType.startsWith('audio/')) {
         url = `${baseUrl}/${waSettings.metaToken}/message/audio`;
