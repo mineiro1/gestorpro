@@ -189,7 +189,7 @@ async function processPayment(paymentId, adminId) {
 
   
 // In-memory idempotency cache (stores client message IDs for deduplication within 30-120 seconds)
-const processedMessageClientIds = new Map<string, { timestamp: number; externalId: string; messageId?: string }>();
+const processedMessageClientIds = new Map<string, { timestamp: number; externalId: string; messageId?: string; success: boolean }>();
 
 // Clean up stale idempotency records periodically
 setInterval(() => {
@@ -402,7 +402,7 @@ setInterval(() => {
       // 1. Verificação de Idempotência em Memória (< 30 segundos)
       if (processedMessageClientIds.has(clientMsgId)) {
         const cached = processedMessageClientIds.get(clientMsgId)!;
-        if (now - cached.timestamp < 30000) {
+        if (cached.success && now - cached.timestamp < 30000) {
           console.log(`[Idempotência] Ignorando envio duplicado (Memória): ${clientMsgId}`);
           return res.json({
             success: true,
@@ -414,64 +414,36 @@ setInterval(() => {
         }
       }
 
-      // 2. Verificação de Idempotência no Banco de Dados (< 30 segundos)
-      const thirtySecondsAgo = new Date(now - 30000).toISOString();
-      try {
-        const { data: recentMatching } = await supabaseAdmin
-          .from('chat_messages')
-          .select('id, media_url, created_at')
-          .gte('created_at', thirtySecondsAgo)
-          .eq('sender_type', 'tech')
-          .ilike('media_url', `%"message_client_id":"${clientMsgId}"%`)
-          .limit(1);
-
-        if (recentMatching && recentMatching.length > 0) {
-          let existingMeta: any = {};
-          try { existingMeta = JSON.parse(recentMatching[0].media_url); } catch(e) {}
-          
-          const isSameUnsentRecord = messageId && recentMatching[0].id === messageId && !existingMeta.external_id && existingMeta.status !== 'sent';
-          if (!isSameUnsentRecord) {
-            console.log(`[Idempotência] Ignorando envio duplicado (Banco de Dados): ${clientMsgId}`);
-            processedMessageClientIds.set(clientMsgId, {
-              timestamp: now,
-              externalId: existingMeta.external_id || '',
-              messageId: recentMatching[0].id
-            });
-            return res.json({
-              success: true,
-              duplicated: true,
-              externalId: existingMeta.external_id || undefined,
-              messageId: recentMatching[0].id,
-              message_client_id: clientMsgId
-            });
-          }
-        }
-      } catch (dbCheckErr) {
-        console.warn("[Idempotência] Erro ao consultar duplicidade no banco:", dbCheckErr);
-      }
-
-      // Registra lock provisório para evitar concorrência simultânea
-      processedMessageClientIds.set(clientMsgId, {
-        timestamp: now,
-        externalId: '',
-        messageId: messageId || ''
-      });
-
       // Se waSettings não estiver completo, buscar configurações do admin no banco
       if (!waSettings?.evolutionApiKey && !waSettings?.metaToken) {
-        const { data: adminUsers } = await supabaseAdmin
-          .from('users')
-          .select('whatsapp_settings')
-          .not('whatsapp_settings', 'is', null);
-        const validAdmin = adminUsers?.find(u => u.whatsapp_settings?.evolutionApiKey || u.whatsapp_settings?.metaToken);
-        if (validAdmin?.whatsapp_settings) {
-          waSettings = validAdmin.whatsapp_settings;
+        let adminToSearch = req.body.adminId;
+        if (!adminToSearch && req.body.clientId) {
+          const { data: clientRow } = await supabaseAdmin.from('clients').select('admin_id').eq('id', req.body.clientId).maybeSingle();
+          if (clientRow?.admin_id) adminToSearch = clientRow.admin_id;
+        }
+
+        if (adminToSearch) {
+          const { data: specificAdmin } = await supabaseAdmin.from('users').select('whatsapp_settings').eq('id', adminToSearch).maybeSingle();
+          if (specificAdmin?.whatsapp_settings?.metaToken || specificAdmin?.whatsapp_settings?.evolutionApiKey) {
+            waSettings = specificAdmin.whatsapp_settings;
+          }
+        }
+
+        if (!waSettings?.evolutionApiKey && !waSettings?.metaToken) {
+          const { data: adminUsers } = await supabaseAdmin
+            .from('users')
+            .select('whatsapp_settings')
+            .not('whatsapp_settings', 'is', null);
+          const validAdmin = adminUsers?.find(u => u.whatsapp_settings?.evolutionApiKey || u.whatsapp_settings?.metaToken);
+          if (validAdmin?.whatsapp_settings) {
+            waSettings = validAdmin.whatsapp_settings;
+          }
         }
       }
 
       // 3. Se houver mídia em base64, fazer upload para o Supabase Storage (bucket 'chat-media') para obter uma URL pública estável
       let publicMediaUrl = mediaUrl || '';
-      if (mediaBase64 && !publicMediaUrl) {
+      if (mediaBase64 && (!publicMediaUrl || !publicMediaUrl.startsWith('http'))) {
         try {
           const rawBase64 = mediaBase64.includes('base64,') ? mediaBase64.split('base64,')[1] : mediaBase64;
           const buffer = Buffer.from(rawBase64, 'base64');
@@ -524,7 +496,7 @@ setInterval(() => {
           options: { delay: 500, presence: 'composing', linkPreview: false }
         };
 
-        if (mediaBase64 || publicMediaUrl) {
+        if (publicMediaUrl || mediaBase64) {
           const rawBase64 = mediaBase64?.includes('base64,') ? mediaBase64.split('base64,')[1] : (mediaBase64 || '');
           const mediaSource = publicMediaUrl || (mediaBase64 ? (mediaBase64.startsWith('data:') ? mediaBase64 : `data:${mimeType};base64,${mediaBase64}`) : '');
           
@@ -579,8 +551,8 @@ setInterval(() => {
           lastSendError = evoFetchErr.message;
           console.error("[/api/chat/send] Erro conexão Evolution API:", evoFetchErr);
         }
-      } else if (waSettings?.useMetaApi) {
-        if (!waSettings.metaToken) throw new Error("Token Meta obrigatório");
+      } else if (waSettings?.useMetaApi || waSettings?.metaToken) {
+        if (!waSettings?.metaToken) throw new Error("Token Meta obrigatório");
         
         let baseUrl = (waSettings.metaServerUrl || 'https://graph.facebook.com/v19.0').trim().replace(/\/$/, '');
         if (!baseUrl.startsWith('http')) {
@@ -592,33 +564,32 @@ setInterval(() => {
         if (isWame) {
            headers = { 'Content-Type': 'application/json' };
            
-           if (publicMediaUrl || mediaBase64) {
-             const mediaTargetUrl = publicMediaUrl || mediaBase64;
+           if (publicMediaUrl) {
              if (mimeType?.startsWith('image/')) {
                url = `${baseUrl}/${waSettings.metaToken}/message/image`;
                body = JSON.stringify({
                  to: targetNumber,
-                 url: mediaTargetUrl,
+                 url: publicMediaUrl,
                  caption: text || ''
                });
              } else if (mimeType?.startsWith('video/')) {
                url = `${baseUrl}/${waSettings.metaToken}/message/video`;
                body = JSON.stringify({
                  to: targetNumber,
-                 url: mediaTargetUrl,
+                 url: publicMediaUrl,
                  caption: text || ''
                });
              } else if (mimeType?.startsWith('audio/')) {
                url = `${baseUrl}/${waSettings.metaToken}/message/audio`;
                body = JSON.stringify({
                  to: targetNumber,
-                 url: mediaTargetUrl
+                 url: publicMediaUrl
                });
              } else {
                url = `${baseUrl}/${waSettings.metaToken}/message/document`;
                body = JSON.stringify({
                  to: targetNumber,
-                 url: mediaTargetUrl,
+                 url: publicMediaUrl,
                  mimetype: mimeType || 'application/octet-stream',
                  filename: 'arquivo',
                  caption: text || ''
@@ -641,13 +612,28 @@ setInterval(() => {
               'Authorization': `Bearer ${waSettings.metaToken}`,
               'Content-Type': 'application/json'
            };
-           body = JSON.stringify({
-              messaging_product: "whatsapp",
-              recipient_type: "individual",
-              to: targetNumber,
-              type: "text",
-              text: { preview_url: false, body: text || '' }
-           });
+           if (publicMediaUrl) {
+             const isVideo = mimeType?.startsWith('video/');
+             const mediaType = isVideo ? 'video' : 'image';
+             body = JSON.stringify({
+               messaging_product: "whatsapp",
+               recipient_type: "individual",
+               to: targetNumber,
+               type: mediaType,
+               [mediaType]: {
+                 caption: text || '',
+                 link: publicMediaUrl
+               }
+             });
+           } else {
+             body = JSON.stringify({
+                messaging_product: "whatsapp",
+                recipient_type: "individual",
+                to: targetNumber,
+                type: "text",
+                text: { preview_url: false, body: text || '' }
+             });
+           }
         }
         
         try {
@@ -790,7 +776,8 @@ setInterval(() => {
       processedMessageClientIds.set(clientMsgId, {
         timestamp: Date.now(),
         externalId: externalId || '',
-        messageId: messageId || ''
+        messageId: messageId || '',
+        success: sendSuccess
       });
 
       res.json({
@@ -855,7 +842,7 @@ setInterval(() => {
 
           if (externalId) {
             // 1. Consulta na API WAME / Meta
-            if (waSettings?.useMetaApi && waSettings?.metaToken) {
+            if ((waSettings?.useMetaApi || waSettings?.metaToken) && waSettings?.metaToken) {
               let baseUrl = (waSettings.metaServerUrl || 'https://graph.facebook.com/v19.0').trim().replace(/\/$/, '');
               if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
               const isWame = baseUrl && !baseUrl.includes('graph.facebook.com');
@@ -1284,7 +1271,7 @@ setInterval(() => {
         mediaUrl = extracted.mediaUrl || mediaUrl;
       }
 
-      // Format Meta Cloud API
+      // Format Meta Cloud API / WAME
       if (!phone && (body.object === "whatsapp_business_account" || body.object === "wame") && body.entry && body.entry[0]?.changes) {
          const value = body.entry[0].changes[0].value;
          if (value.messages && value.messages.length > 0) {
@@ -1302,6 +1289,9 @@ setInterval(() => {
             } else if (msg.type === "image") {
                content = msg.image?.caption || "📷 Imagem";
                mediaUrl = msg.image?.url || "";
+            } else if (msg.type === "video") {
+               content = msg.video?.caption || "🎥 Vídeo";
+               mediaUrl = msg.video?.url || "";
             }
          }
       } else if (!phone && body.phone && (body.message || body.text)) {
@@ -1322,8 +1312,19 @@ setInterval(() => {
           content = extracted.content || String(body.text || body.message);
       }
       
-      if (!phone || !content) {
-        console.log(`[Webhook WAME] Ignorando payload sem telefone ou sem texto extraível: phone="${phone}", content="${content}"`);
+      // Se tiver mediaUrl mas não tiver conteúdo em texto, define texto descritivo
+      if (!content && mediaUrl) {
+        if (mediaUrl.includes('audio') || mediaUrl.includes('.ogg') || mediaUrl.includes('.mp3') || mediaUrl.includes('.webm')) {
+          content = "🎵 Mensagem de Áudio";
+        } else if (mediaUrl.includes('video') || mediaUrl.includes('.mp4')) {
+          content = "🎥 Vídeo";
+        } else {
+          content = "📸 Imagem";
+        }
+      }
+
+      if (!phone || (!content && !mediaUrl)) {
+        console.log(`[Webhook WAME] Ignorando payload sem telefone ou sem dados: phone="${phone}", content="${content}"`);
         return res.status(200).send("EVENT_RECEIVED");
       }
       const cleanIncoming = phone.replace(/\D/g, '');
@@ -1428,8 +1429,8 @@ setInterval(() => {
          }
       }
 
-      // Dispara push notification para os responsáveis
-      const targetUserId = matchedClient.employee_id || matchedClient.admin_id;
+      // Dispara push notification para os responsáveis (admin e funcionário responsável)
+      const targetUserId = matchedClient.admin_id || matchedClient.employee_id;
       if (targetUserId) {
         const clientDisplayName = formatFirstTwoNames(matchedClient.name);
         sendPushToAdmin(targetUserId, `💬 ${clientDisplayName}`, content, {
@@ -1997,7 +1998,7 @@ app.all("/api/sync-payment", async (req, res) => {
        if (newMsg.sender_type === 'client') {
           const { data: session } = await supabaseAdmin
             .from('chat_sessions')
-            .select('id, admin_id, client_id, client_name, status, created_at, closed_at')
+            .select('id, admin_id, employee_id, client_id, status, created_at, closed_at')
             .eq('id', newMsg.session_id)
             .single();
 
@@ -2014,16 +2015,28 @@ app.all("/api/sync-payment", async (req, res) => {
             return;
           }
 
-          if (session && session.admin_id) {
-             const clientDisplayName = formatFirstTwoNames(session.client_name);
+          let clientName = 'Cliente';
+          if (session.client_id) {
+            const { data: clientData } = await supabaseAdmin
+              .from('clients')
+              .select('name')
+              .eq('id', session.client_id)
+              .maybeSingle();
+            if (clientData?.name) clientName = clientData.name;
+          }
+
+          const targetUserId = session.admin_id || session.employee_id;
+          if (targetUserId) {
+             const clientDisplayName = formatFirstTwoNames(clientName);
              await sendPushToAdmin(
-               session.admin_id,
+               targetUserId,
                `💬 ${clientDisplayName}`,
-               newMsg.content || 'Mensagem de texto recebida',
+               newMsg.content || 'Mensagem recebida',
                {
                  url: '/messages',
                  channelId: 'chat_messages',
                  type: 'chat_message',
+                 clientId: String(session.client_id || ''),
                  sessionId: String(newMsg.session_id || '')
                }
              );

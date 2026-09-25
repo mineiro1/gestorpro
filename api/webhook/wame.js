@@ -299,8 +299,19 @@ export default async function handler(req, res) {
         content = extracted.content || String(body.text || body.message);
     }
     
-    if (!phone || !content) {
-       console.log(`[Webhook WAME] Sem telefone ou sem conteudo extraivel: phone="${phone}", content="${content}"`);
+    // Se tiver mediaUrl mas não tiver conteúdo em texto, define texto descritivo
+    if (!content && mediaUrl) {
+      if (mediaUrl.includes('audio') || mediaUrl.includes('.ogg') || mediaUrl.includes('.mp3') || mediaUrl.includes('.webm')) {
+        content = "🎵 Mensagem de Áudio";
+      } else if (mediaUrl.includes('video') || mediaUrl.includes('.mp4')) {
+        content = "🎥 Vídeo";
+      } else {
+        content = "📸 Imagem";
+      }
+    }
+
+    if (!phone || (!content && !mediaUrl)) {
+       console.log(`[Webhook WAME] Sem telefone ou sem dados: phone="${phone}", content="${content}"`);
        return res.status(200).send("EVENT_RECEIVED");
     }
 

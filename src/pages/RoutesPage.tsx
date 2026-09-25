@@ -1102,18 +1102,30 @@ export default function RoutesPage() {
       if (!cleanPhone) return;
 
       try {
-        const adminId = isAdmin ? userProfile.uid : (userProfile.adminId || userProfile.uid);
+        const adminId = targetClient.admin_id || (isAdmin ? userProfile.uid : (userProfile.adminId || userProfile.uid));
         
         // 1. Obter configurações de WhatsApp mais recentes do admin
         let currentSettings = (userProfile?.whatsappSettings as any) || {};
         try {
-          const { data: adminData } = await supabase
-            .from('users')
-            .select('whatsapp_settings')
-            .eq('id', adminId)
-            .single();
-          if (adminData?.whatsapp_settings) {
-            currentSettings = { ...currentSettings, ...adminData.whatsapp_settings };
+          if (adminId) {
+            const { data: adminData } = await supabase
+              .from('users')
+              .select('whatsapp_settings')
+              .eq('id', adminId)
+              .maybeSingle();
+            if (adminData?.whatsapp_settings) {
+              currentSettings = { ...currentSettings, ...adminData.whatsapp_settings };
+            }
+          }
+          if (!currentSettings.metaToken && !currentSettings.evolutionApiKey) {
+            const { data: allAdmins } = await supabase
+              .from('users')
+              .select('whatsapp_settings')
+              .not('whatsapp_settings', 'is', null);
+            const foundAdmin = allAdmins?.find((u: any) => u.whatsapp_settings?.metaToken || u.whatsapp_settings?.evolutionApiKey);
+            if (foundAdmin?.whatsapp_settings) {
+              currentSettings = { ...currentSettings, ...foundAdmin.whatsapp_settings };
+            }
           }
         } catch (e) {
           console.warn('Erro ao carregar whatsapp_settings atualizado:', e);
