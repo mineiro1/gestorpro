@@ -3,11 +3,13 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { openWhatsApp } from '../lib/whatsapp';
-import { Edit, Trash2, Plus, DollarSign, RotateCcw, Package, Search, MessageCircle, PlusCircle } from 'lucide-react';
+import { Edit, Trash2, Plus, DollarSign, RotateCcw, Package, Search, MessageCircle, PlusCircle, Phone } from 'lucide-react';
 import { useRealtimeUpdates } from '../hooks/useRealtimeUpdates';
+import { useCall } from '../contexts/CallContext';
 
 export default function Clients() {
   const { userProfile, isAdmin, isManager } = useAuth();
+  const { startCall } = useCall();
   
   const adminId = userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId;
   const refreshTrigger = useRealtimeUpdates(['clients', 'payments'], 'admin_id', adminId);
@@ -453,7 +455,7 @@ export default function Clients() {
               ) : (
                 paginatedClients.map((client) => (
                   <tr key={client.id} className="border-b border-gray-100 hover:bg-gray-50">
-                    <td className="p-4">{client.name}</td>
+                    <td className="p-4 font-medium text-gray-800">{client.name}</td>
                     <td className="p-4">{client.phone}</td>
                     {(isAdmin || isManager) && (
                       <>
@@ -483,11 +485,25 @@ export default function Clients() {
                         </button>
                       )}
                       
+                      <button
+                        onClick={() => {
+                          startCall({
+                            clientId: client.id,
+                            clientName: client.name,
+                            avatarUrl: client.photo_url || client.avatar_url,
+                          });
+                        }}
+                        className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-md transition-colors"
+                        title="Ligar para o cliente"
+                      >
+                        <Phone size={18} />
+                      </button>
+
                       {client.phone && (
                         <button
                           onClick={() => {
                             import('../lib/whatsapp').then(({ openWhatsApp }) => {
-                              openWhatsApp(`55${client.phone.replace(/\\D/g, '')}`);
+                              openWhatsApp(`55${client.phone.replace(/\D/g, '')}`);
                             });
                           }}
                           className="p-2 text-[#25D366] hover:bg-green-50 rounded-md transition-colors"

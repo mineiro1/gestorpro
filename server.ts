@@ -794,6 +794,95 @@ setInterval(() => {
     }
   });
 
+  app.post("/api/call/start", async (req, res) => {
+    try {
+      const { clientId, adminId } = req.body;
+      if (!clientId) {
+        return res.status(400).json({ error: "Missing clientId" });
+      }
+
+      // 1. Fetch client from DB to get phone number securely (collaborator never sees it)
+      const { data: client, error: clientErr } = await supabaseAdmin
+        .from('clients')
+        .select('id, name, phone, admin_id')
+        .eq('id', clientId)
+        .single();
+
+      if (clientErr || !client) {
+        return res.status(404).json({ error: "Cliente não encontrado" });
+      }
+
+      const cleanDigits = String(client.phone || '').replace(/\D/g, '');
+      const targetNumber = cleanDigits.startsWith('55') ? cleanDigits : `55${cleanDigits}`;
+
+      // 2. Lookup whatsapp_settings
+      const adminToSearch = adminId || client.admin_id;
+      let waSettings: any = null;
+      if (adminToSearch) {
+        const { data: specificAdmin } = await supabaseAdmin.from('users').select('whatsapp_settings').eq('id', adminToSearch).maybeSingle();
+        if (specificAdmin?.whatsapp_settings) {
+          waSettings = specificAdmin.whatsapp_settings;
+        }
+      }
+      if (!waSettings) {
+        const { data: adminUsers } = await supabaseAdmin
+          .from('users')
+          .select('whatsapp_settings')
+          .not('whatsapp_settings', 'is', null);
+        const validAdmin = adminUsers?.find(u => u.whatsapp_settings?.evolutionApiKey || u.whatsapp_settings?.metaToken || u.whatsapp_settings?.wavoipUrl);
+        if (validAdmin?.whatsapp_settings) {
+          waSettings = validAdmin.whatsapp_settings;
+        }
+      }
+
+      const callId = `call_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+      // 3. If WAVoIP or VoIP gateway is configured, trigger outbound call
+      if (waSettings?.wavoipUrl || waSettings?.evolutionApiUrl) {
+        try {
+          const voipUrl = waSettings.wavoipUrl || `${waSettings.evolutionApiUrl}/call/start`;
+          const apiKey = waSettings.wavoipApiKey || waSettings.evolutionApiKey || waSettings.metaToken;
+          
+          await fetch(voipUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(apiKey ? { 'apikey': apiKey, 'Authorization': `Bearer ${apiKey}` } : {})
+            },
+            body: JSON.stringify({
+              to: targetNumber,
+              callId,
+              action: 'start_call'
+            })
+          }).catch(err => console.log('[VoIP Gateway Call notice]', err.message));
+        } catch (e: any) {
+          console.log('[VoIP Error]', e.message);
+        }
+      }
+
+      console.log(`[Call Started] In-App Call initiated for client ${client.name} (callId: ${callId})`);
+
+      return res.json({
+        success: true,
+        callId,
+        status: "connecting"
+      });
+    } catch (e: any) {
+      console.error("[/api/call/start] Erro:", e);
+      return res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/call/hangup", async (req, res) => {
+    try {
+      const { callId, clientId } = req.body;
+      console.log(`[Call Ended] Call hung up: ${callId || clientId}`);
+      return res.json({ success: true });
+    } catch (e: any) {
+      return res.status(500).json({ error: e.message });
+    }
+  });
+
   app.post("/api/chat/sync-status", async (req, res) => {
     try {
       let { messageIds, waSettings } = req.body;

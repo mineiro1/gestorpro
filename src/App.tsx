@@ -2,6 +2,7 @@ import React from 'react';
 import { Capacitor } from '@capacitor/core';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { CallProvider } from './contexts/CallContext';
 import Landing from './pages/Landing';
 import Login from './pages/Login';
 import Register from './pages/Register';
@@ -122,37 +123,39 @@ export default function App() {
   
   return (
     <AuthProvider>
-      <Router>
-        <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />
-          
-          <Route path="/" element={<RootRoute />} />
-          <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
-            <Route path="/dashboard" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><Dashboard /></ProtectedRoute>} />
-            <Route path="clients" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><Clients /></ProtectedRoute>} />
-            <Route path="clients/new" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><ClientForm /></ProtectedRoute>} />
-            <Route path="clients/:id" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><ClientForm /></ProtectedRoute>} />
-            <Route path="clients/:id/supplies" element={<ProtectedRoute allowedRoles={['admin', 'manager', 'employee']}><SuppliesForm /></ProtectedRoute>} />
-            <Route path="products" element={<ProtectedRoute allowedRoles={['admin', 'manager', 'employee']}><ProductsPage /></ProtectedRoute>} />
-            <Route path="messages" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><Messages /></ProtectedRoute>} />
-            <Route path="agenda" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><Agenda /></ProtectedRoute>} />
-            <Route path="employees" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><Employees /></ProtectedRoute>} />
-            <Route path="employees/new" element={<ProtectedRoute allowedRoles={['admin']}><EmployeeForm /></ProtectedRoute>} />
-            <Route path="employees/:id" element={<ProtectedRoute allowedRoles={['admin']}><EmployeeForm /></ProtectedRoute>} />
-            <Route path="billing" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><Billing /></ProtectedRoute>} />
-            <Route path="routes" element={<ProtectedRoute allowedRoles={['admin', 'manager', 'employee']}><RoutesPage /></ProtectedRoute>} />
-            <Route path="visits" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><VisitsHistory /></ProtectedRoute>} />
-            <Route path="one-off-jobs" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><OneOffJobs /></ProtectedRoute>} />
-            <Route path="settings" element={<ProtectedRoute allowedRoles={['admin']}><Settings /></ProtectedRoute>} />
-            <Route path="partners" element={<ProtectedRoute allowedRoles={['admin', 'client']}><PartnerStores /></ProtectedRoute>} />
-            <Route path="technicians" element={<ProtectedRoute allowedRoles={['admin', 'client']}><PartnerTechnicians /></ProtectedRoute>} />
-            <Route path="client-panel" element={<ProtectedRoute allowedRoles={['client']}><ClientPanel /></ProtectedRoute>} />
-            <Route path="superadmin" element={<ProtectedRoute allowedRoles={['admin']}><SuperAdminPage /></ProtectedRoute>} />
-            <Route path="tour" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><TourPage /></ProtectedRoute>} />
-          </Route>
-        </Routes>
-      </Router>
+      <CallProvider>
+        <Router>
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            <Route path="/register" element={<Register />} />
+            
+            <Route path="/" element={<RootRoute />} />
+            <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
+              <Route path="/dashboard" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><Dashboard /></ProtectedRoute>} />
+              <Route path="clients" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><Clients /></ProtectedRoute>} />
+              <Route path="clients/new" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><ClientForm /></ProtectedRoute>} />
+              <Route path="clients/:id" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><ClientForm /></ProtectedRoute>} />
+              <Route path="clients/:id/supplies" element={<ProtectedRoute allowedRoles={['admin', 'manager', 'employee']}><SuppliesForm /></ProtectedRoute>} />
+              <Route path="products" element={<ProtectedRoute allowedRoles={['admin', 'manager', 'employee']}><ProductsPage /></ProtectedRoute>} />
+              <Route path="messages" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><Messages /></ProtectedRoute>} />
+              <Route path="agenda" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><Agenda /></ProtectedRoute>} />
+              <Route path="employees" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><Employees /></ProtectedRoute>} />
+              <Route path="employees/new" element={<ProtectedRoute allowedRoles={['admin']}><EmployeeForm /></ProtectedRoute>} />
+              <Route path="employees/:id" element={<ProtectedRoute allowedRoles={['admin']}><EmployeeForm /></ProtectedRoute>} />
+              <Route path="billing" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><Billing /></ProtectedRoute>} />
+              <Route path="routes" element={<ProtectedRoute allowedRoles={['admin', 'manager', 'employee']}><RoutesPage /></ProtectedRoute>} />
+              <Route path="visits" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><VisitsHistory /></ProtectedRoute>} />
+              <Route path="one-off-jobs" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><OneOffJobs /></ProtectedRoute>} />
+              <Route path="settings" element={<ProtectedRoute allowedRoles={['admin']}><Settings /></ProtectedRoute>} />
+              <Route path="partners" element={<ProtectedRoute allowedRoles={['admin', 'client']}><PartnerStores /></ProtectedRoute>} />
+              <Route path="technicians" element={<ProtectedRoute allowedRoles={['admin', 'client']}><PartnerTechnicians /></ProtectedRoute>} />
+              <Route path="client-panel" element={<ProtectedRoute allowedRoles={['client']}><ClientPanel /></ProtectedRoute>} />
+              <Route path="superadmin" element={<ProtectedRoute allowedRoles={['admin']}><SuperAdminPage /></ProtectedRoute>} />
+              <Route path="tour" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><TourPage /></ProtectedRoute>} />
+            </Route>
+          </Routes>
+        </Router>
+      </CallProvider>
     </AuthProvider>
   );
 }

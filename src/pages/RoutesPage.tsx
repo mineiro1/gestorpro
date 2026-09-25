@@ -4,8 +4,9 @@ import { MessageCircle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { jsPDF } from 'jspdf';
-import { Share2, FileText, Map, Camera, CheckCircle, MapPin, Image as ImageIcon, ArrowUp, ArrowDown, Save, ListOrdered, Search, RefreshCw } from 'lucide-react';
+import { Share2, FileText, Map, Camera, CheckCircle, MapPin, Image as ImageIcon, ArrowUp, ArrowDown, Save, ListOrdered, Search, RefreshCw, Phone } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { useCall } from '../contexts/CallContext';
 import { openMap, openRouteMap, openWaze } from '../lib/maps';
 import { openWhatsApp, sendEvolutionMessage, sendMetaMessage } from '../lib/whatsapp';
 import { notifyAdminAttendanceFinished } from '../lib/pushNotifications';
@@ -20,6 +21,7 @@ const DAYS_OF_WEEK = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado
 
 export default function RoutesPage() {
   const { userProfile, isAdmin, isManager } = useAuth();
+  const { startCall } = useCall();
   
   const queryClient = useQueryClient();
 
@@ -1802,6 +1804,25 @@ export default function RoutesPage() {
                           <h3 className={`font-semibold text-lg ${isCompleted ? 'text-green-800 line-through opacity-70' : 'text-gray-800'}`}>
                             {client.name}
                           </h3>
+
+                          {/* Botão de Ligação */}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              startCall({
+                                clientId: client.id,
+                                clientName: client.name,
+                                avatarUrl: client.photo_url || client.avatar_url,
+                              });
+                            }}
+                            className="p-1 text-emerald-600 hover:bg-emerald-100 rounded-md transition-colors"
+                            title="Ligar para o cliente"
+                          >
+                            <Phone size={20} />
+                          </button>
+
+                          {/* Botão Abrir no Maps */}
                           <button
                             type="button"
                             onClick={(e) => {
