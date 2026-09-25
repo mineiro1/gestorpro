@@ -838,23 +838,36 @@ setInterval(() => {
       const callId = `call_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
       // 3. If WAVoIP or VoIP gateway is configured, trigger outbound call
-      if (waSettings?.wavoipUrl || waSettings?.evolutionApiUrl) {
+      if (waSettings?.wavoipApiKey || waSettings?.wavoipUrl || waSettings?.evolutionApiUrl) {
         try {
-          const voipUrl = waSettings.wavoipUrl || `${waSettings.evolutionApiUrl}/call/start`;
           const apiKey = waSettings.wavoipApiKey || waSettings.evolutionApiKey || waSettings.metaToken;
-          
-          await fetch(voipUrl, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(apiKey ? { 'apikey': apiKey, 'Authorization': `Bearer ${apiKey}` } : {})
-            },
-            body: JSON.stringify({
-              to: targetNumber,
-              callId,
-              action: 'start_call'
-            })
-          }).catch(err => console.log('[VoIP Gateway Call notice]', err.message));
+          let voipUrl = waSettings.wavoipUrl;
+
+          if (!voipUrl && waSettings.wavoipDeviceId) {
+            const baseApi = waSettings.wavoipApiUrl || 'https://app.wavoip.com/api/v1';
+            voipUrl = `${baseApi.replace(/\/$/, '')}/devices/${waSettings.wavoipDeviceId}/calls`;
+          } else if (!voipUrl && waSettings.evolutionApiUrl) {
+            voipUrl = `${waSettings.evolutionApiUrl}/call/start`;
+          }
+
+          if (voipUrl) {
+            console.log(`[VoIP Gateway] Disparando chamada para ${targetNumber} via ${voipUrl}`);
+            await fetch(voipUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                ...(apiKey ? { 'apikey': apiKey, 'Authorization': `Bearer ${apiKey}`, 'x-api-key': apiKey } : {})
+              },
+              body: JSON.stringify({
+                to: targetNumber,
+                phone: targetNumber,
+                number: targetNumber,
+                callId,
+                action: 'start_call',
+                deviceId: waSettings.wavoipDeviceId
+              })
+            }).catch(err => console.log('[VoIP Gateway Call notice]', err.message));
+          }
         } catch (e: any) {
           console.log('[VoIP Error]', e.message);
         }

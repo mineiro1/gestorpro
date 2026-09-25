@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { Settings as SettingsIcon, Save, Image, Building, Smartphone, Server, Bell, CheckCircle2, AlertCircle, Send, Volume2 } from 'lucide-react';
+import { Settings as SettingsIcon, Save, Image, Building, Smartphone, Server, Bell, CheckCircle2, AlertCircle, Send, Volume2, PhoneCall, Copy, Check } from 'lucide-react';
 import { Capacitor } from '@capacitor/core';
 import { requestPushPermissions, sendTestPushNotification } from '../lib/pushNotifications';
 
@@ -13,6 +13,13 @@ export default function Settings() {
   const [isSmsGateway, setIsSmsGateway] = useState(false);
   const [useSmsForReports, setUseSmsForReports] = useState(false);
 
+  // WAVoIP Calling state
+  const [wavoipEnabled, setWavoipEnabled] = useState(false);
+  const [wavoipDeviceId, setWavoipDeviceId] = useState('');
+  const [wavoipApiKey, setWavoipApiKey] = useState('');
+  const [wavoipApiUrl, setWavoipApiUrl] = useState('');
+  const [copiedWebhook, setCopiedWebhook] = useState(false);
+
   // Push Notification state
   const [pushPermStatus, setPushPermStatus] = useState<string>('checking');
   const [fcmToken, setFcmToken] = useState<string | null>(null);
@@ -21,9 +28,14 @@ export default function Settings() {
 
   useEffect(() => {
     if (userProfile?.whatsappSettings) {
-      setCompanyName((userProfile.whatsappSettings as any).companyName || '');
-      setCompanyLogo((userProfile.whatsappSettings as any).companyLogo || '');
-      setUseSmsForReports((userProfile.whatsappSettings as any).useSmsForReports || false);
+      const s = userProfile.whatsappSettings as any;
+      setCompanyName(s.companyName || '');
+      setCompanyLogo(s.companyLogo || '');
+      setUseSmsForReports(s.useSmsForReports || false);
+      setWavoipEnabled(s.wavoipEnabled ?? !!s.wavoipApiKey);
+      setWavoipDeviceId(s.wavoipDeviceId || '');
+      setWavoipApiKey(s.wavoipApiKey || '');
+      setWavoipApiUrl(s.wavoipApiUrl || 'https://app.wavoip.com/api/v1');
     }
     // Load local SMS Gateway setting
     setIsSmsGateway(localStorage.getItem('isSmsGateway') === 'true');
@@ -124,7 +136,11 @@ export default function Settings() {
         ...currentSettings,
         companyName,
         companyLogo,
-        useSmsForReports
+        useSmsForReports,
+        wavoipEnabled,
+        wavoipDeviceId,
+        wavoipApiKey,
+        wavoipApiUrl
       };
       
       const { error } = await supabase.from('users').update({
@@ -138,9 +154,13 @@ export default function Settings() {
         (userProfile.whatsappSettings as any).companyName = companyName;
         (userProfile.whatsappSettings as any).companyLogo = companyLogo;
         (userProfile.whatsappSettings as any).useSmsForReports = useSmsForReports;
+        (userProfile.whatsappSettings as any).wavoipEnabled = wavoipEnabled;
+        (userProfile.whatsappSettings as any).wavoipDeviceId = wavoipDeviceId;
+        (userProfile.whatsappSettings as any).wavoipApiKey = wavoipApiKey;
+        (userProfile.whatsappSettings as any).wavoipApiUrl = wavoipApiUrl;
       }
       
-      alert('Configurações salvas com sucesso! (As alterações no painel serão aplicadas no próximo login ou recarregamento)');
+      alert('Configurações salvas com sucesso!');
     } catch (error: any) {
       console.error(error);
       alert('Erro ao salvar as configurações: ' + error.message);
@@ -259,6 +279,126 @@ export default function Settings() {
             >
               <Save size={20} className="mr-2" />
               {loading ? 'Salvando...' : 'Salvar Configurações'}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      {/* WAVoIP Calling Settings (Voice Calls for Admin / White-label) */}
+      <div className="mt-8 bg-white rounded-xl shadow-md overflow-hidden border-2 border-emerald-100">
+        <div className="p-6 border-b border-gray-100 bg-emerald-50/50 flex justify-between items-center">
+          <div>
+            <h2 className="text-xl font-bold text-emerald-900 flex items-center">
+              <PhoneCall className="mr-2 text-emerald-600" size={24} />
+              Integração de Ligações de Voz (WAVoIP)
+            </h2>
+            <p className="text-sm text-gray-500 mt-1">
+              Configure seu dispositivo e token da WAVoIP para permitir que colaboradores liguem para clientes direto do app.
+            </p>
+          </div>
+        </div>
+
+        <form onSubmit={handleSave} className="p-6 space-y-6">
+          {/* Toggle Active */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between bg-emerald-50/40 p-4 rounded-xl border border-emerald-200">
+            <div className="mb-4 sm:mb-0 pr-4">
+              <h3 className="font-bold text-gray-900 flex items-center">
+                Ativar Ligações WAVoIP
+              </h3>
+              <p className="text-sm text-gray-600 mt-1">
+                Habilita os botões de chamada rápida (📞) na página de Rotas e na Lista de Clientes.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setWavoipEnabled(!wavoipEnabled)}
+              className={`relative inline-flex h-8 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-white/75 ${
+                wavoipEnabled ? 'bg-emerald-600' : 'bg-gray-300'
+              }`}
+            >
+              <span className="sr-only">Ativar WAVoIP</span>
+              <span
+                aria-hidden="true"
+                className={`pointer-events-none inline-block h-7 w-7 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                  wavoipEnabled ? 'translate-x-6' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                ID do Dispositivo (Device ID)
+              </label>
+              <input
+                type="text"
+                value={wavoipDeviceId}
+                onChange={(e) => setWavoipDeviceId(e.target.value)}
+                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all font-mono"
+                placeholder="Ex: 8762253"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                O número do dispositivo exibido no seu painel da WAVoIP (ex: app.wavoip.com/devices/8762253).
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Token de API (API Key)
+              </label>
+              <input
+                type="password"
+                value={wavoipApiKey}
+                onChange={(e) => setWavoipApiKey(e.target.value)}
+                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all font-mono"
+                placeholder="Cole o token secreto da WAVoIP"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Token gerado no painel da WAVoIP em Integrations / API.
+              </p>
+            </div>
+          </div>
+
+          {/* Webhook instructions */}
+          <div className="p-4 bg-gray-50 rounded-xl border border-gray-200">
+            <h4 className="font-semibold text-gray-800 text-sm mb-1">
+              🔗 URL do Webhook para colar no painel da WAVoIP:
+            </h4>
+            <p className="text-xs text-gray-600 mb-2">
+              Copie este endereço e cole no campo <strong>URL de Webhook</strong> do seu dispositivo no site da WAVoIP para receber o status das ligações:
+            </p>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                readOnly
+                value="https://www.rspiscinas.app.br/api/webhook/wame"
+                className="flex-1 p-2.5 bg-white border border-gray-300 rounded-lg text-xs font-mono text-gray-700 select-all"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText('https://www.rspiscinas.app.br/api/webhook/wame');
+                  setCopiedWebhook(true);
+                  setTimeout(() => setCopiedWebhook(false), 2000);
+                }}
+                className="px-3 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-xs font-medium flex items-center transition-colors shadow-sm"
+              >
+                {copiedWebhook ? <Check size={14} className="mr-1" /> : <Copy size={14} className="mr-1" />}
+                {copiedWebhook ? 'Copiado!' : 'Copiar'}
+              </button>
+            </div>
+          </div>
+
+          <div className="pt-2">
+            <button
+              type="submit"
+              disabled={loading}
+              className="flex items-center px-6 py-3 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors font-medium disabled:opacity-50 shadow-sm"
+            >
+              <Save size={20} className="mr-2" />
+              {loading ? 'Salvando...' : 'Salvar Configurações WAVoIP'}
             </button>
           </div>
         </form>
