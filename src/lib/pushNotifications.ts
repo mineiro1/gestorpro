@@ -172,13 +172,42 @@ export async function initCapacitorPushNotifications(
       async (notification: PushNotificationSchema) => {
         console.log('[Capacitor Push] Notificação recebida em primeiro plano:', notification);
 
+        const isChat = notification.data?.channelId === 'chat_messages' || notification.data?.type === 'chat_message';
+        const notifTitle = notification.title || notification.data?.title || (isChat ? '💬 Nova Mensagem' : '✅ Atendimento Finalizado');
+        const notifBody = notification.body || notification.data?.body || '';
+        const targetChannel = isChat ? 'chat_messages' : 'atendimentos_v2';
+        const targetUrl = notification.data?.url || (isChat ? '/messages' : '/routes');
+
         // Play audio alert (differentiates chat messages from visit completions)
         try {
-          const isChat = notification.data?.channelId === 'chat_messages' || notification.data?.type === 'chat_message';
           const soundSrc = isChat ? '/chat_notification.mp3' : '/notificacao.mp3';
           const audio = new Audio(soundSrc);
           audio.play().catch(() => {});
         } catch (e) {}
+
+        // Schedule visual banner notification on Android system bar
+        if (Capacitor.isNativePlatform()) {
+          try {
+            await LocalNotifications.schedule({
+              notifications: [
+                {
+                  id: Math.floor(Math.random() * 1000000) + 1,
+                  title: notifTitle,
+                  body: notifBody,
+                  channelId: targetChannel,
+                  schedule: { at: new Date(Date.now() + 50) },
+                  sound: isChat ? 'chat_notification' : 'notificacao',
+                  extra: {
+                    url: targetUrl,
+                    ...notification.data,
+                  },
+                },
+              ],
+            });
+          } catch (localErr) {
+            console.warn('[Capacitor Push] Erro ao exibir banner local:', localErr);
+          }
+        }
 
         // Notify app components (e.g. invalidate routes query)
         if (handlers?.onVisitCompleted) {
