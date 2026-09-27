@@ -4,9 +4,10 @@ import { getApiUrl } from '../lib/apiConfig';
 
 export interface ActiveCall {
   clientId?: string;
+  clientPhone?: string;
   clientName: string;
   avatarUrl?: string;
-  callId?: string;
+  callId?: string | null;
   sessionId?: string;
   astracallsUrl?: string;
   astracallsApiKey?: string;
@@ -16,7 +17,7 @@ export interface ActiveCall {
 interface CallContextType {
   activeCall: ActiveCall | null;
   isCallOpen: boolean;
-  startCall: (callData: { clientId?: string; clientName: string; avatarUrl?: string }) => Promise<void>;
+  startCall: (callData: { clientId?: string; clientPhone?: string; clientName: string; avatarUrl?: string }) => Promise<void>;
   endCall: (duration?: number) => void;
 }
 
@@ -26,17 +27,18 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
   const [isCallOpen, setIsCallOpen] = useState(false);
 
-  const startCall = async ({ clientId, clientName, avatarUrl }: { clientId?: string; clientName: string; avatarUrl?: string }) => {
-    let callId = `call_${Date.now()}`;
+  const startCall = async ({ clientId, clientPhone, clientName, avatarUrl }: { clientId?: string; clientPhone?: string; clientName: string; avatarUrl?: string }) => {
     let sessionId = 'd4f80e0ee23755d62116e25eabe7501b';
     let astracallsUrl = 'https://calls.rspiscinas.app.br';
     let astracallsApiKey = 'rs_piscinas_segredo_2026';
 
+    // Open modal immediately in dialing state (callId null while connecting)
     setActiveCall({
       clientId,
+      clientPhone,
       clientName: clientName || 'Cliente',
       avatarUrl,
-      callId,
+      callId: null,
       sessionId,
       astracallsUrl,
       astracallsApiKey,
@@ -44,34 +46,61 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     });
     setIsCallOpen(true);
 
+    let realCallId: string | null = null;
+
+    // 1. Tentar primeiro via backend /api/call/start
     try {
-      if (clientId) {
+      if (clientId || clientPhone) {
         const startRes = await fetch(getApiUrl('/api/call/start'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ clientId, callId }),
+          body: JSON.stringify({ clientId, phone: clientPhone }),
         });
 
         if (startRes.ok) {
           const startData = await startRes.json().catch(() => null);
           if (startData && startData.callId) {
-            callId = startData.callId;
+            realCallId = startData.callId;
             sessionId = startData.sessionId || sessionId;
             astracallsUrl = startData.astracallsUrl || astracallsUrl;
             astracallsApiKey = startData.astracallsApiKey || astracallsApiKey;
-
-            setActiveCall((prev) => prev ? {
-              ...prev,
-              callId,
-              sessionId,
-              astracallsUrl,
-              astracallsApiKey
-            } : null);
           }
         }
       }
     } catch (e) {
-      console.warn('Erro ao inicializar chamada no backend:', e);
+      console.warn('Backend /api/call/start indisponível:', e);
+    }
+
+    // 2. Fallback direto ao AstraCalls caso o backend não retorne
+    if (!realCallId && clientPhone) {
+      try {
+        const cleanDigits = String(clientPhone).replace(/\D/g, '');
+        const targetNumber = cleanDigits.startsWith('55') ? cleanDigits : `55${cleanDigits}`;
+        const directRes = await fetch(`${astracallsUrl}/api/sessions/${sessionId}/calls`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Api-Key': astracallsApiKey
+          },
+          body: JSON.stringify({ to: targetNumber, phone: targetNumber })
+        });
+        if (directRes.ok) {
+          const directData = await directRes.json().catch(() => null);
+          realCallId = directData?.call?.callId || directData?.callId || null;
+        }
+      } catch (directErr) {
+        console.warn('Erro ao disparar direto no AstraCalls:', directErr);
+      }
+    }
+
+    if (realCallId) {
+      setActiveCall((prev) => prev ? {
+        ...prev,
+        callId: realCallId,
+        sessionId,
+        astracallsUrl,
+        astracallsApiKey
+      } : null);
     }
   };
 

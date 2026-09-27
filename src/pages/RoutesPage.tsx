@@ -1812,6 +1812,7 @@ export default function RoutesPage() {
                               e.stopPropagation();
                               startCall({
                                 clientId: client.id,
+                                clientPhone: client.phone,
                                 clientName: client.name,
                                 avatarUrl: client.photo_url || client.avatar_url,
                               });

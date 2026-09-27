@@ -858,24 +858,36 @@ setInterval(() => {
 
   app.post("/api/call/start", async (req, res) => {
     try {
-      const { clientId, adminId } = req.body;
-      if (!clientId) {
-        return res.status(400).json({ error: "Missing clientId" });
+      const { clientId, phone, adminId } = req.body;
+      if (!clientId && !phone) {
+        return res.status(400).json({ error: "Missing clientId or phone" });
       }
 
-      // 1. Fetch client from DB to get phone number securely (collaborator never sees it)
-      const { data: client, error: clientErr } = await supabaseAdmin
-        .from('clients')
-        .select('id, name, phone, admin_id')
-        .eq('id', clientId)
-        .single();
+      let targetNumber = '';
+      let clientName = 'Cliente';
 
-      if (clientErr || !client) {
-        return res.status(404).json({ error: "Cliente não encontrado" });
+      if (clientId) {
+        const { data: client, error: clientErr } = await supabaseAdmin
+          .from('clients')
+          .select('id, name, phone, admin_id')
+          .eq('id', clientId)
+          .single();
+
+        if (client && client.phone) {
+          clientName = client.name || clientName;
+          const cleanDigits = String(client.phone).replace(/\D/g, '');
+          targetNumber = cleanDigits.startsWith('55') ? cleanDigits : `55${cleanDigits}`;
+        }
       }
 
-      const cleanDigits = String(client.phone || '').replace(/\D/g, '');
-      const targetNumber = cleanDigits.startsWith('55') ? cleanDigits : `55${cleanDigits}`;
+      if (!targetNumber && phone) {
+        const cleanDigits = String(phone).replace(/\D/g, '');
+        targetNumber = cleanDigits.startsWith('55') ? cleanDigits : `55${cleanDigits}`;
+      }
+
+      if (!targetNumber) {
+        return res.status(404).json({ error: "Número do cliente não encontrado" });
+      }
 
       // 2. AstraCalls session settings
       const astracallsUrl = (process.env.ASTRACALLS_URL || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
@@ -921,7 +933,7 @@ setInterval(() => {
         console.error("[AstraCalls VoIP] Erro ao disparar chamada:", voipErr.message);
       }
 
-      console.log(`[Call Started] In-App Call initiated for client ${client.name} (callId: ${realCallId})`);
+      console.log(`[Call Started] In-App Call initiated for client ${clientName} (callId: ${realCallId})`);
 
       return res.json({
         success: true,
@@ -929,7 +941,7 @@ setInterval(() => {
         sessionId,
         astracallsUrl,
         astracallsApiKey,
-        clientName: client.name,
+        clientName,
         status: "connecting"
       });
     } catch (e: any) {

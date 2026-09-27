@@ -192,47 +192,64 @@ export default function CallModal({ call, onClose }: CallModalProps) {
 
     let ws: WebSocket | null = null;
     let isCleanedUp = false;
+    let retryTimeout: any = null;
 
-    // Connect WebSocket when callId is assigned
-    if (call.callId) {
-      const wsUrl = `${wsBaseUrl}/api/sessions/${sessionId}/calls/${call.callId}/ws?apiKey=${encodeURIComponent(apiKey)}`;
-      try {
-        ws = new WebSocket(wsUrl, ['pcm16']);
-        ws.binaryType = 'arraybuffer';
-        wsRef.current = ws;
+    // Connect WebSocket when callId is assigned and valid
+    if (call.callId && !call.callId.startsWith('call_')) {
+      const connectSocket = () => {
+        if (isCleanedUp) return;
+        const wsUrl = `${wsBaseUrl}/api/sessions/${sessionId}/calls/${call.callId}/ws?apiKey=${encodeURIComponent(apiKey)}`;
+        try {
+          ws = new WebSocket(wsUrl, ['pcm16']);
+          ws.binaryType = 'arraybuffer';
+          wsRef.current = ws;
 
-        ws.onopen = () => {
-          if (isCleanedUp) return;
-          stopRingTone();
-          setCallStatus('connected');
-          startMicCapture(ws!);
-        };
+          ws.onopen = () => {
+            if (isCleanedUp) return;
+            stopRingTone();
+            setCallStatus('connected');
+            startMicCapture(ws!);
+          };
 
-        ws.onmessage = (event) => {
-          if (event.data instanceof ArrayBuffer) {
-            playPCMChunk(event.data);
-          }
-        };
+          ws.onmessage = (event) => {
+            if (event.data instanceof ArrayBuffer) {
+              playPCMChunk(event.data);
+            }
+          };
 
-        ws.onerror = (err) => {
-          console.warn('[VoIP WebSocket error]:', err);
-        };
+          ws.onerror = (err) => {
+            console.warn('[VoIP WebSocket retry]:', err);
+          };
 
-        ws.onclose = () => {
-          if (isCleanedUp) return;
-          stopRingTone();
-          setCallStatus('ended');
-          setTimeout(() => {
-            onClose(duration);
-          }, 1000);
-        };
-      } catch (err) {
-        console.warn('Erro ao conectar WebSocket de áudio:', err);
-      }
+          ws.onclose = (ev) => {
+            if (isCleanedUp) return;
+            // Se já estava conectado e o servidor fechou (ex: cliente desligou no WhatsApp)
+            if (callStatus === 'connected') {
+              stopRingTone();
+              setCallStatus('ended');
+              setTimeout(() => {
+                onClose(duration);
+              }, 1200);
+            } else {
+              // Se ainda estava conectando, tentar reconectar em 1s
+              retryTimeout = setTimeout(() => {
+                if (!isCleanedUp && callStatus !== 'ended') {
+                  connectSocket();
+                }
+              }, 1200);
+            }
+          };
+        } catch (err) {
+          console.warn('Erro ao conectar WebSocket de áudio:', err);
+        }
+      };
+
+      connectSocket();
     }
 
     return () => {
       isCleanedUp = true;
+      if (retryTimeout) clearTimeout(retryTimeout);
       cleanupAudio();
     };
   }, [call.callId, call.sessionId]);
