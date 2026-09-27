@@ -169,6 +169,113 @@ export async function checkWhatsAppMessageStatus(
   return null;
 }
 
+export const sendAstraCallsMessage = async (
+  phone: string,
+  text: string,
+  waSettings?: any,
+  message_client_id?: string,
+  mediaBase64?: string,
+  mimeType?: string
+) => {
+  const targetNumber = formatWhatsAppNumber(phone);
+  if (!targetNumber) {
+    throw new Error("Número de telefone inválido.");
+  }
+
+  // Idempotency check
+  const idempotencyKey = message_client_id || `astra_${targetNumber}_${(text || '').trim()}_${mediaBase64 ? 'media' : 'txt'}`;
+  const now = Date.now();
+  if (clientRecentSends.has(idempotencyKey)) {
+    const cached = clientRecentSends.get(idempotencyKey)!;
+    if (now - cached.timestamp < 30000) {
+      console.warn(`[Idempotência WhatsApp] Ignorando envio repetido para ${targetNumber} nos últimos 30s.`);
+      return cached.result;
+    }
+  }
+
+  const astracallsUrl = (waSettings?.astracallsUrl || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
+  const astracallsApiKey = waSettings?.astracallsApiKey || 'rs_piscinas_segredo_2026';
+  const sessionId = waSettings?.astracallsSessionId || 'd4f80e0ee23755d62116e25eabe7501b';
+
+  // 1. Tentar primeiro via backend proxy (/api/chat/send)
+  try {
+    const backendUrl = getApiUrl('/api/chat/send');
+    const bRes = await fetch(backendUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recipient: targetNumber,
+        text: text || '',
+        mediaBase64,
+        mimeType,
+        message_client_id
+      })
+    });
+    const contentType = bRes.headers.get('content-type') || '';
+    if (bRes.ok && contentType.includes('application/json')) {
+      const bData = await bRes.json();
+      if (bData && bData.success) {
+        clientRecentSends.set(idempotencyKey, { timestamp: Date.now(), result: bData });
+        return bData;
+      }
+    }
+  } catch (backendErr) {
+    console.warn('[sendAstraCallsMessage] Backend proxy indisponível, tentando envio direto ao AstraCalls:', backendErr);
+  }
+
+  // 2. Envio Direto ao AstraCalls (https://calls.rspiscinas.app.br)
+  let endpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/text`;
+  let bodyObj: any = {
+    to: targetNumber,
+    phone: targetNumber,
+    recipient: targetNumber,
+    text: text || '',
+    message: text || ''
+  };
+
+  if (mediaBase64 && mimeType) {
+    const isPublicUrl = mediaBase64.startsWith('http://') || mediaBase64.startsWith('https://');
+    const mediaUrlToSend = isPublicUrl ? mediaBase64 : await uploadMediaToPublicStorage(mediaBase64, mimeType);
+    bodyObj.mediaUrl = mediaUrlToSend;
+    bodyObj.mimeType = mimeType;
+    if (mimeType.startsWith('audio/')) {
+      endpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/audio`;
+    }
+  }
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Api-Key': astracallsApiKey
+      },
+      body: JSON.stringify(bodyObj)
+    });
+
+    const respText = await response.text().catch(() => '');
+    let parsed: any = null;
+    try {
+      parsed = JSON.parse(respText);
+    } catch (e) {
+      parsed = { text: respText };
+    }
+
+    if (response.ok) {
+      const result = parsed || { success: true };
+      clientRecentSends.set(idempotencyKey, { timestamp: Date.now(), result });
+      return result;
+    } else {
+      throw new Error(`Erro no servidor AstraCalls (${response.status}): ${parsed?.error || respText || 'Falha no envio'}`);
+    }
+  } catch (e: any) {
+    if (e.message === 'Failed to fetch') {
+      throw new Error(`Falha de conexão com AstraCalls (${astracallsUrl}). Verifique se o servidor está online.`);
+    }
+    throw e;
+  }
+};
+
 export const sendEvolutionMessage = async (
   phone: string,
   text: string,
