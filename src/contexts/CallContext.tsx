@@ -1,11 +1,15 @@
-import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState } from 'react';
 import CallModal from '../components/CallModal';
+import { getApiUrl } from '../lib/apiConfig';
 
 export interface ActiveCall {
   clientId?: string;
   clientName: string;
   avatarUrl?: string;
   callId?: string;
+  sessionId?: string;
+  astracallsUrl?: string;
+  astracallsApiKey?: string;
   startedAt?: number;
 }
 
@@ -23,23 +27,48 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   const [isCallOpen, setIsCallOpen] = useState(false);
 
   const startCall = async ({ clientId, clientName, avatarUrl }: { clientId?: string; clientName: string; avatarUrl?: string }) => {
-    const callId = `call_${Date.now()}`;
+    let callId = `call_${Date.now()}`;
+    let sessionId = 'd4f80e0ee23755d62116e25eabe7501b';
+    let astracallsUrl = 'https://calls.rspiscinas.app.br';
+    let astracallsApiKey = 'rs_piscinas_segredo_2026';
+
     setActiveCall({
       clientId,
       clientName: clientName || 'Cliente',
       avatarUrl,
       callId,
+      sessionId,
+      astracallsUrl,
+      astracallsApiKey,
       startedAt: Date.now(),
     });
     setIsCallOpen(true);
 
     try {
       if (clientId) {
-        await fetch('/api/call/start', {
+        const startRes = await fetch(getApiUrl('/api/call/start'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ clientId, callId }),
         });
+
+        if (startRes.ok) {
+          const startData = await startRes.json().catch(() => null);
+          if (startData && startData.callId) {
+            callId = startData.callId;
+            sessionId = startData.sessionId || sessionId;
+            astracallsUrl = startData.astracallsUrl || astracallsUrl;
+            astracallsApiKey = startData.astracallsApiKey || astracallsApiKey;
+
+            setActiveCall((prev) => prev ? {
+              ...prev,
+              callId,
+              sessionId,
+              astracallsUrl,
+              astracallsApiKey
+            } : null);
+          }
+        }
       }
     } catch (e) {
       console.warn('Erro ao inicializar chamada no backend:', e);
@@ -49,18 +78,20 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   const endCall = (duration?: number) => {
     if (activeCall) {
       const callDuration = duration || (activeCall.startedAt ? Math.round((Date.now() - activeCall.startedAt) / 1000) : 0);
-      fetch('/api/call/hangup', {
+      
+      fetch(getApiUrl('/api/call/hangup'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           clientId: activeCall.clientId,
           clientName: activeCall.clientName,
           callId: activeCall.callId,
+          sessionId: activeCall.sessionId,
           duration: callDuration,
         }),
       }).catch((e) => console.warn('Erro ao encerrar chamada no backend:', e));
 
-      fetch('/api/calls/log', {
+      fetch(getApiUrl('/api/calls/log'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

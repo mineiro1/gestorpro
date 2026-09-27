@@ -7,23 +7,34 @@ interface CallModalProps {
   onClose: (duration?: number) => void;
 }
 
+const SAMPLE_RATE = 16000;
+const BUFFER_SIZE = 512;
+const JITTER_BUFFER_MS = 0.06;
+
 export default function CallModal({ call, onClose }: CallModalProps) {
   const [callStatus, setCallStatus] = useState<'dialing' | 'connected' | 'ended'>('dialing');
   const [isMuted, setIsMuted] = useState(false);
   const [isSpeakerOn, setIsSpeakerOn] = useState(true);
   const [duration, setDuration] = useState(0);
-  const timerRef = useRef<any>(null);
-  const audioStreamRef = useRef<MediaStream | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const ringOscRef = useRef<any>(null);
 
-  // Sound generator for realistic ringtone & disconnect tone
+  const timerRef = useRef<any>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const captureCtxRef = useRef<AudioContext | null>(null);
+  const playbackCtxRef = useRef<AudioContext | null>(null);
+  const processorNodeRef = useRef<ScriptProcessorNode | null>(null);
+  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const playCursorRef = useRef<number>(0);
+  const ringOscRef = useRef<any>(null);
+  const ringAudioCtxRef = useRef<AudioContext | null>(null);
+
+  // Sound generator for realistic telephone ringing tone
   const playRingTone = () => {
     try {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) return;
       const ctx = new AudioCtx();
-      audioCtxRef.current = ctx;
+      ringAudioCtxRef.current = ctx;
 
       const playBeep = () => {
         if (ctx.state === 'closed') return;
@@ -51,44 +62,182 @@ export default function CallModal({ call, onClose }: CallModalProps) {
       clearInterval(ringOscRef.current);
       ringOscRef.current = null;
     }
-    if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
+    if (ringAudioCtxRef.current && ringAudioCtxRef.current.state !== 'closed') {
       try {
-        audioCtxRef.current.close();
+        ringAudioCtxRef.current.close();
       } catch (e) {}
     }
   };
 
-  // Connect Call after simulated dialing / network connection
+  // Convert incoming PCM16 ArrayBuffer to Float32 and schedule playback
+  const playPCMChunk = (arrayBuffer: ArrayBuffer) => {
+    if (!playbackCtxRef.current) {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      playbackCtxRef.current = new AudioCtx({ sampleRate: SAMPLE_RATE });
+      playCursorRef.current = playbackCtxRef.current.currentTime;
+    }
+
+    const ctx = playbackCtxRef.current;
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+
+    const int16 = new Int16Array(arrayBuffer);
+    if (int16.length === 0) return;
+
+    const float32 = new Float32Array(int16.length);
+    for (let i = 0; i < int16.length; i++) {
+      float32[i] = int16[i] / 32768;
+    }
+
+    const buffer = ctx.createBuffer(1, float32.length, SAMPLE_RATE);
+    buffer.copyToChannel(float32, 0);
+
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+
+    const now = ctx.currentTime;
+    if (playCursorRef.current < now + 0.005) {
+      playCursorRef.current = now + JITTER_BUFFER_MS;
+    }
+
+    source.start(playCursorRef.current);
+    playCursorRef.current += buffer.duration;
+  };
+
+  // Capture Microphone and stream PCM16 chunks over WebSocket
+  const startMicCapture = async (ws: WebSocket) => {
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) return;
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          sampleRate: SAMPLE_RATE,
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        }
+      });
+      micStreamRef.current = stream;
+
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      const actx = new AudioCtx({ sampleRate: SAMPLE_RATE });
+      captureCtxRef.current = actx;
+
+      const source = actx.createMediaStreamSource(stream);
+      sourceNodeRef.current = source;
+
+      const processor = actx.createScriptProcessor(BUFFER_SIZE, 1, 1);
+      processorNodeRef.current = processor;
+
+      processor.onaudioprocess = (e) => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        const input = e.inputBuffer.getChannelData(0);
+        const int16 = new Int16Array(input.length);
+        for (let i = 0; i < input.length; i++) {
+          const clamped = Math.max(-1, Math.min(1, input[i]));
+          int16[i] = clamped < 0 ? clamped * 32768 : clamped * 32767;
+        }
+        ws.send(int16.buffer);
+      };
+
+      source.connect(processor);
+      processor.connect(actx.destination);
+    } catch (micErr) {
+      console.warn('Microfone não disponível ou permissão negada:', micErr);
+    }
+  };
+
+  const cleanupAudio = () => {
+    stopRingTone();
+
+    if (processorNodeRef.current) {
+      processorNodeRef.current.disconnect();
+      processorNodeRef.current = null;
+    }
+    if (sourceNodeRef.current) {
+      sourceNodeRef.current.disconnect();
+      sourceNodeRef.current = null;
+    }
+    if (captureCtxRef.current) {
+      captureCtxRef.current.close().catch(() => {});
+      captureCtxRef.current = null;
+    }
+    if (playbackCtxRef.current) {
+      playbackCtxRef.current.close().catch(() => {});
+      playbackCtxRef.current = null;
+    }
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach((track) => track.stop());
+      micStreamRef.current = null;
+    }
+    if (wsRef.current) {
+      try {
+        wsRef.current.close();
+      } catch (e) {}
+      wsRef.current = null;
+    }
+  };
+
+  // Main Call Lifecycle Effect
   useEffect(() => {
     playRingTone();
 
-    // Start local audio capture (Microphone)
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      navigator.mediaDevices.getUserMedia({ audio: true })
-        .then((stream) => {
-          audioStreamRef.current = stream;
-        })
-        .catch((err) => {
-          console.warn('Microphone permission not granted or unavailable:', err);
-        });
+    const sessionId = call.sessionId || 'd4f80e0ee23755d62116e25eabe7501b';
+    const apiKey = call.astracallsApiKey || 'rs_piscinas_segredo_2026';
+    const rawUrl = call.astracallsUrl || 'https://calls.rspiscinas.app.br';
+    const wsBaseUrl = rawUrl.replace(/^https:\/\//i, 'wss://').replace(/^http:\/\//i, 'ws://');
+
+    let ws: WebSocket | null = null;
+    let isCleanedUp = false;
+
+    // Connect WebSocket when callId is assigned
+    if (call.callId) {
+      const wsUrl = `${wsBaseUrl}/api/sessions/${sessionId}/calls/${call.callId}/ws?apiKey=${encodeURIComponent(apiKey)}`;
+      try {
+        ws = new WebSocket(wsUrl, ['pcm16']);
+        ws.binaryType = 'arraybuffer';
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          if (isCleanedUp) return;
+          stopRingTone();
+          setCallStatus('connected');
+          startMicCapture(ws!);
+        };
+
+        ws.onmessage = (event) => {
+          if (event.data instanceof ArrayBuffer) {
+            playPCMChunk(event.data);
+          }
+        };
+
+        ws.onerror = (err) => {
+          console.warn('[VoIP WebSocket error]:', err);
+        };
+
+        ws.onclose = () => {
+          if (isCleanedUp) return;
+          stopRingTone();
+          setCallStatus('ended');
+          setTimeout(() => {
+            onClose(duration);
+          }, 1000);
+        };
+      } catch (err) {
+        console.warn('Erro ao conectar WebSocket de áudio:', err);
+      }
     }
 
-    // Connect after 3 seconds
-    const connectTimer = setTimeout(() => {
-      stopRingTone();
-      setCallStatus('connected');
-    }, 3200);
-
     return () => {
-      clearTimeout(connectTimer);
-      stopRingTone();
-      if (audioStreamRef.current) {
-        audioStreamRef.current.getTracks().forEach((track) => track.stop());
-      }
+      isCleanedUp = true;
+      cleanupAudio();
     };
-  }, []);
+  }, [call.callId, call.sessionId]);
 
-  // Timer when connected
+  // Duration Timer when connected
   useEffect(() => {
     if (callStatus === 'connected') {
       timerRef.current = setInterval(() => {
@@ -105,8 +254,8 @@ export default function CallModal({ call, onClose }: CallModalProps) {
 
   // Handle Mute Toggle
   const toggleMute = () => {
-    if (audioStreamRef.current) {
-      audioStreamRef.current.getAudioTracks().forEach((track) => {
+    if (micStreamRef.current) {
+      micStreamRef.current.getAudioTracks().forEach((track) => {
         track.enabled = isMuted; // toggle
       });
     }
@@ -115,20 +264,24 @@ export default function CallModal({ call, onClose }: CallModalProps) {
 
   // Handle Speaker Toggle
   const toggleSpeaker = () => {
+    if (playbackCtxRef.current) {
+      if (isSpeakerOn) {
+        playbackCtxRef.current.suspend().catch(() => {});
+      } else {
+        playbackCtxRef.current.resume().catch(() => {});
+      }
+    }
     setIsSpeakerOn(!isSpeakerOn);
   };
 
   // Handle End Call
   const handleEndCall = () => {
-    stopRingTone();
-    setCallStatus('ended');
     const finalDuration = duration;
-    if (audioStreamRef.current) {
-      audioStreamRef.current.getTracks().forEach((track) => track.stop());
-    }
+    cleanupAudio();
+    setCallStatus('ended');
     setTimeout(() => {
       onClose(finalDuration);
-    }, 800);
+    }, 600);
   };
 
   const formatTime = (secs: number) => {
@@ -146,13 +299,13 @@ export default function CallModal({ call, onClose }: CallModalProps) {
           {callStatus === 'dialing' && (
             <div className="inline-flex items-center px-3 py-1 rounded-full bg-blue-500/20 text-blue-300 text-xs font-medium animate-pulse border border-blue-500/30">
               <span className="w-2 h-2 rounded-full bg-blue-400 mr-2 animate-ping" />
-              Chamando...
+              Chamando cliente no WhatsApp...
             </div>
           )}
           {callStatus === 'connected' && (
             <div className="inline-flex items-center px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-300 text-xs font-medium border border-emerald-500/30">
               <span className="w-2 h-2 rounded-full bg-emerald-400 mr-2 animate-pulse" />
-              Em chamada
+              Em chamada de voz ao vivo
             </div>
           )}
           {callStatus === 'ended' && (
@@ -189,7 +342,7 @@ export default function CallModal({ call, onClose }: CallModalProps) {
 
         {/* Call Timer or Ringing Subtext */}
         <div className="text-sm font-medium text-gray-400 mb-8">
-          {callStatus === 'dialing' && 'Conectando linha de voz...'}
+          {callStatus === 'dialing' && 'Tocando no WhatsApp do cliente...'}
           {callStatus === 'connected' && (
             <span className="text-lg font-semibold text-emerald-400 font-mono">
               {formatTime(duration)}

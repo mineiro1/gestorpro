@@ -877,69 +877,59 @@ setInterval(() => {
       const cleanDigits = String(client.phone || '').replace(/\D/g, '');
       const targetNumber = cleanDigits.startsWith('55') ? cleanDigits : `55${cleanDigits}`;
 
-      // 2. Lookup whatsapp_settings
-      const adminToSearch = adminId || client.admin_id;
-      let waSettings: any = null;
-      if (adminToSearch) {
-        const { data: specificAdmin } = await supabaseAdmin.from('users').select('whatsapp_settings').eq('id', adminToSearch).maybeSingle();
-        if (specificAdmin?.whatsapp_settings) {
-          waSettings = specificAdmin.whatsapp_settings;
+      // 2. AstraCalls session settings
+      const astracallsUrl = (process.env.ASTRACALLS_URL || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
+      const astracallsApiKey = process.env.ASTRACALLS_API_KEY || 'rs_piscinas_segredo_2026';
+      let sessionId = 'd4f80e0ee23755d62116e25eabe7501b';
+
+      try {
+        const sessRes = await fetch(`${astracallsUrl}/api/sessions`, {
+          headers: { 'X-Api-Key': astracallsApiKey }
+        });
+        if (sessRes.ok) {
+          const sData = await sessRes.json();
+          const openSess = sData?.sessions?.find((s: any) => s.state === 'open' || s.paired) || sData?.sessions?.[0];
+          if (openSess?.id) sessionId = openSess.id;
         }
-      }
-      if (!waSettings) {
-        const { data: adminUsers } = await supabaseAdmin
-          .from('users')
-          .select('whatsapp_settings')
-          .not('whatsapp_settings', 'is', null);
-        const validAdmin = adminUsers?.find(u => u.whatsapp_settings?.evolutionApiKey || u.whatsapp_settings?.metaToken || u.whatsapp_settings?.wavoipUrl);
-        if (validAdmin?.whatsapp_settings) {
-          waSettings = validAdmin.whatsapp_settings;
+      } catch (e) {}
+
+      // 3. Initiate Real VoIP Call on AstraCalls
+      let realCallId = `call_${Date.now()}`;
+      try {
+        console.log(`[AstraCalls VoIP] Iniciando chamada para ${targetNumber} na sessão ${sessionId}...`);
+        const callRes = await fetch(`${astracallsUrl}/api/sessions/${sessionId}/calls`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Api-Key': astracallsApiKey
+          },
+          body: JSON.stringify({
+            to: targetNumber,
+            phone: targetNumber
+          })
+        });
+
+        if (callRes.ok) {
+          const callData = await callRes.json();
+          realCallId = callData?.call?.callId || callData?.callId || realCallId;
+          console.log(`[AstraCalls VoIP] Chamada iniciada com sucesso no WhatsApp! CallId: ${realCallId}`);
+        } else {
+          const errBody = await callRes.text();
+          console.warn(`[AstraCalls VoIP] Resposta AstraCalls ${callRes.status}:`, errBody);
         }
-      }
-
-      const callId = `call_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-
-      // 3. If WAVoIP or VoIP gateway is configured, trigger outbound call
-      if (waSettings?.wavoipApiKey || waSettings?.wavoipUrl || waSettings?.evolutionApiUrl) {
-        try {
-          const apiKey = waSettings.wavoipApiKey || waSettings.evolutionApiKey || waSettings.metaToken;
-          let voipUrl = waSettings.wavoipUrl;
-
-          if (!voipUrl && waSettings.wavoipDeviceId) {
-            const baseApi = waSettings.wavoipApiUrl || 'https://app.wavoip.com/api/v1';
-            voipUrl = `${baseApi.replace(/\/$/, '')}/devices/${waSettings.wavoipDeviceId}/calls`;
-          } else if (!voipUrl && waSettings.evolutionApiUrl) {
-            voipUrl = `${waSettings.evolutionApiUrl}/call/start`;
-          }
-
-          if (voipUrl) {
-            console.log(`[VoIP Gateway] Disparando chamada para ${targetNumber} via ${voipUrl}`);
-            await fetch(voipUrl, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                ...(apiKey ? { 'apikey': apiKey, 'Authorization': `Bearer ${apiKey}`, 'x-api-key': apiKey } : {})
-              },
-              body: JSON.stringify({
-                to: targetNumber,
-                phone: targetNumber,
-                number: targetNumber,
-                callId,
-                action: 'start_call',
-                deviceId: waSettings.wavoipDeviceId
-              })
-            }).catch(err => console.log('[VoIP Gateway Call notice]', err.message));
-          }
-        } catch (e: any) {
-          console.log('[VoIP Error]', e.message);
-        }
+      } catch (voipErr: any) {
+        console.error("[AstraCalls VoIP] Erro ao disparar chamada:", voipErr.message);
       }
 
-      console.log(`[Call Started] In-App Call initiated for client ${client.name} (callId: ${callId})`);
+      console.log(`[Call Started] In-App Call initiated for client ${client.name} (callId: ${realCallId})`);
 
       return res.json({
         success: true,
-        callId,
+        callId: realCallId,
+        sessionId,
+        astracallsUrl,
+        astracallsApiKey,
+        clientName: client.name,
         status: "connecting"
       });
     } catch (e: any) {
@@ -950,33 +940,31 @@ setInterval(() => {
 
   app.post("/api/call/hangup", async (req, res) => {
     try {
-      const { callId, clientId, duration, clientName, callerName } = req.body;
+      const { callId, sessionId, clientId, duration, clientName, callerName } = req.body;
       console.log(`[Call Ended] Call hung up: ${callId || clientId} (duration: ${duration || 0}s)`);
+
+      const sid = sessionId || 'd4f80e0ee23755d62116e25eabe7501b';
+      const astracallsUrl = (process.env.ASTRACALLS_URL || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
+      const astracallsApiKey = process.env.ASTRACALLS_API_KEY || 'rs_piscinas_segredo_2026';
+
+      if (callId) {
+        try {
+          await fetch(`${astracallsUrl}/api/sessions/${sid}/calls/${callId}`, {
+            method: 'DELETE',
+            headers: { 'X-Api-Key': astracallsApiKey }
+          }).catch(() => {});
+        } catch (e) {}
+      }
 
       if (clientId || clientName) {
         const logId = `call_log_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-        const logEntry = {
-          id: logId,
-          call_id: callId || `call_${Date.now()}`,
-          client_id: clientId || null,
-          client_name: clientName || 'Cliente',
-          caller_name: callerName || 'Colaborador',
-          duration: Number(duration || 0),
-          status: 'completed',
-          recording_url: `https://calls.rspiscinas.app.br/api/sessions/d4f80e0ee23755d62116e25eabe7501b/calls`,
-          created_at: new Date().toISOString()
-        };
-
         try {
           await supabaseAdmin.from('settings').insert({
             id: logId,
             monthlyprice: Number(duration || 0),
-            updated_at: new Date().toISOString(),
-            // Storing metadata in id/extra JSON
+            updated_at: new Date().toISOString()
           });
-        } catch (dbErr) {
-          console.warn("[/api/call/hangup] Erro ao salvar log no settings:", dbErr);
-        }
+        } catch (dbErr) {}
       }
 
       return res.json({ success: true });
