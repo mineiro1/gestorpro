@@ -4,7 +4,7 @@ import { ActiveCall } from '../contexts/CallContext';
 
 interface CallModalProps {
   call: ActiveCall;
-  onClose: () => void;
+  onClose: (duration?: number) => void;
 }
 
 export default function CallModal({ call, onClose }: CallModalProps) {
@@ -122,11 +122,12 @@ export default function CallModal({ call, onClose }: CallModalProps) {
   const handleEndCall = () => {
     stopRingTone();
     setCallStatus('ended');
+    const finalDuration = duration;
     if (audioStreamRef.current) {
       audioStreamRef.current.getTracks().forEach((track) => track.stop());
     }
     setTimeout(() => {
-      onClose();
+      onClose(finalDuration);
     }, 800);
   };
 
