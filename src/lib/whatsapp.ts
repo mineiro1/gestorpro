@@ -9,14 +9,32 @@ export const getWhatsAppNumbersToTry = (phone: string): string[] => {
   const cleanPhone = phone.replace(/\D/g, '');
   if (!cleanPhone) return [];
 
-  let rawNumber = cleanPhone.startsWith('55') ? cleanPhone : `55${cleanPhone}`;
-  return [rawNumber];
+  let baseNumber = cleanPhone;
+  if (!baseNumber.startsWith('55') && (baseNumber.length === 10 || baseNumber.length === 11)) {
+    baseNumber = '55' + baseNumber;
+  }
+
+  const variants: string[] = [baseNumber];
+  if (baseNumber.startsWith('55') && baseNumber.length >= 12) {
+    const ddd = baseNumber.substring(2, 4);
+    const rest = baseNumber.substring(4);
+    if (baseNumber.length === 13 && rest.startsWith('9')) {
+      variants.push(`55${ddd}${rest.substring(1)}`);
+    } else if (baseNumber.length === 12) {
+      variants.push(`55${ddd}9${rest}`);
+    }
+  }
+
+  return [...new Set(variants)];
 };
 
 export const formatWhatsAppNumber = (phone: string): string => {
   if (!phone) return '';
   const cleanPhone = phone.replace(/\D/g, '');
   if (!cleanPhone) return '';
+  if (!cleanPhone.startsWith('55') && (cleanPhone.length === 10 || cleanPhone.length === 11)) {
+    return `55${cleanPhone}`;
+  }
   return cleanPhone.startsWith('55') ? cleanPhone : `55${cleanPhone}`;
 };
 
@@ -224,55 +242,64 @@ export const sendAstraCallsMessage = async (
   }
 
   // 2. Envio Direto ao AstraCalls (https://calls.rspiscinas.app.br)
-  let endpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/text`;
-  let bodyObj: any = {
-    to: targetNumber,
-    phone: targetNumber,
-    recipient: targetNumber,
-    text: text || '',
-    message: text || ''
-  };
+  const numbersToTry = getWhatsAppNumbersToTry(phone);
+  let lastError: any = null;
 
-  if (mediaBase64 && mimeType) {
-    const isPublicUrl = mediaBase64.startsWith('http://') || mediaBase64.startsWith('https://');
-    const mediaUrlToSend = isPublicUrl ? mediaBase64 : await uploadMediaToPublicStorage(mediaBase64, mimeType);
-    bodyObj.mediaUrl = mediaUrlToSend;
-    bodyObj.mimeType = mimeType;
-    if (mimeType.startsWith('audio/')) {
-      endpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/audio`;
+  for (const currentTarget of numbersToTry) {
+    let endpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/text`;
+    let bodyObj: any = {
+      to: currentTarget,
+      phone: currentTarget,
+      recipient: currentTarget,
+      text: text || '',
+      message: text || ''
+    };
+
+    if (mediaBase64 && mimeType) {
+      const isPublicUrl = mediaBase64.startsWith('http://') || mediaBase64.startsWith('https://');
+      const mediaUrlToSend = isPublicUrl ? mediaBase64 : await uploadMediaToPublicStorage(mediaBase64, mimeType);
+      bodyObj.mediaUrl = mediaUrlToSend;
+      bodyObj.mimeType = mimeType;
+      if (mimeType.startsWith('audio/')) {
+        endpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/audio`;
+      }
+    }
+
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Api-Key': astracallsApiKey
+        },
+        body: JSON.stringify(bodyObj)
+      });
+
+      const respText = await response.text().catch(() => '');
+      let parsed: any = null;
+      try {
+        parsed = JSON.parse(respText);
+      } catch (e) {
+        parsed = { text: respText };
+      }
+
+      if (response.ok) {
+        const result = parsed || { success: true };
+        clientRecentSends.set(idempotencyKey, { timestamp: Date.now(), result });
+        return result;
+      } else {
+        lastError = new Error(`Erro no servidor AstraCalls (${response.status}): ${parsed?.error || respText || 'Falha no envio'}`);
+      }
+    } catch (e: any) {
+      lastError = e;
     }
   }
 
-  try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Api-Key': astracallsApiKey
-      },
-      body: JSON.stringify(bodyObj)
-    });
-
-    const respText = await response.text().catch(() => '');
-    let parsed: any = null;
-    try {
-      parsed = JSON.parse(respText);
-    } catch (e) {
-      parsed = { text: respText };
-    }
-
-    if (response.ok) {
-      const result = parsed || { success: true };
-      clientRecentSends.set(idempotencyKey, { timestamp: Date.now(), result });
-      return result;
-    } else {
-      throw new Error(`Erro no servidor AstraCalls (${response.status}): ${parsed?.error || respText || 'Falha no envio'}`);
-    }
-  } catch (e: any) {
-    if (e.message === 'Failed to fetch') {
+  if (lastError) {
+    if (lastError.message === 'Failed to fetch') {
       throw new Error(`Falha de conexão com AstraCalls (${astracallsUrl}). Verifique se o servidor está online.`);
     }
-    throw e;
+    throw lastError;
   }
 };
 

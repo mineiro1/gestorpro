@@ -73,23 +73,40 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
 
     // 2. Fallback direto ao AstraCalls caso o backend não retorne
     if (!realCallId && clientPhone) {
-      try {
-        const cleanDigits = String(clientPhone).replace(/\D/g, '');
-        const targetNumber = cleanDigits.startsWith('55') ? cleanDigits : `55${cleanDigits}`;
-        const directRes = await fetch(`${astracallsUrl}/api/sessions/${sessionId}/calls`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Api-Key': astracallsApiKey
-          },
-          body: JSON.stringify({ to: targetNumber, phone: targetNumber })
-        });
-        if (directRes.ok) {
-          const directData = await directRes.json().catch(() => null);
-          realCallId = directData?.call?.callId || directData?.callId || null;
+      const cleanDigits = String(clientPhone).replace(/\D/g, '');
+      let baseNumber = cleanDigits;
+      if (!baseNumber.startsWith('55') && (baseNumber.length === 10 || baseNumber.length === 11)) {
+        baseNumber = '55' + baseNumber;
+      }
+      const variants: string[] = [baseNumber];
+      if (baseNumber.startsWith('55') && baseNumber.length >= 12) {
+        const ddd = baseNumber.substring(2, 4);
+        const rest = baseNumber.substring(4);
+        if (baseNumber.length === 13 && rest.startsWith('9')) {
+          variants.push(`55${ddd}${rest.substring(1)}`);
+        } else if (baseNumber.length === 12) {
+          variants.push(`55${ddd}9${rest}`);
         }
-      } catch (directErr) {
-        console.warn('Erro ao disparar direto no AstraCalls:', directErr);
+      }
+
+      for (const targetNumber of variants) {
+        try {
+          const directRes = await fetch(`${astracallsUrl}/api/sessions/${sessionId}/calls`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Api-Key': astracallsApiKey
+            },
+            body: JSON.stringify({ to: targetNumber, phone: targetNumber })
+          });
+          if (directRes.ok) {
+            const directData = await directRes.json().catch(() => null);
+            realCallId = directData?.call?.callId || directData?.callId || null;
+            if (realCallId) break;
+          }
+        } catch (directErr) {
+          console.warn('Erro ao disparar direto no AstraCalls:', directErr);
+        }
       }
     }
 

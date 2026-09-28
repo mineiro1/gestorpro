@@ -863,7 +863,7 @@ setInterval(() => {
         return res.status(400).json({ error: "Missing clientId or phone" });
       }
 
-      let targetNumber = '';
+      let rawNumber = '';
       let clientName = 'Cliente';
 
       if (clientId) {
@@ -875,18 +875,36 @@ setInterval(() => {
 
         if (client && client.phone) {
           clientName = client.name || clientName;
-          const cleanDigits = String(client.phone).replace(/\D/g, '');
-          targetNumber = cleanDigits.startsWith('55') ? cleanDigits : `55${cleanDigits}`;
+          rawNumber = client.phone;
         }
       }
 
-      if (!targetNumber && phone) {
-        const cleanDigits = String(phone).replace(/\D/g, '');
-        targetNumber = cleanDigits.startsWith('55') ? cleanDigits : `55${cleanDigits}`;
+      if (!rawNumber && phone) {
+        rawNumber = phone;
       }
 
-      if (!targetNumber) {
+      const cleanDigits = String(rawNumber || '').replace(/\D/g, '');
+      if (!cleanDigits) {
         return res.status(404).json({ error: "Número do cliente não encontrado" });
+      }
+
+      // Normalização inteligente de DDI 55 e 9º dígito
+      let baseNumber = cleanDigits;
+      if (!baseNumber.startsWith('55') && (baseNumber.length === 10 || baseNumber.length === 11)) {
+        baseNumber = '55' + baseNumber;
+      }
+
+      const variants: string[] = [baseNumber];
+      if (baseNumber.startsWith('55') && baseNumber.length >= 12) {
+        const ddd = baseNumber.substring(2, 4);
+        const rest = baseNumber.substring(4);
+        if (baseNumber.length === 13 && rest.startsWith('9')) {
+          // Se possui 13 dígitos (com 9), cria variante de 12 dígitos (sem 9)
+          variants.push(`55${ddd}${rest.substring(1)}`);
+        } else if (baseNumber.length === 12) {
+          // Se possui 12 dígitos (sem 9), cria variante de 13 dígitos (com 9)
+          variants.push(`55${ddd}9${rest}`);
+        }
       }
 
       // 2. AstraCalls session settings
@@ -905,32 +923,38 @@ setInterval(() => {
         }
       } catch (e) {}
 
-      // 3. Initiate Real VoIP Call on AstraCalls
+      // 3. Initiate Real VoIP Call on AstraCalls (tentando variantes se necessário)
       let realCallId = `call_${Date.now()}`;
-      try {
-        console.log(`[AstraCalls VoIP] Iniciando chamada para ${targetNumber} na sessão ${sessionId}...`);
-        const callRes = await fetch(`${astracallsUrl}/api/sessions/${sessionId}/calls`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Api-Key': astracallsApiKey
-          },
-          body: JSON.stringify({
-            to: targetNumber,
-            phone: targetNumber
-          })
-        });
+      let callCreated = false;
 
-        if (callRes.ok) {
-          const callData = await callRes.json();
-          realCallId = callData?.call?.callId || callData?.callId || realCallId;
-          console.log(`[AstraCalls VoIP] Chamada iniciada com sucesso no WhatsApp! CallId: ${realCallId}`);
-        } else {
-          const errBody = await callRes.text();
-          console.warn(`[AstraCalls VoIP] Resposta AstraCalls ${callRes.status}:`, errBody);
+      for (const targetNumber of variants) {
+        try {
+          console.log(`[AstraCalls VoIP] Tentando chamada para ${targetNumber} na sessão ${sessionId}...`);
+          const callRes = await fetch(`${astracallsUrl}/api/sessions/${sessionId}/calls`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Api-Key': astracallsApiKey
+            },
+            body: JSON.stringify({
+              to: targetNumber,
+              phone: targetNumber
+            })
+          });
+
+          if (callRes.ok) {
+            const callData = await callRes.json();
+            realCallId = callData?.call?.callId || callData?.callId || realCallId;
+            console.log(`[AstraCalls VoIP] Chamada iniciada com sucesso no WhatsApp para ${targetNumber}! CallId: ${realCallId}`);
+            callCreated = true;
+            break;
+          } else {
+            const errBody = await callRes.text();
+            console.warn(`[AstraCalls VoIP] Tentativa para ${targetNumber} retornou ${callRes.status}:`, errBody);
+          }
+        } catch (voipErr: any) {
+          console.error(`[AstraCalls VoIP] Erro ao disparar para ${targetNumber}:`, voipErr.message);
         }
-      } catch (voipErr: any) {
-        console.error("[AstraCalls VoIP] Erro ao disparar chamada:", voipErr.message);
       }
 
       console.log(`[Call Started] In-App Call initiated for client ${clientName} (callId: ${realCallId})`);
