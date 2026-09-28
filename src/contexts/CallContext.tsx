@@ -28,7 +28,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   const [isCallOpen, setIsCallOpen] = useState(false);
 
   const startCall = async ({ clientId, clientPhone, clientName, avatarUrl }: { clientId?: string; clientPhone?: string; clientName: string; avatarUrl?: string }) => {
-    let sessionId = 'd4f80e0ee23755d62116e25eabe7501b';
+    let sessionId = '8090cca3add0b8eb3e41efb9eec363e4';
     let astracallsUrl = 'https://calls.rspiscinas.app.br';
     let astracallsApiKey = 'rs_piscinas_segredo_2026';
 

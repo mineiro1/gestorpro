@@ -213,7 +213,20 @@ export const sendAstraCallsMessage = async (
 
   const astracallsUrl = (waSettings?.astracallsUrl || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
   const astracallsApiKey = waSettings?.astracallsApiKey || 'rs_piscinas_segredo_2026';
-  const sessionId = waSettings?.astracallsSessionId || 'd4f80e0ee23755d62116e25eabe7501b';
+  let sessionId = waSettings?.astracallsSessionId || '8090cca3add0b8eb3e41efb9eec363e4';
+
+  if (!waSettings?.astracallsSessionId) {
+    try {
+      const sRes = await fetch(`${astracallsUrl}/api/sessions`, {
+        headers: { 'X-Api-Key': astracallsApiKey }
+      });
+      if (sRes.ok) {
+        const sData = await sRes.json();
+        const active = sData?.sessions?.find((s: any) => s.state === 'open' || s.paired) || sData?.sessions?.[0];
+        if (active?.id) sessionId = active.id;
+      }
+    } catch (e) {}
+  }
 
   // 1. Tentar primeiro via backend proxy (/api/chat/send)
   try {

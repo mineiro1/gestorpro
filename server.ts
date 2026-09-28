@@ -504,7 +504,7 @@ setInterval(() => {
               }
             } catch (e) {}
           }
-          if (!sessionId) sessionId = 'd4f80e0ee23755d62116e25eabe7501b';
+          if (!sessionId) sessionId = '8090cca3add0b8eb3e41efb9eec363e4';
 
           const sendEndpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/text`;
           const payload = {
@@ -910,7 +910,7 @@ setInterval(() => {
       // 2. AstraCalls session settings
       const astracallsUrl = (process.env.ASTRACALLS_URL || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
       const astracallsApiKey = process.env.ASTRACALLS_API_KEY || 'rs_piscinas_segredo_2026';
-      let sessionId = 'd4f80e0ee23755d62116e25eabe7501b';
+      let sessionId = '8090cca3add0b8eb3e41efb9eec363e4';
 
       try {
         const sessRes = await fetch(`${astracallsUrl}/api/sessions`, {
