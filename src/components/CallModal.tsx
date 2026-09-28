@@ -22,6 +22,8 @@ export default function CallModal({ call, onClose }: CallModalProps) {
   const micStreamRef = useRef<MediaStream | null>(null);
   const captureCtxRef = useRef<AudioContext | null>(null);
   const playbackCtxRef = useRef<AudioContext | null>(null);
+  const remoteDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const processorNodeRef = useRef<ScriptProcessorNode | null>(null);
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const playCursorRef = useRef<number>(0);
@@ -73,8 +75,17 @@ export default function CallModal({ call, onClose }: CallModalProps) {
   const playPCMChunk = (arrayBuffer: ArrayBuffer) => {
     if (!playbackCtxRef.current) {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      playbackCtxRef.current = new AudioCtx({ sampleRate: SAMPLE_RATE });
-      playCursorRef.current = playbackCtxRef.current.currentTime;
+      const ctx = new AudioCtx({ sampleRate: SAMPLE_RATE });
+      playbackCtxRef.current = ctx;
+
+      const dest = ctx.createMediaStreamDestination();
+      remoteDestinationRef.current = dest;
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.srcObject = dest.stream;
+        remoteAudioRef.current.play().catch(() => {});
+      }
+
+      playCursorRef.current = ctx.currentTime;
     }
 
     const ctx = playbackCtxRef.current;
@@ -96,6 +107,9 @@ export default function CallModal({ call, onClose }: CallModalProps) {
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(ctx.destination);
+    if (remoteDestinationRef.current) {
+      source.connect(remoteDestinationRef.current);
+    }
 
     const now = ctx.currentTime;
     if (playCursorRef.current < now + 0.005) {
@@ -406,6 +420,9 @@ export default function CallModal({ call, onClose }: CallModalProps) {
             </span>
           </button>
         </div>
+
+        {/* Hidden hardware audio element for hardware accelerated sound routing */}
+        <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
 
         {/* Prominent Red Hang Up Button */}
         <button
