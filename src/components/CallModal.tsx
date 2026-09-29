@@ -1,36 +1,33 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Mic, MicOff, Volume2, VolumeX, PhoneOff, User } from 'lucide-react';
 import { ActiveCall } from '../contexts/CallContext';
+import { createVolumeMeterWorklet } from '../lib/audioWorklet';
 
 interface CallModalProps {
   call: ActiveCall;
   onClose: (duration?: number) => void;
 }
 
-const SAMPLE_RATE = 16000;
-const BUFFER_SIZE = 512;
-const JITTER_BUFFER_MS = 0.06;
-
 export default function CallModal({ call, onClose }: CallModalProps) {
   const [callStatus, setCallStatus] = useState<'dialing' | 'connected' | 'ended'>('dialing');
   const [isMuted, setIsMuted] = useState(false);
   const [isSpeakerOn, setIsSpeakerOn] = useState(true);
   const [duration, setDuration] = useState(0);
+  const [localVolume, setLocalVolume] = useState(0);
+  const [remoteVolume, setRemoteVolume] = useState(0);
 
   const timerRef = useRef<any>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const pcRef = useRef<RTCPeerConnection | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
-  const captureCtxRef = useRef<AudioContext | null>(null);
-  const playbackCtxRef = useRef<AudioContext | null>(null);
-  const remoteDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
-  const processorNodeRef = useRef<ScriptProcessorNode | null>(null);
-  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const playCursorRef = useRef<number>(0);
   const ringOscRef = useRef<any>(null);
   const ringAudioCtxRef = useRef<AudioContext | null>(null);
+  const workletAudioCtxRef = useRef<AudioContext | null>(null);
+  const localWorkletDisconnectRef = useRef<(() => void) | null>(null);
+  const remoteWorkletDisconnectRef = useRef<(() => void) | null>(null);
 
-  // Sound generator for realistic telephone ringing tone
+  // Realistic telephone ringing tone generator
   const playRingTone = () => {
     try {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
@@ -71,199 +68,162 @@ export default function CallModal({ call, onClose }: CallModalProps) {
     }
   };
 
-  // Convert incoming PCM16 ArrayBuffer to Float32 and schedule playback
-  const playPCMChunk = (arrayBuffer: ArrayBuffer) => {
-    if (!playbackCtxRef.current) {
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      const ctx = new AudioCtx({ sampleRate: SAMPLE_RATE });
-      playbackCtxRef.current = ctx;
-
-      const dest = ctx.createMediaStreamDestination();
-      remoteDestinationRef.current = dest;
-      if (remoteAudioRef.current) {
-        remoteAudioRef.current.srcObject = dest.stream;
-        remoteAudioRef.current.play().catch(() => {});
-      }
-
-      playCursorRef.current = ctx.currentTime;
-    }
-
-    const ctx = playbackCtxRef.current;
-    if (ctx.state === 'suspended') {
-      ctx.resume().catch(() => {});
-    }
-
-    const int16 = new Int16Array(arrayBuffer);
-    if (int16.length === 0) return;
-
-    const float32 = new Float32Array(int16.length);
-    for (let i = 0; i < int16.length; i++) {
-      float32[i] = int16[i] / 32768;
-    }
-
-    const buffer = ctx.createBuffer(1, float32.length, SAMPLE_RATE);
-    buffer.copyToChannel(float32, 0);
-
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.connect(ctx.destination);
-    if (remoteDestinationRef.current) {
-      source.connect(remoteDestinationRef.current);
-    }
-
-    const now = ctx.currentTime;
-    if (playCursorRef.current < now + 0.005) {
-      playCursorRef.current = now + JITTER_BUFFER_MS;
-    }
-
-    source.start(playCursorRef.current);
-    playCursorRef.current += buffer.duration;
-  };
-
-  // Capture Microphone and stream PCM16 chunks over WebSocket
-  const startMicCapture = async (ws: WebSocket) => {
-    try {
-      if (!navigator.mediaDevices?.getUserMedia) return;
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          sampleRate: SAMPLE_RATE,
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        }
-      });
-      micStreamRef.current = stream;
-
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      const actx = new AudioCtx({ sampleRate: SAMPLE_RATE });
-      captureCtxRef.current = actx;
-
-      const source = actx.createMediaStreamSource(stream);
-      sourceNodeRef.current = source;
-
-      const processor = actx.createScriptProcessor(BUFFER_SIZE, 1, 1);
-      processorNodeRef.current = processor;
-
-      processor.onaudioprocess = (e) => {
-        if (ws.readyState !== WebSocket.OPEN) return;
-        const input = e.inputBuffer.getChannelData(0);
-        const int16 = new Int16Array(input.length);
-        for (let i = 0; i < input.length; i++) {
-          const clamped = Math.max(-1, Math.min(1, input[i]));
-          int16[i] = clamped < 0 ? clamped * 32768 : clamped * 32767;
-        }
-        ws.send(int16.buffer);
-      };
-
-      source.connect(processor);
-      processor.connect(actx.destination);
-    } catch (micErr) {
-      console.warn('Microfone não disponível ou permissão negada:', micErr);
-    }
-  };
-
   const cleanupAudio = () => {
     stopRingTone();
 
-    if (processorNodeRef.current) {
-      processorNodeRef.current.disconnect();
-      processorNodeRef.current = null;
+    if (localWorkletDisconnectRef.current) {
+      localWorkletDisconnectRef.current();
+      localWorkletDisconnectRef.current = null;
     }
-    if (sourceNodeRef.current) {
-      sourceNodeRef.current.disconnect();
-      sourceNodeRef.current = null;
+    if (remoteWorkletDisconnectRef.current) {
+      remoteWorkletDisconnectRef.current();
+      remoteWorkletDisconnectRef.current = null;
     }
-    if (captureCtxRef.current) {
-      captureCtxRef.current.close().catch(() => {});
-      captureCtxRef.current = null;
+
+    if (workletAudioCtxRef.current && workletAudioCtxRef.current.state !== 'closed') {
+      try { workletAudioCtxRef.current.close(); } catch (e) {}
+      workletAudioCtxRef.current = null;
     }
-    if (playbackCtxRef.current) {
-      playbackCtxRef.current.close().catch(() => {});
-      playbackCtxRef.current = null;
-    }
+
     if (micStreamRef.current) {
-      micStreamRef.current.getTracks().forEach((track) => track.stop());
+      micStreamRef.current.getTracks().forEach((track) => {
+        try { track.stop(); } catch (e) {}
+      });
       micStreamRef.current = null;
     }
-    if (wsRef.current) {
-      try {
-        wsRef.current.close();
-      } catch (e) {}
-      wsRef.current = null;
+
+    if (pcRef.current) {
+      try { pcRef.current.close(); } catch (e) {}
+      pcRef.current = null;
+    }
+
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.srcObject = null;
     }
   };
 
-  // Main Call Lifecycle Effect
+  // Official AstraCalls v0.0.4 WebRTC VoIP Connection Engine with AudioWorklet Voice Activity
   useEffect(() => {
     playRingTone();
 
-    const sessionId = call.sessionId || 'd4f80e0ee23755d62116e25eabe7501b';
+    const sessionId = call.sessionId || '8090cca3add0b8eb3e41efb9eec363e4';
     const apiKey = call.astracallsApiKey || 'rs_piscinas_segredo_2026';
-    const rawUrl = call.astracallsUrl || 'https://calls.rspiscinas.app.br';
-    const wsBaseUrl = rawUrl.replace(/^https:\/\//i, 'wss://').replace(/^http:\/\//i, 'ws://');
+    const astracallsUrl = (call.astracallsUrl || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
 
-    let ws: WebSocket | null = null;
     let isCleanedUp = false;
-    let retryTimeout: any = null;
 
-    // Connect WebSocket when callId is assigned and valid
-    if (call.callId && !call.callId.startsWith('call_')) {
-      const connectSocket = () => {
-        if (isCleanedUp) return;
-        const wsUrl = `${wsBaseUrl}/api/sessions/${sessionId}/calls/${call.callId}/ws?apiKey=${encodeURIComponent(apiKey)}`;
-        try {
-          ws = new WebSocket(wsUrl, ['pcm16']);
-          ws.binaryType = 'arraybuffer';
-          wsRef.current = ws;
+    const establishWebRTC = async () => {
+      if (!call.callId || call.callId.startsWith('call_')) return;
 
-          ws.onopen = () => {
-            if (isCleanedUp) return;
+      try {
+        // 1. Capture microphone
+        const micStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        });
+        if (isCleanedUp) {
+          micStream.getTracks().forEach(t => t.stop());
+          return;
+        }
+        micStreamRef.current = micStream;
+
+        // Initialize AudioWorklet for local microphone volume level
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioCtx) {
+          const actx = new AudioCtx();
+          workletAudioCtxRef.current = actx;
+          const { disconnect } = await createVolumeMeterWorklet(actx, micStream, (vol) => {
+            if (!isCleanedUp) setLocalVolume(vol);
+          });
+          localWorkletDisconnectRef.current = disconnect;
+        }
+
+        // 2. Setup RTCPeerConnection
+        const pc = new RTCPeerConnection({ iceServers: [] });
+        pcRef.current = pc;
+
+        micStream.getAudioTracks().forEach(track => pc.addTrack(track, micStream));
+        pc.addTransceiver('audio', { direction: 'recvonly' });
+
+        pc.ontrack = async (event) => {
+          if (event.streams && event.streams[0]) {
+            const rStream = event.streams[0];
+            remoteStreamRef.current = rStream;
+            if (remoteAudioRef.current) {
+              remoteAudioRef.current.srcObject = rStream;
+              remoteAudioRef.current.play().catch(() => {});
+            }
+
+            // Setup AudioWorklet for remote caller volume level
+            if (workletAudioCtxRef.current) {
+              const { disconnect } = await createVolumeMeterWorklet(workletAudioCtxRef.current, rStream, (vol) => {
+                if (!isCleanedUp) setRemoteVolume(vol);
+              });
+              remoteWorkletDisconnectRef.current = disconnect;
+            }
+          }
+        };
+
+        pc.oniceconnectionstatechange = () => {
+          if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
             stopRingTone();
             setCallStatus('connected');
-            startMicCapture(ws!);
-          };
-
-          ws.onmessage = (event) => {
-            if (event.data instanceof ArrayBuffer) {
-              playPCMChunk(event.data);
+          } else if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed') {
+            if (!isCleanedUp && callStatus === 'connected') {
+              handleEndCall();
             }
-          };
+          }
+        };
 
-          ws.onerror = (err) => {
-            console.warn('[VoIP WebSocket retry]:', err);
-          };
+        // 3. Create Offer and wait for ICE gathering
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
 
-          ws.onclose = (ev) => {
-            if (isCleanedUp) return;
-            // Se já estava conectado e o servidor fechou (ex: cliente desligou no WhatsApp)
-            if (callStatus === 'connected') {
-              stopRingTone();
-              setCallStatus('ended');
-              setTimeout(() => {
-                onClose(duration);
-              }, 1200);
-            } else {
-              // Se ainda estava conectando, tentar reconectar em 1s
-              retryTimeout = setTimeout(() => {
-                if (!isCleanedUp && callStatus !== 'ended') {
-                  connectSocket();
-                }
-              }, 1200);
-            }
-          };
-        } catch (err) {
-          console.warn('Erro ao conectar WebSocket de áudio:', err);
+        await new Promise<void>((resolve) => {
+          if (pc.iceGatheringState === 'complete') {
+            resolve();
+          } else {
+            const checkGather = () => {
+              if (pc.iceGatheringState === 'complete') {
+                pc.removeEventListener('icegatheringstatechange', checkGather);
+                resolve();
+              }
+            };
+            pc.addEventListener('icegatheringstatechange', checkGather);
+            setTimeout(resolve, 1500);
+          }
+        });
+
+        // 4. Exchange SDP with AstraCalls WebRTC endpoint
+        const res = await fetch(`${astracallsUrl}/api/sessions/${sessionId}/calls/${call.callId}/webrtc`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Api-Key': apiKey
+          },
+          body: JSON.stringify({ sdp_offer: pc.localDescription?.sdp })
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          if (data.sdp_answer) {
+            await pc.setRemoteDescription({ type: 'answer', sdp: data.sdp_answer });
+            stopRingTone();
+            setCallStatus('connected');
+          }
         }
-      };
+      } catch (err) {
+        console.warn('[WebRTC VoIP connect error]:', err);
+      }
+    };
 
-      connectSocket();
-    }
+    establishWebRTC();
 
     return () => {
       isCleanedUp = true;
-      if (retryTimeout) clearTimeout(retryTimeout);
       cleanupAudio();
     };
   }, [call.callId, call.sessionId]);
@@ -287,7 +247,7 @@ export default function CallModal({ call, onClose }: CallModalProps) {
   const toggleMute = () => {
     if (micStreamRef.current) {
       micStreamRef.current.getAudioTracks().forEach((track) => {
-        track.enabled = isMuted; // toggle
+        track.enabled = isMuted;
       });
     }
     setIsMuted(!isMuted);
@@ -295,12 +255,8 @@ export default function CallModal({ call, onClose }: CallModalProps) {
 
   // Handle Speaker Toggle
   const toggleSpeaker = () => {
-    if (playbackCtxRef.current) {
-      if (isSpeakerOn) {
-        playbackCtxRef.current.suspend().catch(() => {});
-      } else {
-        playbackCtxRef.current.resume().catch(() => {});
-      }
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.muted = isSpeakerOn;
     }
     setIsSpeakerOn(!isSpeakerOn);
   };
@@ -346,9 +302,15 @@ export default function CallModal({ call, onClose }: CallModalProps) {
           )}
         </div>
 
-        {/* Client Avatar (Total Privacy: Only Name and Avatar, NO Phone Number) */}
+        {/* Client Avatar with Audio Visualizer Glow */}
         <div className="relative mb-5">
-          <div className="w-28 h-28 rounded-full bg-gradient-to-tr from-emerald-600 to-teal-500 p-1 shadow-lg shadow-emerald-500/20 flex items-center justify-center">
+          <div 
+            className={`w-28 h-28 rounded-full p-1 shadow-lg flex items-center justify-center transition-all duration-150 ${
+              callStatus === 'connected' && remoteVolume > 0.05
+                ? 'bg-gradient-to-tr from-emerald-500 to-green-400 ring-4 ring-emerald-400/40 shadow-emerald-500/40 scale-105'
+                : 'bg-gradient-to-tr from-emerald-600 to-teal-500 shadow-emerald-500/20'
+            }`}
+          >
             {call.avatarUrl ? (
               <img
                 src={call.avatarUrl}
@@ -362,7 +324,7 @@ export default function CallModal({ call, onClose }: CallModalProps) {
             )}
           </div>
           {callStatus === 'connected' && (
-            <span className="absolute bottom-1 right-1 w-5 h-5 bg-emerald-500 border-2 border-gray-900 rounded-full" />
+            <span className="absolute bottom-1 right-1 w-5 h-5 bg-emerald-500 border-2 border-gray-900 rounded-full animate-pulse" />
           )}
         </div>
 
@@ -372,12 +334,30 @@ export default function CallModal({ call, onClose }: CallModalProps) {
         </h2>
 
         {/* Call Timer or Ringing Subtext */}
-        <div className="text-sm font-medium text-gray-400 mb-8">
+        <div className="text-sm font-medium text-gray-400 mb-6">
           {callStatus === 'dialing' && 'Tocando no WhatsApp do cliente...'}
           {callStatus === 'connected' && (
-            <span className="text-lg font-semibold text-emerald-400 font-mono">
-              {formatTime(duration)}
-            </span>
+            <div className="flex flex-col items-center gap-2">
+              <span className="text-lg font-semibold text-emerald-400 font-mono">
+                {formatTime(duration)}
+              </span>
+
+              {/* Real-time Audio Activity Waveform (AudioWorklet) */}
+              <div className="flex items-center gap-1 h-3 mt-1">
+                <span className="text-[10px] text-gray-400 mr-1.5">Voz:</span>
+                {[0.2, 0.4, 0.6, 0.8, 1.0].map((threshold, idx) => {
+                  const active = Math.max(localVolume * 4, remoteVolume * 4) >= threshold;
+                  return (
+                    <span
+                      key={idx}
+                      className={`w-1 rounded-full transition-all duration-75 ${
+                        active ? 'bg-emerald-400 h-3' : 'bg-gray-700 h-1.5'
+                      }`}
+                    />
+                  );
+                })}
+              </div>
+            </div>
           )}
           {callStatus === 'ended' && 'Desconectado'}
         </div>
@@ -421,8 +401,8 @@ export default function CallModal({ call, onClose }: CallModalProps) {
           </button>
         </div>
 
-        {/* Hidden hardware audio element for hardware accelerated sound routing */}
-        <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
+        {/* Hardware accelerated sound routing */}
+        <audio ref={remoteAudioRef} autoPlay playsInline />
 
         {/* Prominent Red Hang Up Button */}
         <button

@@ -974,6 +974,29 @@ setInterval(() => {
     }
   });
 
+  app.post("/api/call/webrtc", async (req, res) => {
+    try {
+      const { callId, sessionId, sdp_offer } = req.body;
+      const astracallsUrl = (process.env.ASTRACALLS_URL || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
+      const astracallsApiKey = process.env.ASTRACALLS_API_KEY || 'rs_piscinas_segredo_2026';
+      const sid = sessionId || '8090cca3add0b8eb3e41efb9eec363e4';
+
+      const webrtcRes = await fetch(`${astracallsUrl}/api/sessions/${sid}/calls/${callId}/webrtc`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Api-Key': astracallsApiKey
+        },
+        body: JSON.stringify({ sdp_offer })
+      });
+
+      const data = await webrtcRes.json();
+      return res.status(webrtcRes.status).json(data);
+    } catch (e: any) {
+      return res.status(500).json({ error: e.message });
+    }
+  });
+
   app.post("/api/call/hangup", async (req, res) => {
     try {
       const { callId, sessionId, clientId, duration, clientName, callerName } = req.body;
