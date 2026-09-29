@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { openWhatsApp, sendMetaMessage, sendEvolutionMessage } from '../lib/whatsapp';
+import { openWhatsApp, sendMetaMessage, sendEvolutionMessage, sendAstraCallsMessage } from '../lib/whatsapp';
+import { formatClientMessageTemplate } from '../lib/messageTemplates';
 import { MessageCircle, AlertCircle, Clock, History, Settings, X, Play, MessageSquare, Calendar, CheckCircle, XCircle, DollarSign } from 'lucide-react';
 
 interface ClientBilling {
@@ -116,21 +117,10 @@ export default function Billing() {
   };
 
   const processMessageTemplate = (template: string, client: ClientBilling) => {
-    const formattedDate = new Date(client.dueDate + 'T12:00:00').toLocaleDateString('pt-BR');
-    const totalAmount = Number(client.monthlyFee || 0) + Number(client.extraAmount || 0);
-
-    const rawFirstName = (client.name || 'Cliente').trim().split(/\s+/)[0] || 'Cliente';
-    const firstName = rawFirstName ? (rawFirstName.charAt(0).toUpperCase() + rawFirstName.slice(1)) : 'Cliente';
-    const clientPhoneDigits = (client.phone || '').replace(/\D/g, '');
-
-    let message = template
-      .replace(/\{\s*primeiro\s*nome(\s*do\s*cliente)?\s*\}/gi, firstName)
-      .replace(/\{\s*primeiro_nome\s*\}/gi, firstName)
-      .replace(/\{\s*nome(\s*do\s*cliente)?\s*\}/gi, firstName)
-      .replace(/\{\s*telefone(\s*de\s*cadastro)?(\s*do\s*cliente)?\s*\}/gi, clientPhoneDigits)
-      .replace(/\{\s*telefone\s*cadastrado\s*\}/gi, clientPhoneDigits)
-      .replace(/{valor}/g, totalAmount.toFixed(2).replace('.', ','))
-      .replace(/{vencimento}/g, formattedDate);
+    let message = formatClientMessageTemplate(template, client, {
+      companyName: waSettings?.companyName || userProfile?.whatsappSettings?.companyName || 'GestãoPro',
+      portalUrl: 'www.rspiscinas.app.br/client-panel'
+    });
 
     if (client.extraAmount && client.extraAmount > 0) {
       message += `\n\n*Acréscimo (já incluso no valor total):* R$ ${client.extraAmount.toFixed(2).replace('.', ',')}\n*Motivo:* ${client.extraReason || 'Não especificado'}`;
@@ -340,7 +330,19 @@ export default function Billing() {
       : processMessageTemplate(waSettings.reminderMessage, client);
 
     const billingMsgClientId = `billing_${client.id}_${isDelayed ? 'delayed' : 'reminder'}_${new Date().toISOString().slice(0, 10)}`;
-    if (currentSettings.useMetaApi) {
+    const isAstracalls = currentSettings.useAstracalls !== false || currentSettings.provider === 'astracalls' || !!currentSettings.astracallsUrl;
+
+    if (isAstracalls) {
+      try {
+        await sendAstraCallsMessage(client.phone, message, currentSettings, billingMsgClientId);
+        setSentClients(prev => ({ ...prev, [client.id]: 'success' }));
+        alert(`Mensagem enviada com sucesso para ${client.name} (via WhatsApp AstraCalls)!`);
+      } catch (error: any) {
+        setSentClients(prev => ({ ...prev, [client.id]: 'error' }));
+        console.error(error);
+        alert(`Falha ao enviar via WhatsApp para ${client.name}: ${error.message}`);
+      }
+    } else if (currentSettings.useMetaApi) {
       try {
         await sendMetaMessage(client.phone, message, currentSettings, billingMsgClientId);
         setSentClients(prev => ({ ...prev, [client.id]: 'success' }));
@@ -348,7 +350,7 @@ export default function Billing() {
       } catch (error: any) {
         setSentClients(prev => ({ ...prev, [client.id]: 'error' }));
         console.error(error);
-        alert(`Falha ao enviar via API Oficial para ${client.name}:\n\n${error.message}\n\nLembre-se: Para enviar textos livres, o cliente precisa ter te enviado uma mensagem nas últimas 24 horas.`);
+        alert(`Falha ao enviar via API Oficial para ${client.name}:\n\n${error.message}`);
       }
     } else if (currentSettings.useEvolutionApi) {
       try {
@@ -377,17 +379,10 @@ export default function Billing() {
       }
     }
 
-    if (currentSettings.useMetaApi || currentSettings.useEvolutionApi) {
-      if (currentSettings.useEvolutionApi && (!currentSettings.evolutionApiUrl || !currentSettings.evolutionApiKey || !currentSettings.evolutionInstanceName)) {
-        if(!silent) alert("Credenciais da Evolution API incompletas nas configurações.");
-        return;
-      }
-      if (currentSettings.useMetaApi && !currentSettings.metaToken) {
-        if(!silent) alert("Credenciais da API Oficial (Meta) incompletas nas configurações. O Token/Key é obrigatório.");
-        return;
-      }
+    const isAstracalls = currentSettings.useAstracalls !== false || currentSettings.provider === 'astracalls' || !!currentSettings.astracallsUrl;
 
-      const apiName = currentSettings.useMetaApi ? "API Oficial do WhatsApp (Meta)" : "Evolution API";
+    if (isAstracalls || currentSettings.useMetaApi || currentSettings.useEvolutionApi) {
+      const apiName = isAstracalls ? "WhatsApp (AstraCalls)" : (currentSettings.useMetaApi ? "API Oficial (Meta)" : "Evolution API");
       if (!silent && !confirm(`Deseja enviar ${clients.length} mensagens automaticamente via ${apiName}?`)) return;
       
       setSendingBatch(true);
@@ -404,7 +399,7 @@ export default function Billing() {
         
         // Skip if already billed today
         if (billedClients[client.id] === todayStr) {
-          successCount++; // count as success to skip
+          successCount++;
           continue;
         }
         
@@ -421,7 +416,9 @@ export default function Billing() {
           : processMessageTemplate(waSettings.reminderMessage, client);
           
         try {
-          if (currentSettings.useMetaApi) {
+          if (isAstracalls) {
+            await sendAstraCallsMessage(client.phone, message, currentSettings);
+          } else if (currentSettings.useMetaApi) {
             await sendMetaMessage(client.phone, message, currentSettings);
           } else {
             await sendEvolutionMessage(client.phone, message, currentSettings);
@@ -435,9 +432,8 @@ export default function Billing() {
           setSentClients(prev => ({ ...prev, [client.id]: 'error' }));
         }
         
-        // Sleep to avoid rate limiting / block
         if (i < clients.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          await new Promise(resolve => setTimeout(resolve, 1500));
         }
       }
       

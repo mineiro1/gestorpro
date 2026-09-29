@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { Package, Send, Settings, Plus, Trash2, X, Save, Search, CheckCircle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { openWhatsApp, sendEvolutionMessage, sendMetaMessage } from '../lib/whatsapp';
+import { openWhatsApp, sendEvolutionMessage, sendMetaMessage, sendAstraCallsMessage } from '../lib/whatsapp';
 
 const PREDEFINED_PRODUCTS = [
   'Balde de Cloro 10kg',
@@ -173,20 +173,30 @@ export default function ProductsPage() {
       lastSentData.products.map(s => `• ${s.name}: ${s.quantity} ${s.unit}`).join('\n') +
       `\n\nCliente: ${lastSentData.client.name.split(' ')[0]}\nContato: ${lastSentData.client.phone}`;
       
+    const isAstracalls = settings.useAstracalls !== false || settings.provider === 'astracalls' || !!settings.astracallsUrl;
+
     // Send to each selected partner
     for (const store of storesToSend) {
-      if (!settings.useMetaApi && !settings.useEvolutionApi) {
-        openWhatsApp(store.phone, message);
-      } else {
+      if (isAstracalls) {
         try {
-          if (settings.useMetaApi) {
-            await sendMetaMessage(store.phone, message, settings);
-          } else if (settings.useEvolutionApi) {
-            await sendEvolutionMessage(store.phone, message, settings);
-          }
+          await sendAstraCallsMessage(store.phone, message, settings);
         } catch (err) {
           console.error('Erro ao enviar para loja parceira:', err);
         }
+      } else if (settings.useMetaApi) {
+        try {
+          await sendMetaMessage(store.phone, message, settings);
+        } catch (err) {
+          console.error('Erro ao enviar para loja parceira:', err);
+        }
+      } else if (settings.useEvolutionApi) {
+        try {
+          await sendEvolutionMessage(store.phone, message, settings);
+        } catch (err) {
+          console.error('Erro ao enviar para loja parceira:', err);
+        }
+      } else {
+        openWhatsApp(store.phone, message);
       }
     }
     
@@ -196,7 +206,7 @@ export default function ProductsPage() {
     setSelectedPartners([]);
     setLastSentData(null);
     
-    if (settings.useMetaApi || settings.useEvolutionApi) {
+    if (isAstracalls || settings.useMetaApi || settings.useEvolutionApi) {
       alert('Lista enviada para as lojas parceiras com sucesso!');
     }
   };
@@ -230,11 +240,11 @@ export default function ProductsPage() {
       
     const settings = waSettings || userProfile?.whatsappSettings || {};
     const partnerStores = settings.partnerStores || [];
+    const isAstracalls = settings.useAstracalls !== false || settings.provider === 'astracalls' || !!settings.astracallsUrl;
     
     setLastSentData({ client: selectedClient, products: selected });
     
-    // Web WhatsApp natively (synchronous to avoid popup block if no API configured)
-    if (!settings.useMetaApi && !settings.useEvolutionApi) {
+    if (!isAstracalls && !settings.useMetaApi && !settings.useEvolutionApi) {
        openWhatsApp(number, message);
        if (partnerStores.length > 0) {
          setShowPartnerModal(true);
@@ -247,7 +257,10 @@ export default function ProductsPage() {
 
     setSendingMessage(true);
     try {
-      if (settings.useMetaApi) {
+      if (isAstracalls) {
+        await sendAstraCallsMessage(number, message, settings);
+        alert('Mensagem de insumos enviada com sucesso via WhatsApp!');
+      } else if (settings.useMetaApi) {
         await sendMetaMessage(number, message, settings);
         alert('Mensagem de insumos enviada com sucesso via Meta API!');
       } else if (settings.useEvolutionApi) {

@@ -8,7 +8,8 @@ import { Share2, FileText, Map, Camera, CheckCircle, MapPin, Image as ImageIcon,
 import { motion, AnimatePresence } from 'motion/react';
 import { useCall } from '../contexts/CallContext';
 import { openMap, openRouteMap, openWaze } from '../lib/maps';
-import { openWhatsApp, sendEvolutionMessage, sendMetaMessage } from '../lib/whatsapp';
+import { openWhatsApp, sendEvolutionMessage, sendMetaMessage, sendAstraCallsMessage } from '../lib/whatsapp';
+import { formatClientMessageTemplate } from '../lib/messageTemplates';
 import { notifyAdminAttendanceFinished } from '../lib/pushNotifications';
 import { getLocalDayUtcRange, checkDailyChatAvailability, evaluateSessionExpiry, markClientChatAsRead } from '../lib/chatSessionUtils';
 import { getApiUrl } from '../lib/apiConfig';
@@ -1151,26 +1152,23 @@ export default function RoutesPage() {
           }
         } catch (e) {}
 
-        const defaultReportMsg = `Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}`;
+        const defaultReportMsg = `Olá, {Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}`;
         const msg1 = currentSettings.reportMessage1 || defaultReportMsg;
         const msg2 = currentSettings.reportMessage2 || defaultReportMsg;
 
-        let message = useMessage2 ? msg2 : msg1;
-        const rawFirstName = (targetClient.name || 'Cliente').trim().split(/\s+/)[0] || 'Cliente';
-        const firstName = rawFirstName ? (rawFirstName.charAt(0).toUpperCase() + rawFirstName.slice(1)) : 'Cliente';
-        const clientPhoneDigits = (targetClient.phone || targetClient.local_phone || cleanPhone || '').replace(/\D/g, '');
-
-        message = message
-          .replace(/https:\/\/www\.rspiscinas\.app\.br\/client-panel/gi, 'www.rspiscinas.app.br/client-panel')
-          .replace(/\{\s*primeiro\s*nome(\s*do\s*cliente)?\s*\}/gi, firstName)
-          .replace(/\{\s*primeiro_nome\s*\}/gi, firstName)
-          .replace(/\{\s*nome(\s*do\s*cliente)?\s*\}/gi, firstName)
-          .replace(/\{\s*cliente\s*\}/gi, firstName)
-          .replace(/\{\s*telefone(\s*de\s*cadastro)?(\s*do\s*cliente)?\s*\}/gi, clientPhoneDigits)
-          .replace(/\{\s*telefone\s*cadastrado\s*\}/gi, clientPhoneDigits)
-          .replace(/\{\s*celular(\s*do\s*cliente)?\s*\}/gi, clientPhoneDigits);
+        const rawTemplate = useMessage2 ? msg2 : msg1;
+        const message = formatClientMessageTemplate(rawTemplate, {
+          name: targetClient.name || 'Cliente',
+          phone: cleanPhone || targetClient.phone || targetClient.local_phone || '',
+          local_phone: targetClient.local_phone || ''
+        }, {
+          techName: userProfile?.name || 'Técnico',
+          companyName: currentSettings.companyName || userProfile?.whatsappSettings?.companyName || 'GestãoPro',
+          portalUrl: 'www.rspiscinas.app.br/client-panel'
+        });
 
         const reportMsgClientId = `visit_rep_${targetClient.id}_${Date.now()}`;
+        const isAstracalls = currentSettings.useAstracalls !== false || currentSettings.provider === 'astracalls' || !!currentSettings.astracallsUrl;
 
         if (currentSettings.useSmsForReports) {
           await supabase.from('sms_queue').insert({
@@ -1179,7 +1177,7 @@ export default function RoutesPage() {
             message: message
           });
           console.log('Mensagem de relatório adicionada à fila de SMS.');
-        } else if (currentSettings.useMetaApi || currentSettings.useEvolutionApi) {
+        } else if (isAstracalls || currentSettings.useMetaApi || currentSettings.useEvolutionApi) {
           let sent = false;
           // Envio primário: endpoint seguro do servidor (/api/chat/send)
           try {
@@ -1210,7 +1208,10 @@ export default function RoutesPage() {
           // Fallback: se o backend falhar, tenta envio direto pelo navegador
           if (!sent) {
             try {
-              if (currentSettings.useMetaApi) {
+              if (isAstracalls) {
+                await sendAstraCallsMessage(cleanPhone, message, currentSettings, reportMsgClientId);
+                sent = true;
+              } else if (currentSettings.useMetaApi) {
                 await sendMetaMessage(clientPhone, message, currentSettings, reportMsgClientId);
                 sent = true;
               } else if (currentSettings.useEvolutionApi) {
