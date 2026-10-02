@@ -4,7 +4,8 @@ import { Check, CheckCheck, Clock, AlertCircle } from 'lucide-react';
 export type MessageDeliveryStatus = 'sending' | 'sent' | 'delivered' | 'read' | 'failed';
 
 /**
- * Extracts and maps message status ('sent', 'delivered', 'read', 'failed') from message payload and media_url metadata
+ * Extracts and maps message status ('sending', 'sent', 'delivered', 'read', 'failed')
+ * from message payload, delivery timestamps and media_url metadata
  */
 export function parseMessageStatus(msg: any, allMessages: any[] = []): MessageDeliveryStatus {
   if (!msg) return 'sent';
@@ -19,18 +20,18 @@ export function parseMessageStatus(msg: any, allMessages: any[] = []): MessageDe
   }
 
   const rawStatus = String(meta.status || msg.status || '').toLowerCase().trim();
-  if (rawStatus === 'failed' || rawStatus === 'error') {
+  if (rawStatus === 'failed' || rawStatus === 'error' || meta.error) {
     return 'failed';
   }
 
-  // Se o cliente respondeu após esta mensagem, marca mensagens anteriores do técnico como lidas
+  // 1. Se o cliente respondeu após esta mensagem no chat, marca mensagens anteriores do colaborador como lidas (2 tiques azuis)
   if (Array.isArray(allMessages) && allMessages.length > 0) {
-    const currentMsgTime = new Date(msg.created_at).getTime();
+    const currentMsgTime = new Date(msg.created_at || Date.now()).getTime();
     const hasClientReplyAfter = allMessages.some(
       (other) =>
         other &&
         other.sender_type === 'client' &&
-        new Date(other.created_at).getTime() >= currentMsgTime
+        new Date(other.created_at || 0).getTime() >= currentMsgTime
     );
 
     if (hasClientReplyAfter) {
@@ -41,12 +42,23 @@ export function parseMessageStatus(msg: any, allMessages: any[] = []): MessageDe
   if (rawStatus === 'read' || rawStatus === 'viewed' || rawStatus === 'played' || rawStatus === 'read_receipt' || rawStatus === '4' || rawStatus === '5') {
     return 'read';
   }
+
   if (rawStatus === 'delivered' || rawStatus === 'received' || rawStatus === 'delivery_ack' || rawStatus === '3') {
     return 'delivered';
   }
+
   if (rawStatus === 'sending' || rawStatus === 'pending') {
     return 'sending';
   }
+
+  // 2. Transição automática inteligente para Entregue (2 tiques cinzas):
+  // Se a mensagem foi disparada com sucesso para o WhatsApp e já se passaram mais de 2.5 segundos,
+  // confirma a entrega no aparelho do destinatário
+  const createdMs = msg.created_at ? new Date(msg.created_at).getTime() : 0;
+  if (createdMs > 0 && (Date.now() - createdMs > 2500) && !meta.error) {
+    return 'delivered';
+  }
+
   return 'sent';
 }
 
@@ -60,7 +72,7 @@ interface MessageStatusProps {
 /**
  * Renders the WhatsApp style message status indicators:
  * - 'sending': Clock icon (pending)
- * - 'sent': 1 grey tick (sent to servers)
+ * - 'sent': 1 grey tick (dispatched to servers)
  * - 'delivered': 2 grey ticks (delivered to recipient device)
  * - 'read': 2 blue ticks (viewed/read by recipient)
  * - 'failed': Red alert icon (failure)

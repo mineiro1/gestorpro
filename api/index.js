@@ -48,6 +48,170 @@ function formatAstraCallsNumber(phone) {
   return full;
 }
 
+function isMatchingClientPhone(storedRaw, incomingRaw) {
+  if (!storedRaw || !incomingRaw) return false;
+  const stored = String(storedRaw).replace(/\D/g, '');
+  const incoming = String(incomingRaw).replace(/\D/g, '');
+  if (stored.length < 6 || incoming.length < 6) return false;
+
+  const storedNo55 = stored.replace(/^55/, '');
+  const incomingNo55 = incoming.replace(/^55/, '');
+
+  if (stored === incoming || storedNo55 === incomingNo55) return true;
+
+  const storedLast8 = stored.slice(-8);
+  const incomingLast8 = incoming.slice(-8);
+  if (storedLast8.length === 8 && incomingLast8.length === 8 && storedLast8 === incomingLast8) {
+    const storedDDD = storedNo55.length >= 10 ? storedNo55.slice(0, 2) : '';
+    const incomingDDD = incomingNo55.length >= 10 ? incomingNo55.slice(0, 2) : '';
+    if (storedDDD && incomingDDD) return storedDDD === incomingDDD;
+    return true;
+  }
+  return false;
+}
+
+function mapStatus(raw) {
+  if (raw === undefined || raw === null) return null;
+  const str = String(raw).toUpperCase().trim();
+  if (str === '4' || str === '5' || str === 'READ' || str === 'PLAYED' || str === 'READ_RECEIPT' || str === 'VIEWED') return 'read';
+  if (str === '3' || str === 'DELIVERY_ACK' || str === 'DELIVERED' || str === 'RECEIVED') return 'delivered';
+  if (str === '2' || str === 'SERVER_ACK' || str === 'SENT') return 'sent';
+  if (str === 'FAILED' || str === 'ERROR' || str === '0') return 'failed';
+  return null;
+}
+
+function extractStatusUpdates(body) {
+  const results = [];
+  if (!body) return results;
+
+  const inspectItem = (item) => {
+    if (!item || typeof item !== 'object') return;
+    const id = item?.key?.id || item?.id || item?.keyId || item?.messageId || item?.msgId || item?.update?.key?.id || item?.data?.key?.id || item?.data?.id || item?.data?.messageId;
+    const phone = item?.phone || item?.to || item?.recipient || item?.key?.remoteJid || item?.remoteJid || item?.from;
+    const timestamp = item?.timestamp || item?.update?.readTimestamp || item?.receipt?.readTimestamp || item?.time;
+    const reason = item?.error || item?.reason || item?.message;
+
+    if (item?.receipt?.readTimestamp || item?.update?.readTimestamp || item?.status === 'read' || item?.update?.status === 'read') {
+      results.push({ id: String(id || ''), status: 'read', phone: phone ? String(phone) : undefined, timestamp: timestamp ? String(timestamp) : undefined });
+      return;
+    }
+
+    const rawStatus = item?.update?.status ?? item?.status ?? item?.ack ?? item?.update?.ack ?? item?.statusLabel ?? item?.update?.statusLabel ?? item?.receipt?.status ?? item?.data?.status ?? item?.data?.ack;
+    const mapped = mapStatus(rawStatus);
+    if (mapped) {
+      results.push({ id: String(id || ''), status: mapped, phone: phone ? String(phone) : undefined, timestamp: timestamp ? String(timestamp) : undefined, reason: reason ? String(reason) : undefined });
+    }
+  };
+
+  if (body.entry && Array.isArray(body.entry)) {
+    for (const entry of body.entry) {
+      if (entry.changes && Array.isArray(entry.changes)) {
+        for (const change of entry.changes) {
+          const val = change.value;
+          if (val?.statuses && Array.isArray(val.statuses)) {
+            for (const st of val.statuses) {
+              const mapped = mapStatus(st.status);
+              if (st.id && mapped) {
+                results.push({ id: String(st.id), status: mapped, phone: st.recipient_id ? String(st.recipient_id) : undefined, timestamp: st.timestamp ? String(st.timestamp) : undefined });
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (body.statuses && Array.isArray(body.statuses)) {
+    for (const st of body.statuses) {
+      const mapped = mapStatus(st.status);
+      if (st.id && mapped) {
+        results.push({ id: String(st.id), status: mapped, phone: st.recipient_id ? String(st.recipient_id) : undefined, timestamp: st.timestamp ? String(st.timestamp) : undefined });
+      }
+    }
+  }
+
+  if (Array.isArray(body)) {
+    body.forEach(inspectItem);
+  } else {
+    inspectItem(body);
+    if (Array.isArray(body.data)) body.data.forEach(inspectItem);
+    else if (body.data && typeof body.data === 'object') inspectItem(body.data);
+    if (Array.isArray(body.updates)) body.updates.forEach(inspectItem);
+    if (Array.isArray(body.messages)) body.messages.forEach(inspectItem);
+  }
+
+  return results;
+}
+
+async function processStatusUpdates(body) {
+  const updates = extractStatusUpdates(body);
+  if (updates.length === 0) return { updated: 0, results: [] };
+
+  const supabaseAdmin = getSupabaseAdmin();
+  let updatedCount = 0;
+  const processedResults = [];
+
+  for (const update of updates) {
+    const { id: externalId, status: newStatus, phone } = update;
+    let targetMessageId = null;
+    let targetMediaUrl = null;
+
+    if (externalId && externalId.length > 3) {
+      let { data: foundMsgs } = await supabaseAdmin
+        .from('chat_messages')
+        .select('id, media_url, sender_type, created_at')
+        .eq('sender_type', 'tech')
+        .ilike('media_url', `%${externalId}%`)
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      if (!foundMsgs || foundMsgs.length === 0) {
+        if (externalId.length > 8) {
+          const shortId = externalId.slice(-12);
+          const { data: fallback } = await supabaseAdmin
+            .from('chat_messages')
+            .select('id, media_url, sender_type, created_at')
+            .eq('sender_type', 'tech')
+            .ilike('media_url', `%${shortId}%`)
+            .order('created_at', { ascending: false })
+            .limit(1);
+          foundMsgs = fallback;
+        }
+      }
+
+      if (foundMsgs && foundMsgs.length > 0) {
+        targetMessageId = foundMsgs[0].id;
+        targetMediaUrl = foundMsgs[0].media_url;
+      }
+    }
+
+    if (targetMessageId && newStatus) {
+      let existing = {};
+      try { existing = JSON.parse(targetMediaUrl || '{}'); } catch(e) {}
+      if (existing.status !== 'read' || newStatus === 'read') {
+        const { error: updErr } = await supabaseAdmin
+          .from('chat_messages')
+          .update({
+            media_url: JSON.stringify({
+              ...existing,
+              status: newStatus,
+              external_id: externalId || existing.external_id,
+              status_updated_at: new Date().toISOString()
+            })
+          })
+          .eq('id', targetMessageId);
+
+        if (!updErr) {
+          updatedCount++;
+          processedResults.push({ id: targetMessageId, externalId, newStatus });
+        }
+      }
+    }
+  }
+
+  return { updated: updatedCount, results: processedResults };
+}
+
 const processedMessageClientIds = new Map();
 
 // --- 1. CHAT ENDPOINTS ---
@@ -489,31 +653,110 @@ app.post(['/api/chat/close', '/chat/close'], async (req, res) => {
   }
 });
 
-// Sync Status
+// Sync Status (1 tique -> 2 tiques entregue -> 2 tiques azuis lido)
 app.post(['/api/chat/sync-status', '/chat/sync-status'], async (req, res) => {
   try {
     let { messageIds, waSettings } = req.body;
     if (!Array.isArray(messageIds) || messageIds.length === 0) return res.json({ updated: 0, statusMap: {} });
     const supabaseAdmin = getSupabaseAdmin();
-    const { data: msgs } = await supabaseAdmin.from('chat_messages').select('id, session_id, media_url, sender_type, created_at').in('id', messageIds).eq('sender_type', 'tech');
+
+    if (!waSettings?.metaToken && !waSettings?.evolutionApiKey) {
+      const { data: adminUsers } = await supabaseAdmin.from('users').select('whatsapp_settings').not('whatsapp_settings', 'is', null);
+      const validAdmin = adminUsers?.find(u => u.whatsapp_settings?.metaToken || u.whatsapp_settings?.evolutionApiKey);
+      if (validAdmin?.whatsapp_settings) waSettings = validAdmin.whatsapp_settings;
+    }
+
+    const { data: msgs } = await supabaseAdmin
+      .from('chat_messages')
+      .select('id, session_id, media_url, sender_type, created_at')
+      .in('id', messageIds)
+      .eq('sender_type', 'tech');
+
     if (!msgs || msgs.length === 0) return res.json({ updated: 0, statusMap: {} });
 
     let updatedCount = 0;
     const statusMap = {};
-    for (const msg of msgs) {
-      let meta = {};
-      try { meta = JSON.parse(msg.media_url); } catch(e) {}
-      if (meta.status === 'read') {
-        statusMap[msg.id] = 'read';
-        continue;
-      }
-      let remoteStatus = meta.status || 'sent';
-      const msgTime = new Date(msg.created_at).getTime();
-      if ((remoteStatus === 'sending' || !meta.status) && Date.now() - msgTime > 5000) {
-        remoteStatus = 'sent';
-      }
-      statusMap[msg.id] = remoteStatus;
-    }
+
+    await Promise.all(
+      msgs.map(async (msg) => {
+        let meta = {};
+        try { meta = JSON.parse(msg.media_url); } catch(e) {}
+        if (meta.status === 'read') {
+          statusMap[msg.id] = 'read';
+          return;
+        }
+
+        let remoteStatus = null;
+        const externalId = meta.external_id;
+
+        // 1. Consulta em APIs externas se configurado
+        if (externalId) {
+          if (waSettings?.useEvolutionApi && waSettings?.evolutionApiUrl && waSettings?.evolutionApiKey && waSettings?.evolutionInstanceName) {
+            try {
+              let baseUrl = waSettings.evolutionApiUrl.trim().replace(/\/$/, '');
+              if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
+              const checkUrl = `${baseUrl}/chat/findMessages/${waSettings.evolutionInstanceName}`;
+              const checkRes = await fetch(checkUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'apikey': waSettings.evolutionApiKey },
+                body: JSON.stringify({ where: { key: { id: externalId } } })
+              });
+              if (checkRes.ok) {
+                const evoData = await checkRes.json();
+                const rec = evoData?.messages?.records?.[0] || evoData?.records?.[0] || (Array.isArray(evoData) ? evoData[0] : evoData);
+                const raw = String(rec?.status ?? rec?.statusLabel ?? rec?.ack ?? '').toUpperCase().trim();
+                if (raw === '4' || raw === '5' || raw === 'READ' || raw === 'PLAYED' || raw === 'READ_RECEIPT' || raw === 'VIEWED') remoteStatus = 'read';
+                else if (raw === '3' || raw === 'DELIVERY_ACK' || raw === 'DELIVERED' || raw === 'RECEIVED') remoteStatus = 'delivered';
+                else if (raw === '2' || raw === 'SERVER_ACK' || raw === 'SENT') remoteStatus = 'sent';
+              }
+            } catch (e) {}
+          }
+        }
+
+        // 2. Se o cliente respondeu após esta mensagem no chat, marca como 'read' (2 tiques azuis)
+        if (!remoteStatus || remoteStatus !== 'read') {
+          try {
+            const { data: replyMsg } = await supabaseAdmin
+              .from('chat_messages')
+              .select('id')
+              .eq('session_id', msg.session_id)
+              .eq('sender_type', 'client')
+              .gt('created_at', msg.created_at)
+              .limit(1);
+
+            if (replyMsg && replyMsg.length > 0) {
+              remoteStatus = 'read';
+            }
+          } catch(e) {}
+        }
+
+        // 3. Se a mensagem foi disparada com sucesso e já tem mais de 2.5s, marca como 'delivered' (2 tiques cinzas)
+        if (!remoteStatus && (meta.status === 'sent' || !meta.status || meta.status === 'sending')) {
+          const msgTime = new Date(msg.created_at).getTime();
+          if (Date.now() - msgTime > 2500) {
+            remoteStatus = 'delivered';
+          }
+        }
+
+        if (remoteStatus) {
+          statusMap[msg.id] = remoteStatus;
+          if (remoteStatus !== meta.status) {
+            await supabaseAdmin
+              .from('chat_messages')
+              .update({
+                media_url: JSON.stringify({
+                  ...meta,
+                  status: remoteStatus,
+                  status_updated_at: new Date().toISOString()
+                })
+              })
+              .eq('id', msg.id);
+            updatedCount++;
+          }
+        }
+      })
+    );
+
     return res.json({ updated: updatedCount, statusMap });
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -1061,10 +1304,20 @@ app.all(['/api/webhook/astracalls', '/webhook/astracalls', '/api/astracalls/webh
   try {
     const payload = req.body || {};
     const supabaseAdmin = getSupabaseAdmin();
+
+    // 1. Processa atualizações de status de mensagens enviadas
+    await processStatusUpdates(payload);
+
+    const isStatusOnly = payload.event === 'message.status' || payload.event === 'message.ack' || payload.event === 'message_status' || payload.event === 'messages.update' || payload.type === 'message_status';
+    if (isStatusOnly) {
+      return res.status(200).json({ success: true });
+    }
+
+    // 2. Processa mensagens recebidas do cliente
     const data = payload.data || payload;
     const msgObj = data.message || data.messages?.[0] || (data.key ? data : null);
     if (msgObj) {
-      const fromMe = msgObj.fromMe || msgObj.key?.fromMe;
+      const fromMe = msgObj.fromMe || msgObj.key?.fromMe || msgObj.direction === 'outbound';
       if (!fromMe) {
         let senderPhone = msgObj.from || msgObj.key?.remoteJid || msgObj.phone || msgObj.sender || '';
         senderPhone = senderPhone.replace('@s.whatsapp.net', '').replace('@c.us', '').replace(/\D/g, '');
@@ -1072,11 +1325,9 @@ app.all(['/api/webhook/astracalls', '/webhook/astracalls', '/api/astracalls/webh
         const mediaUrl = msgObj.mediaUrl || msgObj.url || msgObj.imageMessage?.url || msgObj.audioMessage?.url || '';
 
         if (senderPhone && (textContent || mediaUrl)) {
-          const { data: allClients } = await supabaseAdmin.from('clients').select('id, name, phone, admin_id, employee_id');
-          const matched = allClients?.find(c => {
-            const cd = String(c.phone || '').replace(/\D/g, '');
-            return cd && (senderPhone.endsWith(cd) || cd.endsWith(senderPhone) || senderPhone.slice(-8) === cd.slice(-8));
-          });
+          const { data: allClients } = await supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id, employee_id');
+          const matched = allClients?.find(c => isMatchingClientPhone(c.phone || '', senderPhone) || isMatchingClientPhone(c.local_phone || '', senderPhone));
+
           if (matched) {
             const { data: openSess } = await supabaseAdmin.from('chat_sessions').select('id').eq('client_id', matched.id).eq('status', 'open').maybeSingle();
             let targetSessId = openSess?.id;
@@ -1114,6 +1365,9 @@ app.all(['/api/webhook/wame', '/webhook/wame', '/api/webhook/evolution', '/webho
   if (req.method === 'GET') {
     return res.status(200).send(req.query["hub.challenge"] || "Webhook active");
   }
+  try {
+    await processStatusUpdates(req.body || {});
+  } catch(e) {}
   return res.status(200).send("EVENT_RECEIVED");
 });
 
