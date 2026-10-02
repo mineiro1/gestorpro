@@ -52,12 +52,18 @@ export default function Billing() {
     }
   });
   const [waSettings, setWaSettings] = useState({
+    companyName: '',
     reminderDays: 3,
     reminderMessage: 'Olá {nome}, tudo bem? Passando para lembrar que sua mensalidade no valor de R$ {valor} vence no dia {vencimento}.',
     delayedMessage: 'Olá {nome}, tudo bem? Consta em nosso sistema que a sua mensalidade do dia {vencimento} no valor de R$ {valor} está pendente. Poderia verificá-la, por favor?',
     reportMessage1: 'Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}',
     reportMessage2: 'Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}',
     autoScheduleTime: '09:00',
+    provider: 'astracalls',
+    useAstracalls: true,
+    astracallsUrl: 'https://calls.rspiscinas.app.br',
+    astracallsApiKey: 'rs_piscinas_segredo_2026',
+    astracallsSessionId: '8090cca3add0b8eb3e41efb9eec363e4',
     useEvolutionApi: false,
     evolutionApiUrl: '',
     evolutionApiKey: '',
@@ -70,21 +76,32 @@ export default function Billing() {
 
   useEffect(() => {
     if (userProfile?.whatsappSettings) {
+      const s = userProfile.whatsappSettings as any;
+      const isMeta = s.useMetaApi && s.provider === 'meta';
+      const isEvo = s.useEvolutionApi && s.provider === 'evolution';
+      const isAstra = s.provider === 'astracalls' || s.useAstracalls || (!isMeta && !isEvo);
+
       setWaSettings({
-        reminderDays: userProfile.whatsappSettings.reminderDays ?? 3,
-        reminderMessage: userProfile.whatsappSettings.reminderMessage || 'Olá {nome}, tudo bem? Passando para lembrar que sua mensalidade no valor de R$ {valor} vence no dia {vencimento}.',
-        delayedMessage: userProfile.whatsappSettings.delayedMessage || 'Olá {nome}, tudo bem? Consta em nosso sistema que a sua mensalidade do dia {vencimento} no valor de R$ {valor} está pendente. Poderia verificá-la, por favor?',
-        reportMessage1: (userProfile.whatsappSettings.reportMessage1 || 'Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}').replace(/https:\/\/www\.rspiscinas\.app\.br\/client-panel/gi, 'www.rspiscinas.app.br/client-panel'),
-        reportMessage2: (userProfile.whatsappSettings.reportMessage2 || 'Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}').replace(/https:\/\/www\.rspiscinas\.app\.br\/client-panel/gi, 'www.rspiscinas.app.br/client-panel'),
-        autoScheduleTime: userProfile.whatsappSettings.autoScheduleTime || '09:00',
-        useEvolutionApi: userProfile.whatsappSettings.useEvolutionApi || false,
-        evolutionApiUrl: userProfile.whatsappSettings.evolutionApiUrl || '',
-        evolutionApiKey: userProfile.whatsappSettings.evolutionApiKey || '',
-        evolutionInstanceName: userProfile.whatsappSettings.evolutionInstanceName || '',
-        useMetaApi: userProfile.whatsappSettings.useMetaApi || false,
-        metaToken: userProfile.whatsappSettings.metaToken || '',
-        metaPhoneNumberId: userProfile.whatsappSettings.metaPhoneNumberId || '',
-        metaServerUrl: userProfile.whatsappSettings.metaServerUrl || ''
+        companyName: s.companyName || '',
+        reminderDays: s.reminderDays ?? 3,
+        reminderMessage: s.reminderMessage || 'Olá {nome}, tudo bem? Passando para lembrar que sua mensalidade no valor de R$ {valor} vence no dia {vencimento}.',
+        delayedMessage: s.delayedMessage || 'Olá {nome}, tudo bem? Consta em nosso sistema que a sua mensalidade do dia {vencimento} no valor de R$ {valor} está pendente. Poderia verificá-la, por favor?',
+        reportMessage1: (s.reportMessage1 || 'Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}').replace(/https:\/\/www\.rspiscinas\.app\.br\/client-panel/gi, 'www.rspiscinas.app.br/client-panel'),
+        reportMessage2: (s.reportMessage2 || 'Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}').replace(/https:\/\/www\.rspiscinas\.app\.br\/client-panel/gi, 'www.rspiscinas.app.br/client-panel'),
+        autoScheduleTime: s.autoScheduleTime || '09:00',
+        provider: isAstra ? 'astracalls' : (isEvo ? 'evolution' : (isMeta ? 'meta' : 'web')),
+        useAstracalls: isAstra,
+        astracallsUrl: s.astracallsUrl || 'https://calls.rspiscinas.app.br',
+        astracallsApiKey: s.astracallsApiKey || 'rs_piscinas_segredo_2026',
+        astracallsSessionId: s.astracallsSessionId || '8090cca3add0b8eb3e41efb9eec363e4',
+        useEvolutionApi: isEvo,
+        evolutionApiUrl: s.evolutionApiUrl || '',
+        evolutionApiKey: s.evolutionApiKey || '',
+        evolutionInstanceName: s.evolutionInstanceName || '',
+        useMetaApi: isMeta,
+        metaToken: s.metaToken || '',
+        metaPhoneNumberId: s.metaPhoneNumberId || '',
+        metaServerUrl: s.metaServerUrl || ''
       });
     }
   }, [userProfile]);
@@ -958,18 +975,36 @@ export default function Billing() {
                   <p className="text-xs text-gray-500 mb-4">Escolha a tecnologia para enviar as mensagens.</p>
                   
                   <div className="flex flex-col space-y-3">
+                    <label className="flex items-start space-x-3 cursor-pointer p-3 rounded-lg border border-emerald-300 bg-emerald-50/60 hover:bg-emerald-50 transition-colors">
+                      <input 
+                        type="radio" 
+                        name="whatsappProvider"
+                        value="astracalls"
+                        className="mt-1"
+                        checked={waSettings.provider === 'astracalls' || (waSettings.useAstracalls && !waSettings.useEvolutionApi && !waSettings.useMetaApi)}
+                        onChange={() => setWaSettings({...waSettings, provider: 'astracalls', useAstracalls: true, useEvolutionApi: false, useMetaApi: false})}
+                      />
+                      <div>
+                        <span className="block font-semibold text-sm text-emerald-900 flex items-center gap-1.5">
+                          AstraCalls (Oficial RS Piscinas)
+                          <span className="text-[10px] px-1.5 py-0.2 bg-emerald-200 text-emerald-800 rounded font-bold">Ativo</span>
+                        </span>
+                        <span className="block text-xs text-emerald-700">Envio automático pelo servidor oficial com VoIP e gravação de chamadas.</span>
+                      </div>
+                    </label>
+
                     <label className="flex items-start space-x-3 cursor-pointer p-3 rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors">
                       <input 
                         type="radio" 
                         name="whatsappProvider"
                         value="web"
                         className="mt-1"
-                        checked={!waSettings.useEvolutionApi && !waSettings.useMetaApi}
-                        onChange={() => setWaSettings({...waSettings, useEvolutionApi: false, useMetaApi: false})}
+                        checked={waSettings.provider === 'web' || (!waSettings.useAstracalls && !waSettings.useEvolutionApi && !waSettings.useMetaApi)}
+                        onChange={() => setWaSettings({...waSettings, provider: 'web', useAstracalls: false, useEvolutionApi: false, useMetaApi: false})}
                       />
                       <div>
-                        <span className="block font-semibold text-sm text-gray-800">WhatsApp Web (Padrão)</span>
-                        <span className="block text-xs text-gray-500">Abre o WhatsApp no navegador. Gratuito, mas envio manual 1 por 1.</span>
+                        <span className="block font-semibold text-sm text-gray-800">WhatsApp Web (Manual)</span>
+                        <span className="block text-xs text-gray-500">Abre o WhatsApp no celular ou navegador.</span>
                       </div>
                     </label>
 
@@ -979,27 +1014,27 @@ export default function Billing() {
                         name="whatsappProvider"
                         value="evolution"
                         className="mt-1"
-                        checked={waSettings.useEvolutionApi && !waSettings.useMetaApi}
-                        onChange={() => setWaSettings({...waSettings, useEvolutionApi: true, useMetaApi: false})}
+                        checked={waSettings.provider === 'evolution' || (waSettings.useEvolutionApi && !waSettings.useMetaApi)}
+                        onChange={() => setWaSettings({...waSettings, provider: 'evolution', useAstracalls: false, useEvolutionApi: true, useMetaApi: false})}
                       />
                       <div>
-                        <span className="block font-semibold text-sm text-gray-800">Evolution API (Alternativo)</span>
+                        <span className="block font-semibold text-sm text-gray-800">Evolution API (QR Code)</span>
                         <span className="block text-xs text-gray-500">Envio em background conectado ao seu celular via QR Code.</span>
                       </div>
                     </label>
 
-                    <label className="flex items-start space-x-3 cursor-pointer p-3 rounded-lg border border-blue-200 bg-blue-50/50 hover:bg-blue-50 transition-colors">
+                    <label className="flex items-start space-x-3 cursor-pointer p-3 rounded-lg border border-purple-200 bg-purple-50/50 hover:bg-purple-50 transition-colors">
                       <input 
                         type="radio" 
                         name="whatsappProvider"
                         value="meta"
                         className="mt-1"
-                        checked={waSettings.useMetaApi}
-                        onChange={() => setWaSettings({...waSettings, useEvolutionApi: false, useMetaApi: true})}
+                        checked={waSettings.provider === 'meta' || waSettings.useMetaApi}
+                        onChange={() => setWaSettings({...waSettings, provider: 'meta', useAstracalls: false, useEvolutionApi: false, useMetaApi: true})}
                       />
                       <div>
-                        <span className="block font-semibold text-sm text-blue-900">API WAME / Meta Cloud API</span>
-                        <span className="block text-xs text-gray-600">Conexão via Facebook Developers ou WAME API (Oficial e Não-Oficial via QR Code).</span>
+                        <span className="block font-semibold text-sm text-purple-900">API WAME / Meta Cloud API</span>
+                        <span className="block text-xs text-gray-600">Conexão via Facebook Developers ou WAME API Oficial.</span>
                       </div>
                     </label>
                   </div>

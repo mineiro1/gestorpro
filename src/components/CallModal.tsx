@@ -2,10 +2,11 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Mic, MicOff, Volume2, VolumeX, PhoneOff, User } from 'lucide-react';
 import { ActiveCall } from '../contexts/CallContext';
 import { createVolumeMeterWorklet } from '../lib/audioWorklet';
+import { getApiUrl } from '../lib/apiConfig';
 
 interface CallModalProps {
   call: ActiveCall;
-  onClose: (duration?: number) => void;
+  onClose: (duration?: number, recordingUrl?: string) => void;
 }
 
 export default function CallModal({ call, onClose }: CallModalProps) {
@@ -26,6 +27,86 @@ export default function CallModal({ call, onClose }: CallModalProps) {
   const workletAudioCtxRef = useRef<AudioContext | null>(null);
   const localWorkletDisconnectRef = useRef<(() => void) | null>(null);
   const remoteWorkletDisconnectRef = useRef<(() => void) | null>(null);
+
+  // Call Audio Recording Engine (Dual-Stream Mixer)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const mixAudioCtxRef = useRef<AudioContext | null>(null);
+  const mixDestNodeRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const localSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const remoteSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+
+  // Start dual-channel recording mixer
+  const startRecordingMixer = (micStream: MediaStream, rStream?: MediaStream | null) => {
+    try {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') return;
+
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+
+      const actx = mixAudioCtxRef.current || new AudioCtx();
+      mixAudioCtxRef.current = actx;
+      if (actx.state === 'suspended') actx.resume().catch(() => {});
+
+      const dest = mixDestNodeRef.current || actx.createMediaStreamDestination();
+      mixDestNodeRef.current = dest;
+
+      // Connect local mic
+      if (micStream && micStream.getAudioTracks().length > 0 && !localSourceNodeRef.current) {
+        try {
+          const micSource = actx.createMediaStreamSource(micStream);
+          micSource.connect(dest);
+          localSourceNodeRef.current = micSource;
+        } catch (e) {}
+      }
+
+      // Connect remote stream if ready
+      if (rStream && rStream.getAudioTracks().length > 0 && !remoteSourceNodeRef.current) {
+        try {
+          const remoteSource = actx.createMediaStreamSource(rStream);
+          remoteSource.connect(dest);
+          remoteSourceNodeRef.current = remoteSource;
+        } catch (e) {}
+      }
+
+      const mixedStream = dest.stream;
+      recordedChunksRef.current = [];
+
+      let mimeType = 'audio/webm;codecs=opus';
+      if (typeof MediaRecorder !== 'undefined') {
+        if (!MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+          if (MediaRecorder.isTypeSupported('audio/webm')) mimeType = 'audio/webm';
+          else if (MediaRecorder.isTypeSupported('audio/mp4')) mimeType = 'audio/mp4';
+          else if (MediaRecorder.isTypeSupported('audio/ogg')) mimeType = 'audio/ogg';
+          else mimeType = '';
+        }
+
+        const recorder = mimeType ? new MediaRecorder(mixedStream, { mimeType }) : new MediaRecorder(mixedStream);
+        mediaRecorderRef.current = recorder;
+
+        recorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) {
+            recordedChunksRef.current.push(e.data);
+          }
+        };
+
+        recorder.start(1000);
+        console.log('[VoIP Recording] Gravação da chamada iniciada:', mimeType || 'default');
+      }
+    } catch (e) {
+      console.warn('[VoIP Recording] Erro ao iniciar gravação:', e);
+    }
+  };
+
+  const connectRemoteToMixer = (rStream: MediaStream) => {
+    try {
+      if (mixAudioCtxRef.current && mixDestNodeRef.current && !remoteSourceNodeRef.current) {
+        const remoteSource = mixAudioCtxRef.current.createMediaStreamSource(rStream);
+        remoteSource.connect(mixDestNodeRef.current);
+        remoteSourceNodeRef.current = remoteSource;
+      }
+    } catch (e) {}
+  };
 
   // Realistic telephone ringing tone generator
   const playRingTone = () => {
@@ -157,6 +238,9 @@ export default function CallModal({ call, onClose }: CallModalProps) {
               remoteAudioRef.current.play().catch(() => {});
             }
 
+            // Connect remote stream to call recording mixer
+            connectRemoteToMixer(rStream);
+
             // Setup AudioWorklet for remote caller volume level
             if (workletAudioCtxRef.current) {
               const { disconnect } = await createVolumeMeterWorklet(workletAudioCtxRef.current, rStream, (vol) => {
@@ -171,6 +255,9 @@ export default function CallModal({ call, onClose }: CallModalProps) {
           if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
             stopRingTone();
             setCallStatus('connected');
+            if (micStreamRef.current) {
+              startRecordingMixer(micStreamRef.current, remoteStreamRef.current);
+            }
           } else if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed') {
             if (!isCleanedUp && callStatus === 'connected') {
               handleEndCall();
@@ -213,6 +300,9 @@ export default function CallModal({ call, onClose }: CallModalProps) {
             await pc.setRemoteDescription({ type: 'answer', sdp: data.sdp_answer });
             stopRingTone();
             setCallStatus('connected');
+            if (micStreamRef.current) {
+              startRecordingMixer(micStreamRef.current, remoteStreamRef.current);
+            }
           }
         }
       } catch (err) {
@@ -261,14 +351,64 @@ export default function CallModal({ call, onClose }: CallModalProps) {
     setIsSpeakerOn(!isSpeakerOn);
   };
 
-  // Handle End Call
-  const handleEndCall = () => {
+  // Handle End Call with Audio Recording Save
+  const handleEndCall = async () => {
     const finalDuration = duration;
+    let finalRecordingUrl = '';
+
+    // Stop recording and upload audio
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        await new Promise<void>((resolve) => {
+          if (!mediaRecorderRef.current) return resolve();
+          mediaRecorderRef.current.onstop = async () => {
+            try {
+              if (recordedChunksRef.current && recordedChunksRef.current.length > 0) {
+                const mime = mediaRecorderRef.current?.mimeType || 'audio/webm';
+                const audioBlob = new Blob(recordedChunksRef.current, { type: mime });
+                
+                const reader = new FileReader();
+                reader.readAsDataURL(audioBlob);
+                reader.onloadend = async () => {
+                  const base64data = reader.result as string;
+                  try {
+                    const uploadUrl = getApiUrl('/api/chat/upload');
+                    const upRes = await fetch(uploadUrl, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        mediaBase64: base64data,
+                        mimeType: mime
+                      })
+                    });
+                    if (upRes.ok) {
+                      const upData = await upRes.json();
+                      if (upData?.publicUrl) {
+                        finalRecordingUrl = upData.publicUrl;
+                      }
+                    }
+                  } catch (upErr) {
+                    console.warn('[Call Recording Upload Error]:', upErr);
+                  }
+                  resolve();
+                };
+              } else {
+                resolve();
+              }
+            } catch (e) {
+              resolve();
+            }
+          };
+          mediaRecorderRef.current.stop();
+        });
+      } catch (e) {}
+    }
+
     cleanupAudio();
     setCallStatus('ended');
     setTimeout(() => {
-      onClose(finalDuration);
-    }, 600);
+      onClose(finalDuration, finalRecordingUrl);
+    }, 400);
   };
 
   const formatTime = (secs: number) => {

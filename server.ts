@@ -484,15 +484,17 @@ setInterval(() => {
       let sendSuccess = false;
       let lastSendError = '';
 
-      // 1. Prioridade Principal: AstraCalls (https://calls.rspiscinas.app.br)
-      const isAstracalls = waSettings?.useAstracalls !== false || waSettings?.provider === 'astracalls' || !!waSettings?.astracallsUrl;
-      const astracallsUrl = (waSettings?.astracallsUrl || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
-      const astracallsApiKey = waSettings?.astracallsApiKey || 'rs_piscinas_segredo_2026';
+      // Determine active provider
+      const provider = waSettings?.provider || (waSettings?.useMetaApi ? 'meta' : (waSettings?.useEvolutionApi ? 'evolution' : (waSettings?.useAstracalls !== false ? 'astracalls' : 'astracalls')));
 
-      if (isAstracalls && astracallsUrl) {
+      // 1. Provedor: AstraCalls
+      if (provider === 'astracalls' || (waSettings?.useAstracalls && !waSettings?.useMetaApi && !waSettings?.useEvolutionApi)) {
+        const astracallsUrl = (waSettings?.astracallsUrl || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
+        const astracallsApiKey = waSettings?.astracallsApiKey || 'rs_piscinas_segredo_2026';
+        let sessionId = waSettings?.astracallsSessionId || '8090cca3add0b8eb3e41efb9eec363e4';
+
         try {
-          let sessionId = waSettings?.astracallsSessionId;
-          if (!sessionId) {
+          if (!waSettings?.astracallsSessionId) {
             try {
               const sessRes = await fetch(`${astracallsUrl}/api/sessions`, {
                 headers: { 'X-Api-Key': astracallsApiKey }
@@ -504,50 +506,86 @@ setInterval(() => {
               }
             } catch (e) {}
           }
-          if (!sessionId) sessionId = '8090cca3add0b8eb3e41efb9eec363e4';
 
-          const sendEndpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/text`;
-          const payload = {
-            to: targetNumber,
-            phone: targetNumber,
-            recipient: targetNumber,
-            text: text || '',
-            message: text || '',
-            mediaUrl: publicMediaUrl || undefined,
-            mediaBase64: mediaBase64 || undefined,
-            mimeType: mimeType || undefined
-          };
+          const rawClean = targetNumber.replace(/\D/g, '');
+          let twelveDigit = '';
+          let thirteenDigit = '';
 
-          const response = await fetch(sendEndpoint, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Api-Key': astracallsApiKey
-            },
-            body: JSON.stringify(payload)
-          });
+          let baseNum = rawClean;
+          if (!baseNum.startsWith('55')) {
+            if (baseNum.length === 10 || baseNum.length === 11) baseNum = '55' + baseNum;
+            else if (baseNum.length === 8 || baseNum.length === 9) baseNum = '5567' + baseNum;
+          }
 
-          if (response.ok) {
-            sendSuccess = true;
-            try {
-              const astraData = await response.json();
-              externalId = astraData?.id || astraData?.messageId || astraData?.key?.id || `astra_${Date.now()}`;
-            } catch (e) {
-              externalId = `astra_${Date.now()}`;
+          if (baseNum.startsWith('55') && baseNum.length >= 12) {
+            const ddd = baseNum.substring(2, 4);
+            const rest = baseNum.substring(4);
+            if (baseNum.length === 13 && rest.startsWith('9')) {
+              thirteenDigit = baseNum;
+              twelveDigit = `55${ddd}${rest.substring(1)}`;
+            } else if (baseNum.length === 12) {
+              twelveDigit = baseNum;
+              thirteenDigit = `55${ddd}9${rest}`;
             }
-          } else {
-            const errBody = await response.text().catch(() => '');
-            console.warn("[/api/chat/send] AstraCalls response status:", response.status, errBody);
-            // Se o AstraCalls não processou, manteremos como enviado pelo softphone ou tentaremos fallback
-            sendSuccess = true;
-            externalId = `astra_${Date.now()}`;
+          }
+
+          // Para AstraCalls: O formato de 12 dígitos sem o 9 (ex: 556791907236) DEVE ser o primeiro a ser enviado!
+          const numbersToTry: string[] = [];
+          if (twelveDigit) numbersToTry.push(twelveDigit);
+          if (thirteenDigit) numbersToTry.push(thirteenDigit);
+          if (!twelveDigit && !thirteenDigit) numbersToTry.push(targetNumber);
+
+          let lastResponseText = '';
+          for (const num of numbersToTry) {
+            let sendEndpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/text`;
+            const payload: any = {
+              to: num,
+              phone: num,
+              recipient: num,
+              text: text || '',
+              message: text || ''
+            };
+
+            if (publicMediaUrl || mediaBase64) {
+              payload.mediaUrl = publicMediaUrl || mediaBase64;
+              payload.mimeType = mimeType || undefined;
+              if (mimeType?.startsWith('audio/')) {
+                sendEndpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/audio`;
+              }
+            }
+
+            const response = await fetch(sendEndpoint, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Api-Key': astracallsApiKey
+              },
+              body: JSON.stringify(payload)
+            });
+
+            if (response.ok) {
+              sendSuccess = true;
+              try {
+                const astraData = await response.json();
+                externalId = astraData?.id || astraData?.messageId || astraData?.key?.id || `astra_${Date.now()}`;
+              } catch (e) {
+                externalId = `astra_${Date.now()}`;
+              }
+              break;
+            } else {
+              lastResponseText = await response.text().catch(() => '');
+            }
+          }
+
+          if (!sendSuccess) {
+            lastSendError = `Erro AstraCalls: ${lastResponseText}`;
+            console.warn("[/api/chat/send] AstraCalls error response:", lastResponseText);
           }
         } catch (astraErr: any) {
+          lastSendError = `Falha na conexão com AstraCalls: ${astraErr.message}`;
           console.error("[/api/chat/send] Erro conexao AstraCalls:", astraErr.message);
-          sendSuccess = true;
-          externalId = `astra_${Date.now()}`;
         }
-      } else if (waSettings?.useEvolutionApi && waSettings?.evolutionApiUrl && waSettings?.evolutionApiKey && waSettings?.evolutionInstanceName) {
+      } else if (provider === 'evolution' || (waSettings?.useEvolutionApi && waSettings?.evolutionApiUrl && waSettings?.evolutionApiKey && waSettings?.evolutionInstanceName)) {
         let baseUrl = waSettings.evolutionApiUrl.trim().replace(/\/$/, '');
         if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
 
@@ -888,24 +926,32 @@ setInterval(() => {
         return res.status(404).json({ error: "Número do cliente não encontrado" });
       }
 
-      // Normalização inteligente de DDI 55 e 9º dígito
+      // Normalização inteligente de DDI 55 e 9º dígito para AstraCalls VoIP
       let baseNumber = cleanDigits;
-      if (!baseNumber.startsWith('55') && (baseNumber.length === 10 || baseNumber.length === 11)) {
-        baseNumber = '55' + baseNumber;
+      if (!baseNumber.startsWith('55')) {
+        if (baseNumber.length === 10 || baseNumber.length === 11) baseNumber = '55' + baseNumber;
+        else if (baseNumber.length === 8 || baseNumber.length === 9) baseNumber = '5567' + baseNumber;
       }
 
-      const variants: string[] = [baseNumber];
+      let twelveDigit = '';
+      let thirteenDigit = '';
       if (baseNumber.startsWith('55') && baseNumber.length >= 12) {
         const ddd = baseNumber.substring(2, 4);
         const rest = baseNumber.substring(4);
         if (baseNumber.length === 13 && rest.startsWith('9')) {
-          // Se possui 13 dígitos (com 9), cria variante de 12 dígitos (sem 9)
-          variants.push(`55${ddd}${rest.substring(1)}`);
+          thirteenDigit = baseNumber;
+          twelveDigit = `55${ddd}${rest.substring(1)}`;
         } else if (baseNumber.length === 12) {
-          // Se possui 12 dígitos (sem 9), cria variante de 13 dígitos (com 9)
-          variants.push(`55${ddd}9${rest}`);
+          twelveDigit = baseNumber;
+          thirteenDigit = `55${ddd}9${rest}`;
         }
       }
+
+      // Para AstraCalls VoIP: O formato de 12 dígitos sem o 9 DEVE vir em primeiro lugar!
+      const variants: string[] = [];
+      if (twelveDigit) variants.push(twelveDigit);
+      if (thirteenDigit) variants.push(thirteenDigit);
+      if (!twelveDigit && !thirteenDigit) variants.push(baseNumber);
 
       // 2. AstraCalls session settings
       const astracallsUrl = (process.env.ASTRACALLS_URL || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
@@ -1075,10 +1121,35 @@ setInterval(() => {
       if (!phone) return res.status(400).json({ error: "Telefone obrigatório" });
 
       const cleanDigits = String(phone).replace(/\D/g, '');
-      const targetNumber = cleanDigits.startsWith('55') ? cleanDigits : `55${cleanDigits}`;
+      let baseNum = cleanDigits;
+      if (!baseNum.startsWith('55')) {
+        if (baseNum.length === 10 || baseNum.length === 11) baseNum = '55' + baseNum;
+        else if (baseNum.length === 8 || baseNum.length === 9) baseNum = '5567' + baseNum;
+      }
+
+      let targetNumber = baseNum;
+      if (baseNum.startsWith('55')) {
+        const ddd = baseNum.substring(2, 4);
+        const rest = baseNum.substring(4);
+        if (baseNum.length === 13 && rest.startsWith('9')) {
+          targetNumber = `55${ddd}${rest.substring(1)}`;
+        }
+      }
+
       const astracallsUrl = 'https://calls.rspiscinas.app.br';
       const astracallsApiKey = 'rs_piscinas_segredo_2026';
-      const sessionId = 'd4f80e0ee23755d62116e25eabe7501b';
+      let sessionId = req.body.sessionId || '8090cca3add0b8eb3e41efb9eec363e4';
+
+      try {
+        const sessRes = await fetch(`${astracallsUrl}/api/sessions`, {
+          headers: { 'X-Api-Key': astracallsApiKey }
+        });
+        if (sessRes.ok) {
+          const sData = await sessRes.json();
+          const openSess = sData?.sessions?.find((s: any) => s.state === 'open' || s.paired) || sData?.sessions?.[0];
+          if (openSess?.id) sessionId = openSess.id;
+        }
+      } catch (e) {}
 
       const resp = await fetch(`${astracallsUrl}/api/sessions/${sessionId}/messages/text`, {
         method: 'POST',
@@ -1099,9 +1170,99 @@ setInterval(() => {
       return res.json({
         success: resp.ok,
         status: resp.status,
+        targetUsed: targetNumber,
         response: responseText
       });
     } catch (e: any) {
+      return res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Batch Phone Number Normalization / Standardization Tool for AstraCalls & WhatsApp
+  app.post("/api/admin/standardize-phones", async (req, res) => {
+    try {
+      // 1. Fetch all clients
+      const { data: clients, error: cErr } = await supabaseAdmin
+        .from('clients')
+        .select('id, name, phone, local_phone');
+      
+      if (cErr) throw cErr;
+
+      let updatedCount = 0;
+      const updatedClients: any[] = [];
+
+      for (const c of clients || []) {
+        if (!c.phone) continue;
+        const clean = c.phone.replace(/\D/g, '');
+        let standardPhone = c.phone.trim();
+        let needsUpdate = false;
+
+        // Visual CRM phone mask standard: (67) 99190-7236 or (67) 9190-7236
+        if (/^\d{10,13}$/.test(standardPhone)) {
+          let num = standardPhone;
+          if (num.startsWith('55') && (num.length === 12 || num.length === 13)) {
+            num = num.substring(2);
+          }
+          if (num.length === 11) {
+            standardPhone = `(${num.substring(0, 2)}) ${num.substring(2, 7)}-${num.substring(7)}`;
+            needsUpdate = true;
+          } else if (num.length === 10) {
+            standardPhone = `(${num.substring(0, 2)}) ${num.substring(2, 6)}-${num.substring(6)}`;
+            needsUpdate = true;
+          }
+        }
+
+        if (needsUpdate && standardPhone !== c.phone) {
+          const { error: upErr } = await supabaseAdmin
+            .from('clients')
+            .update({ phone: standardPhone })
+            .eq('id', c.id);
+          
+          if (!upErr) {
+            updatedCount++;
+            updatedClients.push({ id: c.id, name: c.name, before: c.phone, after: standardPhone });
+          }
+        }
+      }
+
+      // 2. Fetch agenda_contacts
+      const { data: agenda, error: aErr } = await supabaseAdmin
+        .from('agenda_contacts')
+        .select('id, name, phone');
+      
+      if (!aErr && agenda) {
+        for (const a of agenda) {
+          if (!a.phone) continue;
+          let standardPhone = a.phone.trim();
+          let needsUpdate = false;
+          if (/^\d{10,13}$/.test(standardPhone)) {
+            let num = standardPhone;
+            if (num.startsWith('55') && (num.length === 12 || num.length === 13)) {
+              num = num.substring(2);
+            }
+            if (num.length === 11) {
+              standardPhone = `(${num.substring(0, 2)}) ${num.substring(2, 7)}-${num.substring(7)}`;
+              needsUpdate = true;
+            } else if (num.length === 10) {
+              standardPhone = `(${num.substring(0, 2)}) ${num.substring(2, 6)}-${num.substring(6)}`;
+              needsUpdate = true;
+            }
+          }
+          if (needsUpdate && standardPhone !== a.phone) {
+            await supabaseAdmin.from('agenda_contacts').update({ phone: standardPhone }).eq('id', a.id);
+            updatedCount++;
+          }
+        }
+      }
+
+      return res.json({
+        success: true,
+        totalChecked: (clients?.length || 0) + (agenda?.length || 0),
+        updatedCount,
+        details: updatedClients
+      });
+    } catch (e: any) {
+      console.error("[/api/admin/standardize-phones] Erro:", e);
       return res.status(500).json({ error: e.message });
     }
   });
@@ -1133,7 +1294,26 @@ setInterval(() => {
       const dbLogs: any[] = [];
       if (rows && rows.length > 0) {
         for (const r of rows) {
-          // parse ID parts or default metadata
+          try {
+            if (r.id.includes('__meta_')) {
+              const b64 = r.id.split('__meta_')[1];
+              const parsed = JSON.parse(Buffer.from(b64, 'base64').toString('utf-8'));
+              dbLogs.push({
+                id: r.id,
+                call_id: parsed.call_id || r.id,
+                client_id: parsed.client_id || null,
+                client_name: parsed.client_name || "Cliente RS Piscinas",
+                caller_name: parsed.caller_name || "Colaborador",
+                duration: Number(r.monthlyprice || parsed.duration || 0),
+                status: parsed.status || "completed",
+                has_recording: !!parsed.recording_url,
+                recording_url: parsed.recording_url || "",
+                created_at: r.updated_at
+              });
+              continue;
+            }
+          } catch (parseErr) {}
+
           const parts = r.id.split('_');
           const ts = parts[2] ? Number(parts[2]) : new Date(r.updated_at).getTime();
           dbLogs.push({
@@ -1143,8 +1323,8 @@ setInterval(() => {
             caller_name: "Colaborador",
             duration: Number(r.monthlyprice || 0),
             status: "completed",
-            has_recording: true,
-            recording_url: "https://calls.rspiscinas.app.br",
+            has_recording: false,
+            recording_url: "",
             created_at: r.updated_at || new Date(ts).toISOString()
           });
         }
@@ -1163,18 +1343,25 @@ setInterval(() => {
 
   app.post("/api/calls/log", async (req, res) => {
     try {
-      const { clientName, clientId, callerName, duration, callId, status } = req.body;
-      const logId = `call_log_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-      const newEntry = {
-        id: logId,
+      const { clientName, clientId, callerName, duration, callId, status, recording_url } = req.body;
+      
+      const metaObj = {
         call_id: callId || `call_${Date.now()}`,
         client_id: clientId || null,
         client_name: clientName || 'Cliente',
         caller_name: callerName || 'Colaborador',
         duration: Number(duration || 0),
         status: status || 'completed',
-        has_recording: true,
-        recording_url: `https://calls.rspiscinas.app.br`,
+        recording_url: recording_url || ''
+      };
+
+      const b64 = Buffer.from(JSON.stringify(metaObj)).toString('base64');
+      const logId = `call_log_${Date.now()}__meta_${b64}`;
+
+      const newEntry = {
+        id: logId,
+        ...metaObj,
+        has_recording: !!recording_url,
         created_at: new Date().toISOString()
       };
 
@@ -1375,45 +1562,53 @@ setInterval(() => {
     }
   });
 
-  // Helper to extract message status updates across Meta, WAME and Evolution formats
-  function extractStatusUpdates(body: any): Array<{ id: string; status: 'sent' | 'delivered' | 'read' }> {
-    const results: Array<{ id: string; status: 'sent' | 'delivered' | 'read' }> = [];
+  // Helper to extract message status updates across AstraCalls, Meta, WAME and Evolution formats
+  function extractStatusUpdates(body: any): Array<{ id: string; status: 'sent' | 'delivered' | 'read' | 'failed'; phone?: string; timestamp?: string; reason?: string }> {
+    const results: Array<{ id: string; status: 'sent' | 'delivered' | 'read' | 'failed'; phone?: string; timestamp?: string; reason?: string }> = [];
     if (!body) return results;
 
-    const mapStatus = (raw: any): 'sent' | 'delivered' | 'read' | null => {
+    const mapStatus = (raw: any): 'sent' | 'delivered' | 'read' | 'failed' | null => {
       if (raw === undefined || raw === null) return null;
       const str = String(raw).toUpperCase().trim();
-      if (str === '4' || str === '5' || str === 'READ' || str === 'PLAYED' || str === 'READ_RECEIPT' || str === 'VIEWED') {
+      if (str === '4' || str === '5' || str === 'READ' || str === 'PLAYED' || str === 'READ_RECEIPT' || str === 'VIEWED' || str === 'SEEN' || str === 'OPENED') {
         return 'read';
       }
-      if (str === '3' || str === 'DELIVERY_ACK' || str === 'DELIVERED' || str === 'RECEIVED') {
+      if (str === '3' || str === 'DELIVERY_ACK' || str === 'DELIVERED' || str === 'RECEIVED' || str === 'DELIVERED_ACK') {
         return 'delivered';
       }
-      if (str === '2' || str === 'SERVER_ACK' || str === 'SENT') {
+      if (str === '2' || str === 'SERVER_ACK' || str === 'SENT' || str === 'PENDING' || str === 'ACCEPTED' || str === 'OK') {
         return 'sent';
+      }
+      if (str === 'FAILED' || str === 'ERROR' || str === 'UNDELIVERED' || str === 'REJECTED' || str === 'DROPPED' || str === 'EXPIRED') {
+        return 'failed';
       }
       return null;
     };
 
-    const isReceiptEvent = String(body?.event || '').toLowerCase().includes('receipt');
+    const isReceiptEvent = String(body?.event || body?.type || '').toLowerCase().includes('receipt') || String(body?.event || body?.type || '').toLowerCase().includes('read');
 
     const inspectItem = (item: any) => {
       if (!item || typeof item !== 'object') return;
-      const id = item?.key?.id || item?.id || item?.keyId || item?.messageId || item?.update?.key?.id || item?.data?.key?.id;
-      if (!id) return;
+      const id = item?.key?.id || item?.id || item?.keyId || item?.messageId || item?.message_id || item?.msgId || item?.update?.key?.id || item?.data?.key?.id || item?.data?.messageId || item?.data?.id;
+      const phone = item?.phone || item?.to || item?.recipient || item?.recipient_id || item?.remoteJid || item?.key?.remoteJid || item?.data?.phone || item?.data?.to;
+      const timestamp = item?.timestamp || item?.readTimestamp || item?.update?.readTimestamp || item?.read_at || item?.delivered_at || item?.created_at;
+      const reason = item?.reason || item?.error || item?.errors?.[0]?.message || item?.message;
 
-      if (isReceiptEvent || item?.receipt?.readTimestamp || item?.update?.readTimestamp) {
-        results.push({ id: String(id), status: 'read' });
+      if (!id && !phone) return;
+
+      if (isReceiptEvent || item?.receipt?.readTimestamp || item?.update?.readTimestamp || item?.read_at) {
+        results.push({ id: String(id || ''), status: 'read', phone: phone ? String(phone) : undefined, timestamp: timestamp ? String(timestamp) : undefined });
         return;
       }
 
-      const rawStatus = item?.update?.status ?? item?.status ?? item?.ack ?? item?.update?.ack ?? item?.statusLabel ?? item?.update?.statusLabel ?? item?.receipt?.status;
+      const rawStatus = item?.update?.status ?? item?.status ?? item?.ack ?? item?.update?.ack ?? item?.statusLabel ?? item?.update?.statusLabel ?? item?.receipt?.status ?? item?.delivery_status ?? item?.data?.status ?? item?.data?.ack;
       const mapped = mapStatus(rawStatus);
       if (mapped) {
-        results.push({ id: String(id), status: mapped });
+        results.push({ id: String(id || ''), status: mapped, phone: phone ? String(phone) : undefined, timestamp: timestamp ? String(timestamp) : undefined, reason: reason ? String(reason) : undefined });
       }
     };
 
+    // 1. Meta / WhatsApp Cloud API webhook formats
     if (body.entry && Array.isArray(body.entry)) {
       for (const entry of body.entry) {
         if (entry.changes && Array.isArray(entry.changes)) {
@@ -1423,7 +1618,13 @@ setInterval(() => {
               for (const st of val.statuses) {
                 const mapped = mapStatus(st.status);
                 if (st.id && mapped) {
-                  results.push({ id: String(st.id), status: mapped });
+                  results.push({
+                    id: String(st.id),
+                    status: mapped,
+                    phone: st.recipient_id ? String(st.recipient_id) : undefined,
+                    timestamp: st.timestamp ? String(st.timestamp) : undefined,
+                    reason: st.errors && st.errors[0] ? String(st.errors[0].message || st.errors[0].title) : undefined
+                  });
                 }
               }
             }
@@ -1436,11 +1637,33 @@ setInterval(() => {
       for (const st of body.statuses) {
         const mapped = mapStatus(st.status);
         if (st.id && mapped) {
-          results.push({ id: String(st.id), status: mapped });
+          results.push({
+            id: String(st.id),
+            status: mapped,
+            phone: st.recipient_id ? String(st.recipient_id) : undefined,
+            timestamp: st.timestamp ? String(st.timestamp) : undefined
+          });
         }
       }
     }
 
+    // 2. AstraCalls webhook formats
+    if (body.event === 'message.status' || body.event === 'message.ack' || body.event === 'message_status' || body.event === 'messages.update' || body.type === 'message_status') {
+      const astraId = body.messageId || body.id || body.message_id || body.msgId || body.data?.messageId || body.data?.id;
+      const astraStatus = body.status || body.ack || body.data?.status || body.data?.ack;
+      const mapped = mapStatus(astraStatus);
+      if (mapped) {
+        results.push({
+          id: String(astraId || ''),
+          status: mapped,
+          phone: body.phone || body.to || body.recipient || body.data?.phone || body.data?.to,
+          timestamp: body.timestamp || body.delivered_at || body.read_at,
+          reason: body.error || body.reason
+        });
+      }
+    }
+
+    // 3. Array or Object inspections (Evolution, AstraCalls, Custom Webhook)
     if (Array.isArray(body)) {
       body.forEach(inspectItem);
     } else {
@@ -1453,63 +1676,118 @@ setInterval(() => {
       if (Array.isArray(body.updates)) {
         body.updates.forEach(inspectItem);
       }
+      if (Array.isArray(body.messages)) {
+        body.messages.forEach(inspectItem);
+      }
     }
 
     return results;
   }
 
-  async function processStatusUpdates(body: any): Promise<boolean> {
+  async function processStatusUpdates(body: any): Promise<{ updated: number; results: any[] }> {
     const updates = extractStatusUpdates(body);
-    if (updates.length === 0) return false;
+    if (updates.length === 0) return { updated: 0, results: [] };
+
+    let updatedCount = 0;
+    const processedResults: any[] = [];
 
     for (const update of updates) {
-      const { id: externalId, status: newStatus } = update;
-      if (!externalId) continue;
+      const { id: externalId, status: newStatus, phone, timestamp, reason } = update;
+      let targetMessageId: string | null = null;
+      let targetMediaUrl: string | null = null;
 
-      let { data: foundMsgs } = await supabaseAdmin
-        .from('chat_messages')
-        .select('id, media_url, sender_type')
-        .eq('sender_type', 'tech')
-        .ilike('media_url', `%${externalId}%`);
+      // 1. Match by External ID in media_url JSON
+      if (externalId && externalId.length > 3) {
+        let { data: foundMsgs } = await supabaseAdmin
+          .from('chat_messages')
+          .select('id, media_url, sender_type, created_at')
+          .eq('sender_type', 'tech')
+          .ilike('media_url', `%${externalId}%`)
+          .order('created_at', { ascending: false })
+          .limit(1);
 
-      if (!foundMsgs || foundMsgs.length === 0) {
-        if (externalId.length > 8) {
-          const shortId = externalId.slice(-12);
-          const { data: fallback } = await supabaseAdmin
-            .from('chat_messages')
-            .select('id, media_url, sender_type')
-            .eq('sender_type', 'tech')
-            .ilike('media_url', `%${shortId}%`);
-          foundMsgs = fallback;
+        if (!foundMsgs || foundMsgs.length === 0) {
+          if (externalId.length > 8) {
+            const shortId = externalId.slice(-12);
+            const { data: fallback } = await supabaseAdmin
+              .from('chat_messages')
+              .select('id, media_url, sender_type, created_at')
+              .eq('sender_type', 'tech')
+              .ilike('media_url', `%${shortId}%`)
+              .order('created_at', { ascending: false })
+              .limit(1);
+            foundMsgs = fallback;
+          }
+        }
+
+        if (foundMsgs && foundMsgs.length > 0) {
+          targetMessageId = foundMsgs[0].id;
+          targetMediaUrl = foundMsgs[0].media_url;
         }
       }
 
-      if (foundMsgs && foundMsgs.length > 0) {
-        for (const fm of foundMsgs) {
-          let existing: any = {};
-          try {
-            existing = JSON.parse(fm.media_url);
-          } catch(e) {}
-
-          if (existing.status === 'read' && newStatus !== 'read') {
-            continue;
+      // 2. Fallback: Match by recipient Phone number if External ID was not matched
+      if (!targetMessageId && phone) {
+        const cleanPhone = String(phone).replace(/\D/g, '');
+        if (cleanPhone.length >= 8) {
+          const { data: clients } = await supabaseAdmin.from('clients').select('id, phone, local_phone');
+          const matched = (clients || []).find((c: any) => isMatchingClientPhone(c.phone || '', cleanPhone) || isMatchingClientPhone(c.local_phone || '', cleanPhone));
+          
+          if (matched?.id) {
+            const { data: sess } = await supabaseAdmin.from('chat_sessions').select('id').eq('client_id', matched.id).order('created_at', { ascending: false }).limit(1);
+            if (sess && sess.length > 0) {
+              const { data: latestTechMsgs } = await supabaseAdmin
+                .from('chat_messages')
+                .select('id, media_url, sender_type, created_at')
+                .eq('session_id', sess[0].id)
+                .eq('sender_type', 'tech')
+                .order('created_at', { ascending: false })
+                .limit(1);
+              if (latestTechMsgs && latestTechMsgs.length > 0) {
+                targetMessageId = latestTechMsgs[0].id;
+                targetMediaUrl = latestTechMsgs[0].media_url;
+              }
+            }
           }
-
-          await supabaseAdmin
-            .from('chat_messages')
-            .update({
-              media_url: JSON.stringify({
-                ...existing,
-                status: newStatus,
-                external_id: externalId,
-                status_updated_at: new Date().toISOString()
-              })
-            })
-            .eq('id', fm.id);
         }
+      }
+
+      if (targetMessageId) {
+        let existing: any = {};
+        try {
+          if (targetMediaUrl && targetMediaUrl.trim().startsWith('{')) {
+            existing = JSON.parse(targetMediaUrl);
+          }
+        } catch (e) {}
+
+        // Never downgrade from 'read' to 'delivered' or 'sent'
+        if (existing.status === 'read' && newStatus !== 'read') {
+          continue;
+        }
+
+        const updatePayload: any = {
+          ...existing,
+          status: newStatus,
+          status_updated_at: timestamp ? new Date(isNaN(Number(timestamp)) ? timestamp : Number(timestamp) * (String(timestamp).length <= 10 ? 1000 : 1)).toISOString() : new Date().toISOString()
+        };
+
+        if (externalId) updatePayload.external_id = externalId;
+        if (reason) updatePayload.error_reason = reason;
+
+        await supabaseAdmin
+          .from('chat_messages')
+          .update({
+            media_url: JSON.stringify(updatePayload)
+          })
+          .eq('id', targetMessageId);
+
+        updatedCount++;
+        processedResults.push({ messageId: targetMessageId, externalId, status: newStatus });
       }
     }
-    return true;
+
+    console.log(`[Status Webhook] Atualizadas ${updatedCount} mensagens para novos status de entrega/leitura.`);
+    return { updated: updatedCount, results: processedResults };
   }
 
   // Webhook for WAME / Meta API
@@ -2025,6 +2303,138 @@ setInterval(() => {
 
   app.post("/api/webhook/evolution", handleEvolutionWebhook);
   app.post("/webhook/evolution", handleEvolutionWebhook);
+  app.get("/api/webhook/evolution", handleWameGet);
+  app.get("/webhook/evolution", handleWameGet);
+
+  // Meta / WhatsApp Cloud API aliases
+  app.post("/api/webhook/meta", handleWameWebhook);
+  app.post("/webhook/meta", handleWameWebhook);
+  app.get("/api/webhook/meta", handleWameGet);
+  app.get("/webhook/meta", handleWameGet);
+
+  // AstraCalls Webhook (status de entrega, leitura e mensagens recebidas)
+  const handleAstraCallsWebhook = async (req: any, res: any) => {
+    try {
+      console.log("AstraCalls Webhook Received:", JSON.stringify(req.body));
+      const body = req.body || {};
+
+      // 1. Process status updates (sent, delivered, read, failed)
+      const statusResult = await processStatusUpdates(body);
+
+      // If it's only a status event, reply immediately
+      const isStatusEvent = body.event === 'message.status' || body.event === 'message.ack' || body.event === 'message_status' || body.type === 'message_status';
+      if (isStatusEvent) {
+        return res.status(200).json({ success: true, event: body.event, ...statusResult });
+      }
+
+      // 2. Process incoming client message if present
+      const msgData = body.data || body;
+      const remotePhone = msgData.phone || msgData.to || msgData.from || msgData.sender || body.from || "";
+      const content = msgData.text || msgData.message || msgData.content || body.text || body.message || "";
+      const isFromMe = msgData.fromMe === true || body.fromMe === true || msgData.direction === 'outbound';
+
+      if (isFromMe || !remotePhone || !content) {
+        return res.status(200).json({ success: true, ...statusResult });
+      }
+
+      const cleanIncoming = String(remotePhone).replace(/\D/g, '');
+      const [{ data: clients }, { data: agendaContacts }] = await Promise.all([
+        supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id, employee_id'),
+        supabaseAdmin.from('agenda_contacts').select('id, name, phone, admin_id')
+      ]);
+
+      const allTargets = [
+        ...(clients || []).map((c: any) => ({ ...c, is_agenda: false })),
+        ...(agendaContacts || []).map((a: any) => ({ ...a, local_phone: '', employee_id: a.admin_id, is_agenda: true }))
+      ];
+
+      const matchedClient = allTargets.find((c: any) => {
+         return isMatchingClientPhone(c.phone || '', cleanIncoming) || isMatchingClientPhone(c.local_phone || '', cleanIncoming);
+      });
+
+      if (!matchedClient) {
+        console.log("[Webhook AstraCalls] Nenhum cliente encontrado para:", cleanIncoming);
+        return res.status(200).json({ success: true, matched: false });
+      }
+
+      const { data: sessions } = await supabaseAdmin
+        .from('chat_sessions')
+        .select('*')
+        .eq('client_id', matchedClient.id)
+        .order('created_at', { ascending: false });
+
+      let activeSession: any = (sessions || []).find((s: any) => s.status === 'open');
+      if (!activeSession) {
+        const { data: newSess } = await supabaseAdmin
+          .from('chat_sessions')
+          .insert({
+            client_id: matchedClient.id,
+            admin_id: matchedClient.admin_id,
+            employee_id: matchedClient.employee_id || matchedClient.admin_id,
+            status: 'open',
+            created_at: new Date().toISOString()
+          })
+          .select()
+          .single();
+        activeSession = newSess;
+      }
+
+      if (activeSession) {
+        await supabaseAdmin.from('chat_messages').insert({
+           session_id: activeSession.id,
+           sender_type: 'client',
+           content: String(content),
+           media_url: ''
+        });
+
+        const targetUserId = matchedClient.employee_id || matchedClient.admin_id;
+        if (targetUserId) {
+          const clientDisplayName = formatFirstTwoNames(matchedClient.name);
+          sendPushToAdmin(targetUserId, `💬 ${clientDisplayName}`, String(content), {
+            clientId: matchedClient.id,
+            sessionId: activeSession.id,
+            type: 'chat_message',
+            channelId: 'chat_messages'
+          }).catch(err => console.error('[Push Notification Error]', err));
+        }
+      }
+
+      return res.status(200).json({ success: true, processed: true });
+    } catch (e: any) {
+      console.error("[Webhook AstraCalls Error]", e);
+      return res.status(500).json({ error: e.message });
+    }
+  };
+
+  app.post("/api/webhook/astracalls", handleAstraCallsWebhook);
+  app.post("/webhook/astracalls", handleAstraCallsWebhook);
+  app.post("/api/astracalls/webhook", handleAstraCallsWebhook);
+  app.get("/api/webhook/astracalls", handleWameGet);
+  app.get("/webhook/astracalls", handleWameGet);
+  app.get("/api/astracalls/webhook", handleWameGet);
+
+  // Dedicated Universal Status Webhook (AstraCalls, Evolution, Meta, custom integrations)
+  const handleUniversalStatusWebhook = async (req: any, res: any) => {
+    try {
+      console.log("[Status Webhook Received]:", JSON.stringify(req.body));
+      const result = await processStatusUpdates(req.body || {});
+      return res.status(200).json({
+        success: true,
+        message: "Status updates processed successfully",
+        ...result
+      });
+    } catch (e: any) {
+      console.error("[Status Webhook Error]:", e);
+      return res.status(500).json({ error: e.message });
+    }
+  };
+
+  app.post("/api/webhook/status", handleUniversalStatusWebhook);
+  app.post("/webhook/status", handleUniversalStatusWebhook);
+  app.post("/api/webhook/messages/status", handleUniversalStatusWebhook);
+  app.get("/api/webhook/status", handleWameGet);
+  app.get("/webhook/status", handleWameGet);
+  app.get("/api/webhook/messages/status", handleWameGet);
 
 app.all("/api/sync-payment", async (req, res) => {
     const payment_id = req.body?.payment_id || req.query?.payment_id || req.query?.id;

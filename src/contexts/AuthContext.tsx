@@ -27,6 +27,11 @@ export interface UserProfile {
     reportMessage2?: string;
     partnerStores?: { name: string; phone: string }[];
     partnerTechnicians?: { name: string; phone: string }[];
+    provider?: string;
+    useAstracalls?: boolean;
+    astracallsUrl?: string;
+    astracallsApiKey?: string;
+    astracallsSessionId?: string;
     useEvolutionApi?: boolean;
     evolutionApiUrl?: string;
     evolutionApiKey?: string;
@@ -35,6 +40,10 @@ export interface UserProfile {
     metaToken?: string;
     metaServerUrl?: string;
     metaPhoneNumberId?: string;
+    wavoipEnabled?: boolean;
+    wavoipDeviceId?: string;
+    wavoipApiKey?: string;
+    wavoipApiUrl?: string;
   };
 }
 

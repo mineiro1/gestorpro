@@ -4,7 +4,42 @@ import { getApiUrl } from './apiConfig';
 // Client-side idempotency cache to prevent duplicate dispatches within 30 seconds
 const clientRecentSends = new Map<string, { timestamp: number; result: any }>();
 
-export const getWhatsAppNumbersToTry = (phone: string): string[] => {
+/**
+ * Converte qualquer formato de telefone brasileiro para o formato exato exigido pelo AstraCalls (DDI 55 + DDD + 8 dígitos).
+ * Ex: "(67) 99190-7236" ou "67991907236" -> "556791907236"
+ */
+export const formatAstraCallsNumber = (phone: string): string => {
+  if (!phone) return '';
+  let clean = phone.replace(/\D/g, '');
+  if (!clean) return '';
+
+  // Se não começar com 55:
+  if (!clean.startsWith('55')) {
+    if (clean.length === 10 || clean.length === 11) {
+      clean = '55' + clean;
+    } else if (clean.length === 8 || clean.length === 9) {
+      clean = '5567' + clean; // DDD padrão 67 para Campo Grande / MS
+    }
+  }
+
+  // Agora garantidamente começa com 55:
+  if (clean.startsWith('55')) {
+    const ddd = clean.substring(2, 4);
+    const rest = clean.substring(4);
+    // Se tiver 13 dígitos e o 5º dígito for 9 (ex: 55 67 9 91907236), remove o 9º dígito extra -> 556791907236 (12 dígitos)
+    if (clean.length === 13 && rest.startsWith('9')) {
+      return `55${ddd}${rest.substring(1)}`;
+    }
+    // Se tiver 12 dígitos (55 + DDD + 8 dígitos), já está no padrão exato
+    if (clean.length === 12) {
+      return clean;
+    }
+  }
+
+  return clean;
+};
+
+export const getWhatsAppNumbersToTry = (phone: string, isAstraCalls: boolean = false): string[] => {
   if (!phone) return [];
   const cleanPhone = phone.replace(/\D/g, '');
   if (!cleanPhone) return [];
@@ -12,17 +47,36 @@ export const getWhatsAppNumbersToTry = (phone: string): string[] => {
   let baseNumber = cleanPhone;
   if (!baseNumber.startsWith('55') && (baseNumber.length === 10 || baseNumber.length === 11)) {
     baseNumber = '55' + baseNumber;
+  } else if (!baseNumber.startsWith('55') && (baseNumber.length === 8 || baseNumber.length === 9)) {
+    baseNumber = '5567' + baseNumber;
   }
 
-  const variants: string[] = [baseNumber];
+  let twelveDigit = '';
+  let thirteenDigit = '';
+
   if (baseNumber.startsWith('55') && baseNumber.length >= 12) {
     const ddd = baseNumber.substring(2, 4);
     const rest = baseNumber.substring(4);
     if (baseNumber.length === 13 && rest.startsWith('9')) {
-      variants.push(`55${ddd}${rest.substring(1)}`);
+      thirteenDigit = baseNumber;
+      twelveDigit = `55${ddd}${rest.substring(1)}`;
     } else if (baseNumber.length === 12) {
-      variants.push(`55${ddd}9${rest}`);
+      twelveDigit = baseNumber;
+      thirteenDigit = `55${ddd}9${rest}`;
     }
+  }
+
+  const variants: string[] = [];
+  if (isAstraCalls) {
+    // Para AstraCalls: O formato de 12 dígitos (sem o 9) DEVE vir estritamente primeiro!
+    if (twelveDigit) variants.push(twelveDigit);
+    if (thirteenDigit) variants.push(thirteenDigit);
+    if (!twelveDigit && !thirteenDigit) variants.push(baseNumber);
+  } else {
+    // Para outros provedores (Meta/Evolution):
+    variants.push(baseNumber);
+    if (twelveDigit && twelveDigit !== baseNumber) variants.push(twelveDigit);
+    if (thirteenDigit && thirteenDigit !== baseNumber) variants.push(thirteenDigit);
   }
 
   return [...new Set(variants)];
@@ -195,7 +249,7 @@ export const sendAstraCallsMessage = async (
   mediaBase64?: string,
   mimeType?: string
 ) => {
-  const targetNumber = formatWhatsAppNumber(phone);
+  const targetNumber = formatAstraCallsNumber(phone);
   if (!targetNumber) {
     throw new Error("Número de telefone inválido.");
   }
@@ -236,6 +290,7 @@ export const sendAstraCallsMessage = async (
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         recipient: targetNumber,
+        clientPhone: targetNumber,
         text: text || '',
         mediaBase64,
         mimeType,
@@ -255,7 +310,8 @@ export const sendAstraCallsMessage = async (
   }
 
   // 2. Envio Direto ao AstraCalls (https://calls.rspiscinas.app.br)
-  const numbersToTry = getWhatsAppNumbersToTry(phone);
+  // O formato de 12 dígitos sem o 9 (ex: 556791907236) vem sempre em primeiro lugar para o AstraCalls
+  const numbersToTry = getWhatsAppNumbersToTry(phone, true);
   let lastError: any = null;
 
   for (const currentTarget of numbersToTry) {

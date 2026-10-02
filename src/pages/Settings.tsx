@@ -31,12 +31,25 @@ export default function Settings() {
   const [isSmsGateway, setIsSmsGateway] = useState(false);
   const [useSmsForReports, setUseSmsForReports] = useState(false);
 
-  // WAVoIP Calling state
-  const [wavoipEnabled, setWavoipEnabled] = useState(false);
+  // WhatsApp Provider Selection ('astracalls' | 'evolution' | 'meta' | 'manual')
+  const [waProvider, setWaProvider] = useState<'astracalls' | 'evolution' | 'meta' | 'manual'>('astracalls');
+
+  // AstraCalls Live Integration
+  const [astracallsUrl, setAstracallsUrl] = useState('https://calls.rspiscinas.app.br');
+  const [astracallsApiKey, setAstracallsApiKey] = useState('rs_piscinas_segredo_2026');
+  const [astracallsSessionId, setAstracallsSessionId] = useState('8090cca3add0b8eb3e41efb9eec363e4');
   const [wavoipDeviceId, setWavoipDeviceId] = useState('');
-  const [wavoipApiKey, setWavoipApiKey] = useState('');
-  const [wavoipApiUrl, setWavoipApiUrl] = useState('');
   const [copiedWebhook, setCopiedWebhook] = useState(false);
+
+  // Evolution API
+  const [evolutionApiUrl, setEvolutionApiUrl] = useState('');
+  const [evolutionApiKey, setEvolutionApiKey] = useState('');
+  const [evolutionInstanceName, setEvolutionInstanceName] = useState('');
+
+  // Meta / WAME API
+  const [metaToken, setMetaToken] = useState('');
+  const [metaPhoneNumberId, setMetaPhoneNumberId] = useState('');
+  const [metaServerUrl, setMetaServerUrl] = useState('https://graph.facebook.com/v19.0');
 
   // Push Notification state
   const [pushPermStatus, setPushPermStatus] = useState<string>('checking');
@@ -51,6 +64,10 @@ export default function Settings() {
   const [sendingWaTest, setSendingWaTest] = useState(false);
   const [waTestResult, setWaTestResult] = useState<string | null>(null);
 
+  // Phone Standardization state
+  const [standardizingPhones, setStandardizingPhones] = useState(false);
+  const [standardizeResult, setStandardizeResult] = useState<{ checked: number; updated: number; message: string } | null>(null);
+
   // Call Records & Audio Player state
   const [callRecords, setCallRecords] = useState<CallRecord[]>([]);
   const [loadingCalls, setLoadingCalls] = useState(false);
@@ -59,6 +76,7 @@ export default function Settings() {
   const [playSpeed, setPlaySpeed] = useState<number>(1);
   const audioIntervalRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const audioElementRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     if (userProfile?.whatsappSettings) {
@@ -66,11 +84,35 @@ export default function Settings() {
       setCompanyName(s.companyName || '');
       setCompanyLogo(s.companyLogo || '');
       setUseSmsForReports(s.useSmsForReports || false);
-      setWavoipEnabled(s.wavoipEnabled ?? !!s.wavoipApiKey);
+      
+      // Determine active provider
+      if (s.useMetaApi) {
+        setWaProvider('meta');
+      } else if (s.useEvolutionApi) {
+        setWaProvider('evolution');
+      } else if (s.wavoipEnabled || s.astracallsUrl || s.astracallsApiKey || s.wavoipApiKey) {
+        setWaProvider('astracalls');
+      } else {
+        setWaProvider('manual');
+      }
+
+      // AstraCalls values
+      setAstracallsUrl(s.astracallsUrl || s.wavoipApiUrl || 'https://calls.rspiscinas.app.br');
+      setAstracallsApiKey(s.astracallsApiKey || s.wavoipApiKey || 'rs_piscinas_segredo_2026');
+      setAstracallsSessionId(s.astracallsSessionId || s.sessionId || '8090cca3add0b8eb3e41efb9eec363e4');
       setWavoipDeviceId(s.wavoipDeviceId || '');
-      setWavoipApiKey(s.wavoipApiKey || 'rs_piscinas_segredo_2026');
-      setWavoipApiUrl(s.wavoipApiUrl || 'https://calls.rspiscinas.app.br');
+
+      // Evolution API values
+      setEvolutionApiUrl(s.evolutionApiUrl || '');
+      setEvolutionApiKey(s.evolutionApiKey || '');
+      setEvolutionInstanceName(s.evolutionInstanceName || '');
+
+      // Meta API values
+      setMetaToken(s.metaToken || '');
+      setMetaPhoneNumberId(s.metaPhoneNumberId || '');
+      setMetaServerUrl(s.metaServerUrl || 'https://graph.facebook.com/v19.0');
     }
+
     // Load local SMS Gateway setting
     setIsSmsGateway(localStorage.getItem('isSmsGateway') === 'true');
 
@@ -174,8 +216,21 @@ export default function Settings() {
     setSendingWaTest(true);
     setWaTestResult(null);
     try {
-      const res = await sendAstraCallsMessage(testWaPhone, testWaMsg, userProfile?.whatsappSettings);
-      setWaTestResult('✅ Mensagem disparada com sucesso via AstraCalls! Verifique seu WhatsApp.');
+      const activeSettings = {
+        ...(userProfile?.whatsappSettings || {}),
+        astracallsUrl,
+        astracallsApiKey,
+        astracallsSessionId,
+        provider: 'astracalls',
+        useAstracalls: true,
+        useMetaApi: false,
+        useEvolutionApi: false
+      };
+      const res = await sendAstraCallsMessage(testWaPhone, testWaMsg, activeSettings);
+      if (res?.error) {
+        throw new Error(res.error);
+      }
+      setWaTestResult('✅ Mensagem disparada com sucesso pelo AstraCalls! (ID: ' + (res?.id || res?.messageId || 'OK') + ')');
     } catch (err: any) {
       setWaTestResult('❌ ' + (err.message || 'Erro ao enviar mensagem'));
     } finally {
@@ -183,39 +238,119 @@ export default function Settings() {
     }
   };
 
-  // Audio Playback Simulation for Call Recordings
+  const handleStandardizePhones = async () => {
+    if (!confirm('Deseja iniciar a padronização e formatação automática de todos os telefones de clientes no sistema?')) return;
+    setStandardizingPhones(true);
+    setStandardizeResult(null);
+    try {
+      // 1. Tentar via backend
+      try {
+        const res = await fetch(getApiUrl('/api/admin/standardize-phones'), { method: 'POST' });
+        if (res.ok) {
+          const data = await res.json();
+          setStandardizeResult({
+            checked: data.totalChecked || 0,
+            updated: data.updatedCount || 0,
+            message: `Padronização concluída! ${data.totalChecked} contatos verificados e ${data.updatedCount} telefones formatados.`
+          });
+          return;
+        }
+      } catch (e) {}
+
+      // 2. Fallback direto no Supabase
+      const { data: clients } = await supabase.from('clients').select('id, name, phone');
+      let updated = 0;
+      for (const c of clients || []) {
+        if (!c.phone) continue;
+        let standardPhone = c.phone.trim();
+        let needsUpdate = false;
+        if (/^\d{10,13}$/.test(standardPhone)) {
+          let num = standardPhone;
+          if (num.startsWith('55') && (num.length === 12 || num.length === 13)) {
+            num = num.substring(2);
+          }
+          if (num.length === 11) {
+            standardPhone = `(${num.substring(0, 2)}) ${num.substring(2, 7)}-${num.substring(7)}`;
+            needsUpdate = true;
+          } else if (num.length === 10) {
+            standardPhone = `(${num.substring(0, 2)}) ${num.substring(2, 6)}-${num.substring(6)}`;
+            needsUpdate = true;
+          }
+        }
+        if (needsUpdate && standardPhone !== c.phone) {
+          await supabase.from('clients').update({ phone: standardPhone }).eq('id', c.id);
+          updated++;
+        }
+      }
+      setStandardizeResult({
+        checked: clients?.length || 0,
+        updated,
+        message: `Padronização concluída! ${clients?.length || 0} contatos verificados e ${updated} telefones formatados.`
+      });
+    } catch (err: any) {
+      alert('Erro ao padronizar telefones: ' + err.message);
+    } finally {
+      setStandardizingPhones(false);
+    }
+  };
+
+  // Real Audio Playback for Call Recordings
   const togglePlayRecording = (record: CallRecord) => {
     if (playingId === record.id) {
       // Pause
+      if (audioElementRef.current) {
+        audioElementRef.current.pause();
+      }
       if (audioIntervalRef.current) clearInterval(audioIntervalRef.current);
       setPlayingId(null);
       return;
     }
 
-    // Play recording
+    // Stop any previous audio
+    if (audioElementRef.current) {
+      audioElementRef.current.pause();
+      audioElementRef.current.currentTime = 0;
+    }
     if (audioIntervalRef.current) clearInterval(audioIntervalRef.current);
+
     setPlayingId(record.id);
     setPlayProgress(0);
 
-    // Realistic audio playback simulation with Web Audio voice synthesis
-    try {
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      if (AudioCtx) {
-        const ctx = new AudioCtx();
-        audioContextRef.current = ctx;
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.frequency.setValueAtTime(320, ctx.currentTime);
-        gain.gain.setValueAtTime(0.04, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start();
-        osc.stop(ctx.currentTime + 0.3);
-      }
-    } catch (e) {}
+    const hasRealAudioUrl = record.recording_url && (record.recording_url.startsWith('http://') || record.recording_url.startsWith('https://') || record.recording_url.startsWith('/'));
 
-    const totalSecs = Math.max(record.duration || 30, 10);
+    if (hasRealAudioUrl) {
+      try {
+        const audio = new Audio(record.recording_url);
+        audioElementRef.current = audio;
+        audio.playbackRate = playSpeed;
+
+        audio.ontimeupdate = () => {
+          if (audio.duration && !isNaN(audio.duration)) {
+            const pct = Math.min(100, Math.round((audio.currentTime / audio.duration) * 100));
+            setPlayProgress(pct);
+          }
+        };
+
+        audio.onended = () => {
+          setPlayingId(null);
+          setPlayProgress(0);
+        };
+
+        audio.onerror = () => {
+          console.warn('[Audio Player] Erro ao carregar arquivo de áudio remoto');
+        };
+
+        audio.play().catch((err) => {
+          console.warn('[Audio Player] Falha no auto-play:', err);
+        });
+        return;
+      } catch (err) {
+        console.warn('[Audio Player] Exceção:', err);
+      }
+    }
+
+    // Fallback simulation timer if offline or legacy log without audio file
+    const totalSecs = Math.max(record.duration || 30, 5);
     const intervalMs = (totalSecs * 1000) / 100;
 
     audioIntervalRef.current = setInterval(() => {
@@ -243,24 +378,6 @@ export default function Settings() {
     const s = (secs % 60).toString().padStart(2, '0');
     return `${m}:${s}`;
   };
-
-  useEffect(() => {
-    if (userProfile?.whatsappSettings) {
-      const s = userProfile.whatsappSettings as any;
-      setCompanyName(s.companyName || '');
-      setCompanyLogo(s.companyLogo || '');
-      setUseSmsForReports(s.useSmsForReports || false);
-      setWavoipEnabled(s.wavoipEnabled ?? !!s.wavoipApiKey);
-      setWavoipDeviceId(s.wavoipDeviceId || '');
-      setWavoipApiKey(s.wavoipApiKey || '');
-      setWavoipApiUrl(s.wavoipApiUrl || 'https://app.wavoip.com/api/v1');
-    }
-    // Load local SMS Gateway setting
-    setIsSmsGateway(localStorage.getItem('isSmsGateway') === 'true');
-
-    // Check Push status
-    checkPushStatus();
-  }, [userProfile]);
 
   const checkPushStatus = async () => {
     const token = localStorage.getItem('fcm_token') || (userProfile as any)?.fcm_token;
@@ -355,10 +472,27 @@ export default function Settings() {
         companyName,
         companyLogo,
         useSmsForReports,
-        wavoipEnabled,
+        // Provider Selection
+        provider: waProvider,
+        useAstraCalls: waProvider === 'astracalls',
+        useEvolutionApi: waProvider === 'evolution',
+        useMetaApi: waProvider === 'meta',
+        // AstraCalls Parameters
+        astracallsUrl,
+        astracallsApiKey,
+        astracallsSessionId,
+        wavoipEnabled: waProvider === 'astracalls',
         wavoipDeviceId,
-        wavoipApiKey,
-        wavoipApiUrl
+        wavoipApiKey: astracallsApiKey,
+        wavoipApiUrl: astracallsUrl,
+        // Evolution Parameters
+        evolutionApiUrl,
+        evolutionApiKey,
+        evolutionInstanceName,
+        // Meta Parameters
+        metaToken,
+        metaPhoneNumberId,
+        metaServerUrl
       };
       
       const { error } = await supabase.from('users').update({
@@ -368,14 +502,7 @@ export default function Settings() {
       if (error) throw error;
 
       if (userProfile) {
-        if (!userProfile.whatsappSettings) userProfile.whatsappSettings = {} as any;
-        (userProfile.whatsappSettings as any).companyName = companyName;
-        (userProfile.whatsappSettings as any).companyLogo = companyLogo;
-        (userProfile.whatsappSettings as any).useSmsForReports = useSmsForReports;
-        (userProfile.whatsappSettings as any).wavoipEnabled = wavoipEnabled;
-        (userProfile.whatsappSettings as any).wavoipDeviceId = wavoipDeviceId;
-        (userProfile.whatsappSettings as any).wavoipApiKey = wavoipApiKey;
-        (userProfile.whatsappSettings as any).wavoipApiUrl = wavoipApiUrl;
+        userProfile.whatsappSettings = newSettings as any;
       }
       
       alert('Configurações salvas com sucesso!');
@@ -502,7 +629,7 @@ export default function Settings() {
         </form>
       </div>
 
-      {/* AstraCalls Official Integration (WhatsApp Messages + VoIP Voice Calls) */}
+      {/* Configurações Globais de WhatsApp & Provedor de Mensagens (AstraCalls, Evolution, Meta) */}
       <div className="mt-8 bg-white rounded-xl shadow-md overflow-hidden border-2 border-emerald-500/30">
         <div className="p-6 border-b border-gray-100 bg-gradient-to-r from-emerald-50 to-teal-50/40 flex flex-col sm:flex-row justify-between sm:items-center gap-4">
           <div>
@@ -512,74 +639,292 @@ export default function Settings() {
               </div>
               <div>
                 <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
-                  AstraCalls VoIP & Mensagens
+                  Configurações do WhatsApp & AstraCalls
                   <span className="text-xs px-2.5 py-0.5 rounded-full font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300">
-                    Provedor Oficial
+                    {waProvider === 'astracalls' ? 'AstraCalls Ativo' : (waProvider === 'evolution' ? 'Evolution API Ativa' : (waProvider === 'meta' ? 'Meta Cloud API Ativa' : 'Link Direto'))}
                   </span>
                 </h2>
                 <p className="text-sm text-gray-600 mt-0.5">
-                  Servidor unificado para chamadas de voz VoIP 1:1, gravações automáticas e disparo de WhatsApp.
+                  Selecione e configure o motor responsável por enviar relatórios de rotas, cobranças, produtos e mensagens no GestãoPro.
                 </p>
               </div>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={checkAstraCallsStatus}
-              disabled={astracallsStatus.checking}
-              className="px-3 py-1.5 bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 rounded-lg text-xs font-medium flex items-center gap-1.5 shadow-sm transition-colors"
-            >
-              <RefreshCw size={14} className={astracallsStatus.checking ? 'animate-spin text-emerald-600' : ''} />
-              Testar Conexão
-            </button>
-            <div className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-sm border ${
-              astracallsStatus.online 
-                ? 'bg-emerald-50 text-emerald-700 border-emerald-200' 
-                : 'bg-amber-50 text-amber-700 border-amber-200'
-            }`}>
-              <span className={`w-2 h-2 rounded-full ${astracallsStatus.online ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
-              {astracallsStatus.checking ? 'Verificando...' : (astracallsStatus.online ? 'Online (Conectado)' : 'Desconectado')}
-            </div>
+            {waProvider === 'astracalls' && (
+              <>
+                <button
+                  type="button"
+                  onClick={checkAstraCallsStatus}
+                  disabled={astracallsStatus.checking}
+                  className="px-3 py-1.5 bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 rounded-lg text-xs font-medium flex items-center gap-1.5 shadow-sm transition-colors"
+                >
+                  <RefreshCw size={14} className={astracallsStatus.checking ? 'animate-spin text-emerald-600' : ''} />
+                  Testar Conexão
+                </button>
+                <div className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-sm border ${
+                  astracallsStatus.online 
+                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200' 
+                    : 'bg-amber-50 text-amber-700 border-amber-200'
+                }`}>
+                  <span className={`w-2 h-2 rounded-full ${astracallsStatus.online ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
+                  {astracallsStatus.checking ? 'Verificando...' : (astracallsStatus.online ? 'Online (Conectado)' : 'Desconectado')}
+                </div>
+              </>
+            )}
           </div>
         </div>
 
         <div className="p-6 space-y-6">
-          {/* Status & Session Card */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="p-4 bg-gray-50 rounded-xl border border-gray-200">
-              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider block mb-1">Servidor Oficial</span>
-              <p className="text-sm font-bold text-gray-900 font-mono flex items-center gap-1.5">
-                <ShieldCheck size={16} className="text-emerald-600" />
-                https://calls.rspiscinas.app.br
-              </p>
-            </div>
+          {/* Provedor Selector */}
+          <div>
+            <label className="block text-sm font-bold text-gray-800 mb-3">
+              Selecione o Provedor Padrão para Envios do WhatsApp:
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+              {/* Option: AstraCalls */}
+              <button
+                type="button"
+                onClick={() => setWaProvider('astracalls')}
+                className={`p-4 rounded-xl border text-left transition-all ${
+                  waProvider === 'astracalls'
+                    ? 'border-emerald-500 bg-emerald-50/70 ring-2 ring-emerald-500/20 shadow-sm'
+                    : 'border-gray-200 bg-white hover:border-gray-300'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="font-bold text-sm text-gray-900">AstraCalls</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-emerald-100 text-emerald-800">Oficial</span>
+                </div>
+                <p className="text-xs text-gray-600">
+                  VoIP integrado, gravação de chamadas e envio automático de mensagens.
+                </p>
+              </button>
 
-            <div className="p-4 bg-gray-50 rounded-xl border border-gray-200">
-              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider block mb-1">Sessão WhatsApp</span>
-              <p className="text-sm font-bold text-emerald-700 font-mono truncate">
-                {astracallsStatus.session?.name || 'WhatsApp Principal'} {astracallsStatus.session?.jid ? `(${astracallsStatus.session.jid.split('@')[0]})` : ''}
-              </p>
-            </div>
+              {/* Option: Evolution API */}
+              <button
+                type="button"
+                onClick={() => setWaProvider('evolution')}
+                className={`p-4 rounded-xl border text-left transition-all ${
+                  waProvider === 'evolution'
+                    ? 'border-emerald-500 bg-emerald-50/70 ring-2 ring-emerald-500/20 shadow-sm'
+                    : 'border-gray-200 bg-white hover:border-gray-300'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="font-bold text-sm text-gray-900">Evolution API</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-blue-100 text-blue-800">QR Code</span>
+                </div>
+                <p className="text-xs text-gray-600">
+                  Conexão via QR Code com seu WhatsApp pessoal ou da empresa.
+                </p>
+              </button>
 
-            <div className="p-4 bg-gray-50 rounded-xl border border-gray-200">
-              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider block mb-1">Gravação de Chamadas</span>
-              <p className="text-sm font-bold text-blue-700 flex items-center gap-1.5">
-                <Mic size={16} className="text-blue-600" />
-                Automática no Servidor
-              </p>
+              {/* Option: Meta Cloud API */}
+              <button
+                type="button"
+                onClick={() => setWaProvider('meta')}
+                className={`p-4 rounded-xl border text-left transition-all ${
+                  waProvider === 'meta'
+                    ? 'border-emerald-500 bg-emerald-50/70 ring-2 ring-emerald-500/20 shadow-sm'
+                    : 'border-gray-200 bg-white hover:border-gray-300'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="font-bold text-sm text-gray-900">Meta Cloud API</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-purple-100 text-purple-800">Oficial</span>
+                </div>
+                <p className="text-xs text-gray-600">
+                  API Oficial da Meta (WAME / WhatsApp Business Platform).
+                </p>
+              </button>
+
+              {/* Option: Manual Web Link */}
+              <button
+                type="button"
+                onClick={() => setWaProvider('manual')}
+                className={`p-4 rounded-xl border text-left transition-all ${
+                  waProvider === 'manual'
+                    ? 'border-emerald-500 bg-emerald-50/70 ring-2 ring-emerald-500/20 shadow-sm'
+                    : 'border-gray-200 bg-white hover:border-gray-300'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="font-bold text-sm text-gray-900">Link Direto</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-gray-100 text-gray-700">Manual</span>
+                </div>
+                <p className="text-xs text-gray-600">
+                  Abre o app do WhatsApp ou WhatsApp Web diretamente.
+                </p>
+              </button>
             </div>
           </div>
 
-          {/* Test WhatsApp Message via AstraCalls */}
+          {/* Form Fields - AstraCalls */}
+          {waProvider === 'astracalls' && (
+            <div className="p-5 bg-emerald-50/40 rounded-xl border border-emerald-200 space-y-4">
+              <h3 className="font-bold text-gray-900 text-sm flex items-center gap-2">
+                <ShieldCheck size={16} className="text-emerald-600" />
+                Parâmetros do Servidor AstraCalls:
+              </h3>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1">URL do Servidor AstraCalls</label>
+                  <input
+                    type="text"
+                    value={astracallsUrl}
+                    onChange={(e) => setAstracallsUrl(e.target.value)}
+                    placeholder="https://calls.rspiscinas.app.br"
+                    className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1">Chave de API / Segredo</label>
+                  <input
+                    type="password"
+                    value={astracallsApiKey}
+                    onChange={(e) => setAstracallsApiKey(e.target.value)}
+                    placeholder="rs_piscinas_segredo_2026"
+                    className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1">ID da Sessão WhatsApp (Session ID)</label>
+                  <input
+                    type="text"
+                    value={astracallsSessionId}
+                    onChange={(e) => setAstracallsSessionId(e.target.value)}
+                    placeholder="8090cca3add0b8eb3e41efb9eec363e4"
+                    className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+              </div>
+
+              {/* Status & Session Card */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+                <div className="p-3 bg-white rounded-lg border border-gray-200">
+                  <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider block mb-0.5">Servidor Conectado</span>
+                  <p className="text-xs font-bold text-gray-900 font-mono truncate">{astracallsUrl}</p>
+                </div>
+                <div className="p-3 bg-white rounded-lg border border-gray-200">
+                  <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider block mb-0.5">Sessão Ativa</span>
+                  <p className="text-xs font-bold text-emerald-700 font-mono truncate">
+                    {astracallsStatus.session?.name || 'WhatsApp Principal'} {astracallsStatus.session?.jid ? `(${astracallsStatus.session.jid.split('@')[0]})` : ''}
+                  </p>
+                </div>
+                <div className="p-3 bg-white rounded-lg border border-gray-200">
+                  <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider block mb-0.5">Gravação VoIP</span>
+                  <p className="text-xs font-bold text-blue-700 flex items-center gap-1">
+                    <Mic size={14} className="text-blue-600" />
+                    Automática Ativa
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Form Fields - Evolution API */}
+          {waProvider === 'evolution' && (
+            <div className="p-5 bg-blue-50/40 rounded-xl border border-blue-200 space-y-4">
+              <h3 className="font-bold text-gray-900 text-sm flex items-center gap-2">
+                <Server size={16} className="text-blue-600" />
+                Parâmetros da Evolution API:
+              </h3>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1">URL da Evolution API</label>
+                  <input
+                    type="text"
+                    value={evolutionApiUrl}
+                    onChange={(e) => setEvolutionApiUrl(e.target.value)}
+                    placeholder="https://api.meuservidor.com"
+                    className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1">Chave Global da API (API Key)</label>
+                  <input
+                    type="password"
+                    value={evolutionApiKey}
+                    onChange={(e) => setEvolutionApiKey(e.target.value)}
+                    placeholder="Sua chave da Evolution"
+                    className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1">Nome da Instância</label>
+                  <input
+                    type="text"
+                    value={evolutionInstanceName}
+                    onChange={(e) => setEvolutionInstanceName(e.target.value)}
+                    placeholder="Ex: gestorpro"
+                    className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Form Fields - Meta Cloud API */}
+          {waProvider === 'meta' && (
+            <div className="p-5 bg-purple-50/40 rounded-xl border border-purple-200 space-y-4">
+              <h3 className="font-bold text-gray-900 text-sm flex items-center gap-2">
+                <Building size={16} className="text-purple-600" />
+                Parâmetros da Meta / WAME API:
+              </h3>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1">Token de Acesso Permanente</label>
+                  <input
+                    type="password"
+                    value={metaToken}
+                    onChange={(e) => setMetaToken(e.target.value)}
+                    placeholder="EAAB..."
+                    className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1">Phone Number ID</label>
+                  <input
+                    type="text"
+                    value={metaPhoneNumberId}
+                    onChange={(e) => setMetaPhoneNumberId(e.target.value)}
+                    placeholder="Ex: 1049283749283"
+                    className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1">URL da Graph API / WAME</label>
+                  <input
+                    type="text"
+                    value={metaServerUrl}
+                    onChange={(e) => setMetaServerUrl(e.target.value)}
+                    placeholder="https://graph.facebook.com/v19.0"
+                    className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Test WhatsApp Message */}
           <div className="p-5 bg-gradient-to-br from-emerald-50/60 to-white rounded-xl border border-emerald-100">
             <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2 mb-2">
               <Send size={16} className="text-emerald-600" />
-              Disparar Mensagem de Teste no WhatsApp via AstraCalls
+              Disparar Mensagem de Teste no WhatsApp
             </h3>
             <p className="text-xs text-gray-600 mb-4">
-              Envie uma mensagem instantânea para qualquer número para validar o envio via AstraCalls.
+              Envie uma mensagem instantânea para qualquer número para validar as credenciais e status de entrega.
             </p>
 
             <form onSubmit={handleSendWaTest} className="space-y-3">
@@ -626,33 +971,100 @@ export default function Settings() {
             </form>
           </div>
 
-          {/* Webhook integration URL */}
-          <div className="p-4 bg-gray-50 rounded-xl border border-gray-200">
-            <h4 className="font-semibold text-gray-800 text-xs uppercase tracking-wider mb-1">
-              🔗 URL do Webhook no Servidor AstraCalls:
-            </h4>
-            <p className="text-xs text-gray-600 mb-2">
-              Endereço para sincronização de eventos de mensagens e ligações:
-            </p>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                readOnly
-                value="https://www.rspiscinas.app.br/api/webhook/wame"
-                className="flex-1 p-2 bg-white border border-gray-300 rounded-lg text-xs font-mono text-gray-700 select-all"
-              />
+          {/* Automatic Phone Standardization Tool */}
+          <div className="p-5 bg-gradient-to-br from-indigo-50/70 to-white rounded-xl border border-indigo-200 shadow-sm">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                  <span className="text-indigo-600">⚡</span>
+                  Padronização Automática de Telefones para AstraCalls
+                </h3>
+                <p className="text-xs text-gray-600 mt-1 max-w-2xl">
+                  <strong>Conversão em tempo real ativa:</strong> O sistema converte automaticamente qualquer número digitado no cadastro para o formato exigido pelo AstraCalls (<code className="bg-indigo-100/70 px-1.5 py-0.5 rounded text-indigo-800 font-mono text-[11px]">55 + DDD + 8 dígitos</code>) durante os disparos e chamadas VoIP.
+                </p>
+                <p className="text-xs text-indigo-700 mt-1.5 font-medium">
+                  💡 Você também pode formatar visualmente todos os clientes já cadastrados na base de dados com um clique.
+                </p>
+              </div>
+
               <button
                 type="button"
-                onClick={() => {
-                  navigator.clipboard.writeText('https://www.rspiscinas.app.br/api/webhook/wame');
-                  setCopiedWebhook(true);
-                  setTimeout(() => setCopiedWebhook(false), 2000);
-                }}
-                className="px-3 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-xs font-medium flex items-center transition-colors shadow-sm"
+                onClick={handleStandardizePhones}
+                disabled={standardizingPhones}
+                className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2 shadow-sm transition-colors disabled:opacity-50 shrink-0"
               >
-                {copiedWebhook ? <Check size={14} className="mr-1" /> : <Copy size={14} className="mr-1" />}
-                {copiedWebhook ? 'Copiado!' : 'Copiar'}
+                <RefreshCw size={14} className={standardizingPhones ? 'animate-spin' : ''} />
+                {standardizingPhones ? 'Padronizando Base...' : 'Padronizar Clientes Agora'}
               </button>
+            </div>
+
+            {standardizeResult && (
+              <div className="mt-3 p-3 bg-emerald-100 border border-emerald-200 rounded-lg text-xs text-emerald-900 font-medium flex items-center gap-2">
+                <Check size={16} className="text-emerald-600 shrink-0" />
+                <span>{standardizeResult.message}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Webhook URLs */}
+          <div className="p-4 bg-gray-50 rounded-xl border border-gray-200 space-y-3">
+            <div>
+              <h4 className="font-semibold text-gray-800 text-xs uppercase tracking-wider mb-1">
+                🔗 URLs de Webhook para Status de Entrega & Leitura em Tempo Real:
+              </h4>
+              <p className="text-xs text-gray-600 mb-2">
+                Configure esses endereços no seu provedor (AstraCalls, Evolution ou Meta) para receber os tiques de entregue e lido:
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-gray-700 mb-1">Webhook AstraCalls / Universal:</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    readOnly
+                    value="https://www.rspiscinas.app.br/api/webhook/astracalls"
+                    className="flex-1 p-2 bg-white border border-gray-300 rounded-lg text-xs font-mono text-gray-700 select-all"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText('https://www.rspiscinas.app.br/api/webhook/astracalls');
+                      setCopiedWebhook(true);
+                      setTimeout(() => setCopiedWebhook(false), 2000);
+                    }}
+                    className="px-3 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-xs font-medium flex items-center transition-colors shadow-sm shrink-0"
+                  >
+                    {copiedWebhook ? <Check size={14} className="mr-1" /> : <Copy size={14} className="mr-1" />}
+                    Copiar
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-gray-700 mb-1">Webhook Evolution API:</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    readOnly
+                    value="https://www.rspiscinas.app.br/api/webhook/evolution"
+                    className="flex-1 p-2 bg-white border border-gray-300 rounded-lg text-xs font-mono text-gray-700 select-all"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText('https://www.rspiscinas.app.br/api/webhook/evolution');
+                      setCopiedWebhook(true);
+                      setTimeout(() => setCopiedWebhook(false), 2000);
+                    }}
+                    className="px-3 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-xs font-medium flex items-center transition-colors shadow-sm shrink-0"
+                  >
+                    {copiedWebhook ? <Check size={14} className="mr-1" /> : <Copy size={14} className="mr-1" />}
+                    Copiar
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>

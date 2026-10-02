@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState } from 'react';
 import CallModal from '../components/CallModal';
 import { getApiUrl } from '../lib/apiConfig';
+import { useAuth } from './AuthContext';
 
 export interface ActiveCall {
   clientId?: string;
@@ -18,7 +19,7 @@ interface CallContextType {
   activeCall: ActiveCall | null;
   isCallOpen: boolean;
   startCall: (callData: { clientId?: string; clientPhone?: string; clientName: string; avatarUrl?: string }) => Promise<void>;
-  endCall: (duration?: number) => void;
+  endCall: (duration?: number, recordingUrl?: string) => void;
 }
 
 const CallContext = createContext<CallContextType | undefined>(undefined);
@@ -26,6 +27,7 @@ const CallContext = createContext<CallContextType | undefined>(undefined);
 export function CallProvider({ children }: { children: React.ReactNode }) {
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
   const [isCallOpen, setIsCallOpen] = useState(false);
+  const { userProfile } = useAuth();
 
   const startCall = async ({ clientId, clientPhone, clientName, avatarUrl }: { clientId?: string; clientPhone?: string; clientName: string; avatarUrl?: string }) => {
     let sessionId = '8090cca3add0b8eb3e41efb9eec363e4';
@@ -77,17 +79,29 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       let baseNumber = cleanDigits;
       if (!baseNumber.startsWith('55') && (baseNumber.length === 10 || baseNumber.length === 11)) {
         baseNumber = '55' + baseNumber;
+      } else if (!baseNumber.startsWith('55') && (baseNumber.length === 8 || baseNumber.length === 9)) {
+        baseNumber = '5567' + baseNumber;
       }
-      const variants: string[] = [baseNumber];
+
+      let twelveDigit = '';
+      let thirteenDigit = '';
       if (baseNumber.startsWith('55') && baseNumber.length >= 12) {
         const ddd = baseNumber.substring(2, 4);
         const rest = baseNumber.substring(4);
         if (baseNumber.length === 13 && rest.startsWith('9')) {
-          variants.push(`55${ddd}${rest.substring(1)}`);
+          thirteenDigit = baseNumber;
+          twelveDigit = `55${ddd}${rest.substring(1)}`;
         } else if (baseNumber.length === 12) {
-          variants.push(`55${ddd}9${rest}`);
+          twelveDigit = baseNumber;
+          thirteenDigit = `55${ddd}9${rest}`;
         }
       }
+
+      // AstraCalls VoIP: O formato de 12 dígitos sem o 9 DEVE vir em primeiro lugar!
+      const variants: string[] = [];
+      if (twelveDigit) variants.push(twelveDigit);
+      if (thirteenDigit) variants.push(thirteenDigit);
+      if (!twelveDigit && !thirteenDigit) variants.push(baseNumber);
 
       for (const targetNumber of variants) {
         try {
@@ -121,7 +135,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const endCall = (duration?: number) => {
+  const endCall = (duration?: number, recordingUrl?: string) => {
     if (activeCall) {
       const callDuration = duration || (activeCall.startedAt ? Math.round((Date.now() - activeCall.startedAt) / 1000) : 0);
       
@@ -143,8 +157,11 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         body: JSON.stringify({
           clientId: activeCall.clientId,
           clientName: activeCall.clientName,
+          clientPhone: activeCall.clientPhone,
+          callerName: userProfile?.name || 'Administrador',
           callId: activeCall.callId,
           duration: callDuration,
+          recording_url: recordingUrl || undefined,
           status: 'completed',
         }),
       }).catch(() => {});
@@ -157,7 +174,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     <CallContext.Provider value={{ activeCall, isCallOpen, startCall, endCall }}>
       {children}
       {isCallOpen && activeCall && (
-        <CallModal call={activeCall} onClose={(d) => endCall(d)} />
+        <CallModal call={activeCall} onClose={(d, recUrl) => endCall(d, recUrl)} />
       )}
     </CallContext.Provider>
   );
