@@ -64,25 +64,11 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     }
   }, []);
 
-  // 1. React Query: Carregar Sessão Ativa e Disponibilidade
+  // 1. React Query: Carregar Sessão Ativa e Disponibilidade diretamente do Supabase
   const { data: sessionData } = useQuery({
     queryKey: ['chat-session', clientId],
     queryFn: async () => {
       if (!clientId) return null;
-      try {
-        const sessionUrl = getApiUrl(`/api/chat/session/${clientId}`);
-        const res = await fetch(sessionUrl);
-        if (res.ok) {
-          const sJson = await res.json();
-          if (sJson?.session) {
-            const allSessions = sJson.allSessions || [sJson.session];
-            const sessionIds = Array.from(new Set(allSessions.map((s: any) => s.id)));
-            return { session: sJson.session, sessionIds };
-          }
-        }
-      } catch (apiErr) {
-        console.warn('[ChatModal] Falha ao consultar sessão via backend:', apiErr);
-      }
 
       const [check, sessionsRes] = await Promise.all([
         checkDailyChatAvailability(clientId, supabase),
@@ -107,7 +93,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
 
   const session = sessionData?.session || null;
 
-  // 2. React Query: Carregar Mensagens com Polling Inteligente e Estável
+  // 2. React Query: Carregar Mensagens diretamente do Supabase
   const { data: messages = [], isLoading: loadingMessages } = useQuery<any[]>({
     queryKey: ['chat-messages', clientId],
     queryFn: async () => {
@@ -115,38 +101,23 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       
       let loadedMsgs: any[] = [];
 
-      // Tentativa 1: Via backend endpoint autenticado
       try {
-        const msgsUrl = getApiUrl(`/api/chat/messages/${clientId}`);
-        const res = await fetch(msgsUrl);
-        if (res.ok) {
-          const mJson = await res.json();
-          if (Array.isArray(mJson?.messages)) {
-            loadedMsgs = mJson.messages;
-          }
+        const { data: sData } = await supabase
+          .from('chat_sessions')
+          .select('id')
+          .eq('client_id', clientId);
+
+        if (sData && sData.length > 0) {
+          const sessionIds = sData.map((s) => s.id);
+          const { data: directMsgs } = await supabase
+            .from('chat_messages')
+            .select('*')
+            .in('session_id', sessionIds)
+            .order('created_at', { ascending: true });
+          if (directMsgs) loadedMsgs = directMsgs;
         }
-      } catch (apiErr) {
-        console.warn('[ChatModal] Falha ao carregar mensagens via backend:', apiErr);
-      }
-
-      // Tentativa 2: Fallback direto no Supabase
-      if (loadedMsgs.length === 0) {
-        try {
-          const { data: sData } = await supabase
-            .from('chat_sessions')
-            .select('id')
-            .eq('client_id', clientId);
-
-          if (sData && sData.length > 0) {
-            const sessionIds = sData.map((s) => s.id);
-            const { data: directMsgs } = await supabase
-              .from('chat_messages')
-              .select('*')
-              .in('session_id', sessionIds)
-              .order('created_at', { ascending: true });
-            if (directMsgs) loadedMsgs = directMsgs;
-          }
-        } catch (e) {}
+      } catch (e) {
+        console.warn('[ChatModal] Erro ao carregar mensagens:', e);
       }
 
       // Deduplicação e preservação de mensagens otimistas locais
@@ -181,7 +152,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       );
     },
     enabled: !!isOpen && !!clientId,
-    refetchInterval: 2500,
+    refetchInterval: 4000,
     refetchOnWindowFocus: true,
     staleTime: 1000,
   });
