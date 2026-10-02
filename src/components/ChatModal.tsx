@@ -7,7 +7,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { evaluateSessionExpiry, checkDailyChatAvailability, markClientChatAsRead } from '../lib/chatSessionUtils';
 import { getApiUrl } from '../lib/apiConfig';
-import { sendMetaMessage, sendEvolutionMessage, checkWhatsAppMessageStatus, uploadMediaToPublicStorage } from '../lib/whatsapp';
+import { sendAstraCallsMessage, sendMetaMessage, sendEvolutionMessage, checkWhatsAppMessageStatus, uploadMediaToPublicStorage } from '../lib/whatsapp';
 
 export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const { userProfile } = useAuth();
@@ -545,16 +545,26 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
           console.warn('[ChatModal] Falha ao contatar backend, acionando fallback direto:', apiErr);
         }
 
-        // Tentativa 2: Fallback direto no navegador (caso o backend esteja inacessível)
+        // Tentativa 2: Fallback direto no navegador (caso o backend esteja inacessível ou estático)
         if (!sentSuccess && !insertedMessageId) {
           try {
-            if (currentSettings.useMetaApi && currentSettings.metaToken) {
+            const isMeta = currentSettings.useMetaApi && currentSettings.metaToken;
+            const isEvo = currentSettings.useEvolutionApi && currentSettings.evolutionApiKey;
+            const isAstra = currentSettings.provider === 'astracalls' || currentSettings.useAstracalls || (!isMeta && !isEvo);
+
+            if (isAstra) {
+              const astraRes = await sendAstraCallsMessage(clientPhone, text, currentSettings, message_client_id, mediaBase64, mimeType);
+              if (astraRes) {
+                sentSuccess = true;
+                externalId = astraRes.id || astraRes.messageId || astraRes.key?.id || `astra_${Date.now()}`;
+              }
+            } else if (isMeta) {
               const metaRes = await sendMetaMessage(clientPhone, text, currentSettings, message_client_id, mediaBase64, mimeType);
               if (metaRes) {
                 sentSuccess = true;
                 externalId = metaRes.id || metaRes.messages?.[0]?.id || metaRes.key?.id || '';
               }
-            } else if (currentSettings.useEvolutionApi && currentSettings.evolutionApiKey) {
+            } else if (isEvo) {
               const evoRes = await sendEvolutionMessage(clientPhone, text, currentSettings, message_client_id, mediaBase64, mimeType);
               if (evoRes) {
                 sentSuccess = true;

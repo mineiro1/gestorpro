@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { openWhatsApp, sendMetaMessage } from '../lib/whatsapp';
+import { openWhatsApp, sendMetaMessage, sendAstraCallsMessage } from '../lib/whatsapp';
 import { 
   MessageSquare, 
   MessageCircle, 
@@ -418,10 +418,11 @@ export default function Messages() {
       }
     }
     
-    const isEvolution = waSettings?.useEvolutionApi;
     const isMetaOrWame = waSettings?.useMetaApi;
+    const isEvolution = waSettings?.useEvolutionApi;
+    const isAstracalls = waSettings?.provider === 'astracalls' || waSettings?.useAstracalls || (!isMetaOrWame && !isEvolution && (waSettings?.astracallsApiKey || waSettings?.wavoipApiKey));
 
-    if (!isEvolution && !isMetaOrWame && mediaFile) {
+    if (!isEvolution && !isMetaOrWame && !isAstracalls && mediaFile) {
       alert("Avisos com mídia no modo WhatsApp Web não suportam anexo automático (apenas o texto).");
     }
 
@@ -433,7 +434,7 @@ export default function Messages() {
 
     let base64Media = '';
     let mimeType = '';
-    if (mediaFile && (isEvolution || isMetaOrWame)) {
+    if (mediaFile && (isEvolution || isMetaOrWame || isAstracalls)) {
       try {
         base64Media = await fileToBase64(mediaFile);
         mimeType = mediaFile.type;
@@ -447,23 +448,34 @@ export default function Messages() {
     const targets = clients.filter(c => selectedClients.has(c.id));
     targets.forEach(c => setSendStatuses(prev => ({ ...prev, [c.id]: 'pending' })));
 
-    if (!isEvolution && !isMetaOrWame) {
-      alert(`Serão enviadas ${targets.length} mensagens pelo WhatsApp Web. Você terá que clicar em enviar para cada uma que for aberta.`);
-      
+    if (isAstracalls) {
+      let lastError = '';
       for (const client of targets) {
         if (!client.phone) {
           setSendStatuses(prev => ({ ...prev, [client.id]: 'error' }));
           errorCount++;
+          lastError = 'Telefone ausente';
           continue;
         }
         setSendStatuses(prev => ({ ...prev, [client.id]: 'sending' }));
-        const phoneInfo = client.phone.replace(/\D/g, '');
-        const message = messageText.replace(/\{nome\}/g, client.name || '');
-        openWhatsApp(`55${phoneInfo}`, message);
-        setSendStatuses(prev => ({ ...prev, [client.id]: 'success' }));
-        successCount++;
-        await new Promise(r => setTimeout(r, 1000));
+        try {
+          const personalizedText = messageText.replace(/\{nome\}/g, client.name || '');
+          await sendAstraCallsMessage(client.phone, personalizedText, waSettings || {}, undefined, base64Media, mimeType);
+          setSendStatuses(prev => ({ ...prev, [client.id]: 'success' }));
+          successCount++;
+        } catch (e: any) {
+          console.error("Erro AstraCalls:", e);
+          setSendStatuses(prev => ({ ...prev, [client.id]: 'error' }));
+          errorCount++;
+          lastError = e?.message || 'Erro desconhecido';
+        }
+        await new Promise(r => setTimeout(r, 800));
       }
+      let alertMsg = `Envios AstraCalls concluídos!\nSucesso: ${successCount}\nErros: ${errorCount}`;
+      if (errorCount > 0) {
+        alertMsg += `\n\nÚltimo erro: ${lastError}`;
+      }
+      alert(alertMsg);
     } else if (isEvolution) {
       if (!waSettings || !waSettings.evolutionApiUrl || !waSettings.evolutionApiKey || !waSettings.evolutionInstanceName) {
         alert("Evolution API não configurada corretamente. Preencha as configurações.");
