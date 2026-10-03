@@ -3,7 +3,7 @@ import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { useQueryClient } from '@tanstack/react-query';
-import {  Menu, Store, Wrench, X, Home, Users, UserCircle, Map, LogOut, Bell, MessageSquare, Headphones, Briefcase, History, Contact , Package, Settings, HelpCircle } from 'lucide-react';
+import {  Menu, Store, Wrench, X, Home, Users, UserCircle, Map, LogOut, Bell, MessageSquare, Headphones, Briefcase, History, Contact , Package, Settings, HelpCircle, RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import { Capacitor } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
@@ -82,6 +82,16 @@ export default function Layout() {
   // Client Selection State
   const [availableClients, setAvailableClients] = useState<any[]>([]);
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
+  const [isGlobalRefreshing, setIsGlobalRefreshing] = useState(false);
+
+  const handleGlobalRefresh = async () => {
+    setIsGlobalRefreshing(true);
+    try {
+      window.dispatchEvent(new CustomEvent('app-global-refresh'));
+      await queryClient.invalidateQueries();
+    } catch (e) {}
+    setTimeout(() => setIsGlobalRefreshing(false), 600);
+  };
 
   // Initialize Capacitor Push Notifications lifecycle for real-time alerts
   useEffect(() => {
@@ -498,16 +508,26 @@ export default function Layout() {
 
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden relative pb-16 lg:pb-0">
-        <header className="bg-white shadow-sm h-16 flex items-center px-4 lg:hidden shrink-0">
-          <button
-            onClick={() => setIsDrawerOpen(true)}
-            className="text-gray-500 hover:text-primary transition-colors focus:outline-none p-2 -ml-2"
-          >
-            <Menu size={24} />
-          </button>
-          <div className="flex items-center space-x-2 ml-2">
-            <span className="text-lg font-bold text-primary truncate max-w-[150px]">{userProfile?.whatsappSettings?.companyName || "GestãoPro"}</span>
+        <header className="bg-white shadow-sm h-16 flex items-center justify-between px-4 lg:hidden shrink-0">
+          <div className="flex items-center">
+            <button
+              onClick={() => setIsDrawerOpen(true)}
+              className="text-gray-500 hover:text-primary transition-colors focus:outline-none p-2 -ml-2"
+            >
+              <Menu size={24} />
+            </button>
+            <div className="flex items-center space-x-2 ml-2">
+              <span className="text-lg font-bold text-primary truncate max-w-[160px]">{userProfile?.whatsappSettings?.companyName || "GestãoPro"}</span>
+            </div>
           </div>
+          <button
+            onClick={handleGlobalRefresh}
+            disabled={isGlobalRefreshing}
+            className="flex items-center justify-center p-2 text-gray-600 hover:text-primary active:bg-gray-100 rounded-lg transition-colors border border-gray-200 bg-gray-50"
+            title="Atualizar dados do aplicativo"
+          >
+            <RefreshCw size={20} className={clsx("text-primary", isGlobalRefreshing && "animate-spin")} />
+          </button>
         </header>
 
         <NotificationBanner />

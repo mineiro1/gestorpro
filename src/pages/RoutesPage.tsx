@@ -248,6 +248,7 @@ export default function RoutesPage() {
       fetchEmployees();
     } else if (userProfile?.uid) {
       setSelectedEmployee(userProfile.uid);
+      setGenerated(true);
     }
   }, [isAdmin, isManager, userProfile]);
 
@@ -633,7 +634,15 @@ export default function RoutesPage() {
         console.log('[Routes Live] Jobs subscription status:', status);
       });
 
+    const handleGlobal = () => {
+      setGenerated(true);
+      queryClient.invalidateQueries({ queryKey: ['routeData'] });
+      refetch();
+    };
+    window.addEventListener('app-global-refresh', handleGlobal);
+
     return () => {
+      window.removeEventListener('app-global-refresh', handleGlobal);
       supabase.removeChannel(channel1);
       supabase.removeChannel(channelChat);
       supabase.removeChannel(channelSettings);
@@ -1501,7 +1510,22 @@ export default function RoutesPage() {
 
   return (
     <div className="max-w-4xl mx-auto">
-      <h1 className="text-2xl font-bold text-gray-800 mb-6">Gerar Rotas</h1>
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-3">
+        <h1 className="text-2xl font-bold text-gray-800">Gerar Rotas e Atendimentos</h1>
+        <button
+          onClick={async () => {
+            setGenerated(true);
+            await queryClient.invalidateQueries({ queryKey: ['routeData'] });
+            await refetch();
+          }}
+          disabled={isFetching}
+          className="flex items-center justify-center bg-white border border-gray-200 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50 active:bg-gray-100 transition-all shadow-sm font-medium text-sm shrink-0 disabled:opacity-60"
+          title="Atualizar rota e visitas agora"
+        >
+          <RefreshCw size={17} className={`mr-2 text-primary ${isFetching ? 'animate-spin' : ''}`} />
+          {isFetching ? 'Atualizando Rota...' : 'Atualizar Rota'}
+        </button>
+      </div>
 
       <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">

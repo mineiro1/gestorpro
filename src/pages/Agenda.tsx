@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { Edit2, Trash2, Plus, X, MessageCircle } from 'lucide-react';
+import { Edit2, Trash2, Plus, X, MessageCircle, RefreshCw } from 'lucide-react';
 import { useRealtimeUpdates } from '../hooks/useRealtimeUpdates';
 import { ChatModal } from '../components/ChatModal';
 
@@ -13,6 +13,7 @@ export default function Agenda() {
 
   const [contacts, setContacts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [currentContact, setCurrentContact] = useState<any>(null);
   
@@ -28,14 +29,11 @@ export default function Agenda() {
   const [phone, setPhone] = useState('');
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
+  const fetchAgenda = useCallback(async (isManual = false) => {
     if (!userProfile) return;
-    fetchAgenda();
-  }, [userProfile, refreshTrigger]);
-
-  const fetchAgenda = async () => {
+    if (isManual) setIsRefreshing(true);
     try {
-      if (contacts.length === 0) setLoading(true);
+      if (contacts.length === 0 && !isManual) setLoading(true);
       const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
       const { data, error } = await supabase.from('agenda_contacts').select('*').eq('admin_id', adminId).order('name', { ascending: true });
       if (error) throw error;
@@ -46,8 +44,25 @@ export default function Agenda() {
       console.error(error);
     } finally {
       setLoading(false);
+      if (isManual) {
+        setTimeout(() => setIsRefreshing(false), 400);
+      }
     }
-  };
+  }, [userProfile, isAdmin]);
+
+  useEffect(() => {
+    fetchAgenda();
+
+    const handleFocus = () => fetchAgenda();
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') fetchAgenda();
+    });
+
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [fetchAgenda, refreshTrigger]);
 
   const handleOpenChat = (contact: any) => {
     const currentAdminId = isAdmin ? userProfile?.uid : (userProfile?.adminId || userProfile?.uid);
@@ -142,18 +157,29 @@ export default function Agenda() {
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-800">Agenda de Contatos</h1>
-          <p className="text-gray-600">Salve contatos para enviar mensagens em lote (não contam como clientes).</p>
+          <p className="text-gray-600 text-sm">Salve contatos para enviar mensagens em lote (não contam como clientes).</p>
         </div>
-        <button
-          onClick={() => handleOpenModal()}
-          className="mt-4 md:mt-0 bg-primary text-white px-4 py-2 rounded-lg flex items-center hover:bg-primary-dark transition-colors shadow-sm"
-        >
-          <Plus size={20} className="mr-2" />
-          Novo Contato
-        </button>
+        <div className="flex items-center gap-3 w-full md:w-auto justify-end">
+          <button
+            onClick={() => fetchAgenda(true)}
+            disabled={isRefreshing}
+            className="bg-white border border-gray-200 text-gray-700 px-3.5 py-2 rounded-lg flex items-center hover:bg-gray-50 active:bg-gray-100 transition-all shadow-sm text-sm font-medium disabled:opacity-60 shrink-0"
+            title="Atualizar agenda de contatos"
+          >
+            <RefreshCw size={17} className={`mr-1.5 text-primary ${isRefreshing ? 'animate-spin' : ''}`} />
+            <span>{isRefreshing ? 'Atualizando...' : 'Atualizar'}</span>
+          </button>
+          <button
+            onClick={() => handleOpenModal()}
+            className="bg-primary text-white px-4 py-2 rounded-lg flex items-center hover:bg-primary-dark transition-colors shadow-sm text-sm font-medium shrink-0"
+          >
+            <Plus size={18} className="mr-1.5" />
+            Novo Contato
+          </button>
+        </div>
       </div>
 
       {loading ? (

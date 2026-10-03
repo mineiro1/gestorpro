@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { openWhatsApp } from '../lib/whatsapp';
-import { Edit, Trash2, Plus, DollarSign, RotateCcw, Package, Search, MessageCircle, PlusCircle, Phone } from 'lucide-react';
+import { Edit, Trash2, Plus, DollarSign, RotateCcw, Package, Search, MessageCircle, PlusCircle, Phone, RefreshCw } from 'lucide-react';
 import { useRealtimeUpdates } from '../hooks/useRealtimeUpdates';
 import { useCall } from '../contexts/CallContext';
 
@@ -17,6 +17,7 @@ export default function Clients() {
   const [clients, setClients] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [clientToDelete, setClientToDelete] = useState<any>(null);
 
@@ -49,12 +50,13 @@ export default function Clients() {
     setCurrentPage(1);
   }, [searchTerm, filterActive]);
 
-  useEffect(() => {
+  const fetchClientsAndPayments = useCallback(async (isManual = false) => {
     if (!userProfile?.uid) return;
+    if (isManual) setIsRefreshing(true);
 
     const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
     
-    const fetchClients = async () => {
+    try {
       let queryBuilder = supabase.from('clients').select('*').eq('admin_id', adminId);
       
       if (!isAdmin && !isManager) {
@@ -70,11 +72,7 @@ export default function Clients() {
       const { data, error } = await queryBuilder;
       if (error) {
         console.error(error);
-        setLoading(false);
-        return;
-      }
-
-      if (data) {
+      } else if (data) {
         const mappedClients = data.map((d: any) => ({
           ...d,
           monthlyFee: d.monthly_price || d.monthlyFee || 0,
@@ -88,17 +86,12 @@ export default function Clients() {
         setClients(mappedClients);
         setHasMore(data.length >= loadLimit);
       }
-      setLoading(false);
-    };
 
-    fetchClients();
-
-    const fetchPayments = async () => {
       const currentDate = new Date();
       const currentMonth = currentDate.getMonth() + 1;
       const currentYear = currentDate.getFullYear();
 
-      const { data, error } = await supabase
+      const { data: payData, error: payError } = await supabase
         .from('payments')
         .select('*')
         .eq('admin_id', adminId)
@@ -106,14 +99,9 @@ export default function Clients() {
         .eq('year', currentYear)
         .order('created_at', { ascending: false });
 
-      if (error) {
-        console.error(error);
-        return;
-      }
-
-      if (data) {
+      if (payData) {
         const paid: Record<string, any> = {};
-        data.forEach((docData: any) => {
+        payData.forEach((docData: any) => {
            const mappedDoc = {
              id: docData.id,
              clientId: docData.client_id,
@@ -125,23 +113,42 @@ export default function Clients() {
         });
         setPaidClients(paid);
       }
-    };
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+      if (isManual) {
+        setTimeout(() => setIsRefreshing(false), 400);
+      }
+    }
+  }, [userProfile, isAdmin, isManager, loadLimit, searchTerm]);
 
-    fetchPayments();
+  useEffect(() => {
+    fetchClientsAndPayments();
+
+    const adminId = isAdmin ? userProfile?.uid : userProfile?.adminId;
+    if (!adminId) return;
 
     const clientChannel = supabase.channel('clients-realtime-clients')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'clients', filter: `admin_id=eq.${adminId}` }, fetchClients)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'clients', filter: `admin_id=eq.${adminId}` }, () => fetchClientsAndPayments())
       .subscribe();
       
     const paymentChannel = supabase.channel('clients-realtime-payments')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'payments', filter: `admin_id=eq.${adminId}` }, fetchPayments)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'payments', filter: `admin_id=eq.${adminId}` }, () => fetchClientsAndPayments())
       .subscribe();
+
+    const handleFocus = () => fetchClientsAndPayments();
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') fetchClientsAndPayments();
+    });
 
     return () => {
       supabase.removeChannel(clientChannel);
       supabase.removeChannel(paymentChannel);
+      window.removeEventListener('focus', handleFocus);
     };
-  }, [userProfile, isAdmin, isManager, loadLimit, searchTerm, refreshTrigger]);
+  }, [fetchClientsAndPayments, userProfile, isAdmin, refreshTrigger]);
 
   const handleDeleteClick = (client: any) => {
     setClientToDelete(client);
@@ -389,7 +396,17 @@ export default function Clients() {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 space-y-4 sm:space-y-0">
         <h1 className="text-2xl font-bold text-gray-800">Clientes</h1>
         
-        <div className="flex items-center space-x-4 w-full sm:w-auto">
+        <div className="flex items-center space-x-3 w-full sm:w-auto">
+          <button
+            onClick={() => fetchClientsAndPayments(true)}
+            disabled={isRefreshing}
+            className="flex items-center justify-center bg-white border border-gray-200 text-gray-700 px-3 py-2 rounded-lg hover:bg-gray-50 active:bg-gray-100 transition-all shadow-sm font-medium text-sm shrink-0 disabled:opacity-60"
+            title="Atualizar lista de clientes"
+          >
+            <RefreshCw size={17} className={`mr-1.5 text-primary ${isRefreshing ? 'animate-spin' : ''}`} />
+            <span className="hidden sm:inline">{isRefreshing ? 'Atualizando...' : 'Atualizar'}</span>
+          </button>
+
           <div className="relative w-full sm:w-64">
             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
               <Search size={18} className="text-gray-400" />
@@ -399,15 +416,15 @@ export default function Clients() {
               placeholder="Buscar por nome ou telefone..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-10 w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-colors"
+              className="pl-10 w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-colors text-sm"
             />
           </div>
           {isAdmin && (
             <Link
               to="/clients/new"
-              className="bg-primary text-white px-4 py-2 rounded-lg flex items-center hover:bg-primary-light transition-colors whitespace-nowrap"
+              className="bg-primary text-white px-4 py-2 rounded-lg flex items-center hover:bg-primary-light transition-colors whitespace-nowrap text-sm font-medium shadow-sm"
             >
-              <Plus size={20} className="mr-2" />
+              <Plus size={18} className="mr-1.5" />
               Novo Cliente
             </Link>
           )}

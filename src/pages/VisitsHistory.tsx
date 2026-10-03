@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { History, MapPin, X, Download, Filter, Edit, Trash2 } from 'lucide-react';
+import { History, MapPin, X, Download, Filter, Edit, Trash2, RefreshCw } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { openMap } from '../lib/maps';
 import jsPDF from 'jspdf';
@@ -18,6 +18,7 @@ export default function VisitsHistory() {
   const [clients, setClients] = useState<Record<string, any>>({});
   const [employees, setEmployees] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [fullscreenImage, setFullscreenImage] = useState<string | null>(null);
 
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
@@ -28,14 +29,15 @@ export default function VisitsHistory() {
   const [endDate, setEndDate] = useState('');
   const [selectedEmployeeFilter, setSelectedEmployeeFilter] = useState('');
 
-  useEffect(() => {
+  const fetchData = useCallback(async (isManual = false) => {
     if (!userProfile?.uid) return;
+    if (isManual) setIsRefreshing(true);
     
-    const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
+    try {
+      const targetAdminId = isAdmin ? userProfile.uid : userProfile.adminId;
 
-    const fetchData = async () => {
       // Fetch Clients
-      const { data: clientsData, error: clientsErr } = await supabase.from('clients').select('*').eq('admin_id', adminId);
+      const { data: clientsData } = await supabase.from('clients').select('*').eq('admin_id', targetAdminId);
       if (clientsData) {
         const cMap: Record<string, any> = {};
         clientsData.forEach(doc => { cMap[doc.id] = { id: doc.id, ...doc }; });
@@ -43,7 +45,7 @@ export default function VisitsHistory() {
       }
 
       // Fetch Employees
-      const { data: usersData, error: usersErr } = await supabase.from('users').select('*').eq('admin_id', adminId);
+      const { data: usersData } = await supabase.from('users').select('*').eq('admin_id', targetAdminId);
       if (usersData) {
         const eMap: Record<string, any> = {};
         usersData.forEach(doc => { eMap[doc.id] = { id: doc.id, ...doc }; });
@@ -51,28 +53,49 @@ export default function VisitsHistory() {
       }
 
       // Fetch Visits
-      let queryBuilder = supabase.from('visits').select('*').eq('admin_id', adminId).order('date', { ascending: false });
+      let queryBuilder = supabase.from('visits').select('*').eq('admin_id', targetAdminId).order('date', { ascending: false });
       if (!isAdmin && !isManager) {
          queryBuilder = queryBuilder.eq('employee_id', userProfile.uid);
       }
       
-      const { data: visitsData, error: visitsErr } = await queryBuilder;
+      const { data: visitsData } = await queryBuilder;
       if (visitsData) {
         setVisits(visitsData);
       }
+    } catch (err) {
+      console.error('Erro ao buscar histórico de visitas:', err);
+    } finally {
       setLoading(false);
-    };
+      if (isManual) {
+        setTimeout(() => setIsRefreshing(false), 400);
+      }
+    }
+  }, [userProfile, isAdmin, isManager]);
 
+  useEffect(() => {
     fetchData();
 
+    const targetAdminId = isAdmin ? userProfile?.uid : userProfile?.adminId;
+    if (!targetAdminId) return;
+
     const channel = supabase.channel('visits-history')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'visits', filter: `admin_id=eq.${adminId}` }, fetchData)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'visits', filter: `admin_id=eq.${targetAdminId}` }, () => fetchData())
       .subscribe();
+
+    const handleFocus = () => fetchData();
+    const handleGlobal = () => fetchData(true);
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('app-global-refresh', handleGlobal);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') fetchData();
+    });
 
     return () => {
       supabase.removeChannel(channel);
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('app-global-refresh', handleGlobal);
     };
-  }, [userProfile, isAdmin, isManager, refreshTrigger]);
+  }, [fetchData, refreshTrigger, userProfile, isAdmin]);
 
   const filteredVisits = visits.filter(visit => {
     let keep = true;
@@ -213,13 +236,25 @@ export default function VisitsHistory() {
           <h1 className="text-3xl font-bold text-gray-800">Histórico Geral de Visitas</h1>
         </div>
         
-        <button
-          onClick={handleGenerateReport}
-          className="flex items-center bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors shrink-0"
-        >
-          <Download size={18} className="mr-2" />
-          Gerar Relatório (PDF)
-        </button>
+        <div className="flex items-center gap-3 w-full md:w-auto justify-end">
+          <button
+            onClick={() => fetchData(true)}
+            disabled={isRefreshing}
+            className="flex items-center justify-center bg-white border border-gray-200 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50 active:bg-gray-100 transition-all shadow-sm shrink-0 font-medium text-sm disabled:opacity-60"
+            title="Atualizar lista de visitas"
+          >
+            <RefreshCw size={17} className={`mr-2 text-primary ${isRefreshing ? 'animate-spin' : ''}`} />
+            {isRefreshing ? 'Atualizando...' : 'Atualizar'}
+          </button>
+          
+          <button
+            onClick={handleGenerateReport}
+            className="flex items-center bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors shrink-0 font-medium text-sm shadow-sm"
+          >
+            <Download size={18} className="mr-2" />
+            Gerar Relatório (PDF)
+          </button>
+        </div>
       </div>
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-8 flex flex-col md:flex-row gap-4 items-end">

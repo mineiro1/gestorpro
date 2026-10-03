@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { Briefcase, MapPin, Calendar, DollarSign, User, Plus, Edit, Trash2, CheckCircle } from 'lucide-react';
+import { Briefcase, MapPin, Calendar, DollarSign, User, Plus, Edit, Trash2, CheckCircle, RefreshCw } from 'lucide-react';
 import { useRealtimeUpdates } from '../hooks/useRealtimeUpdates';
 import { notifyAdminAttendanceFinished } from '../lib/pushNotifications';
 
@@ -31,6 +31,7 @@ export default function OneOffJobs() {
   const [employees, setEmployees] = useState<{id: string, name: string}[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [editingJob, setEditingJob] = useState<OneOffJob | null>(null);
   const [activeTab, setActiveTab] = useState<'pendentes' | 'concluidos'>('pendentes');
   
@@ -48,7 +49,9 @@ export default function OneOffJobs() {
 
   const getAdminId = () => userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId;
 
-  const fetchJobs = async () => {
+  const fetchJobs = useCallback(async (isManual = false) => {
+    if (!userProfile) return;
+    if (isManual) setIsRefreshing(true);
     try {
       const { data, error } = await supabase
         .from('oneoffjobs')
@@ -63,8 +66,8 @@ export default function OneOffJobs() {
         setJobs(validJobs.map((d: any) => ({
           id: d.id,
           adminId: d.admin_id,
-          clientName: d.title, // assuming clientName maps to title, waiting to see exactly
-          clientPhone: d.description, // guessing description stores phone + address
+          clientName: d.title,
+          clientPhone: d.description,
           address: d.description,
           date: d.date,
           price: d.price,
@@ -76,10 +79,15 @@ export default function OneOffJobs() {
       }
     } catch (err) {
       console.error(err);
+    } finally {
+      if (isManual) {
+        setTimeout(() => setIsRefreshing(false), 400);
+      }
     }
-  };
+  }, [userProfile]);
 
-  const fetchEmployees = async () => {
+  const fetchEmployees = useCallback(async () => {
+    if (!userProfile) return;
     try {
       const { data, error } = await supabase
         .from('users')
@@ -94,14 +102,27 @@ export default function OneOffJobs() {
     } catch (err) {
       console.error(err);
     }
-  };
+  }, [userProfile]);
 
   useEffect(() => {
     if (userProfile) {
       fetchJobs();
       fetchEmployees();
     }
-  }, [userProfile, refreshTrigger]);
+
+    const handleFocus = () => {
+      fetchJobs();
+      fetchEmployees();
+    };
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') handleFocus();
+    });
+
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [userProfile, fetchJobs, fetchEmployees, refreshTrigger]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -191,7 +212,7 @@ export default function OneOffJobs() {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-white p-6 rounded-xl shadow-sm border border-gray-200 gap-4">
         <div className="flex items-center space-x-3">
           <div className="p-3 bg-primary/10 rounded-lg text-primary">
             <Briefcase size={28} />
@@ -201,17 +222,31 @@ export default function OneOffJobs() {
             <p className="text-gray-500 text-sm">Gerencie trabalhos de visita única</p>
           </div>
         </div>
-        <button
-          onClick={() => {
-            setEditingJob(null);
-            setFormData({ clientName: '', clientPhone: '', address: '', date: '', price: 0, employeeId: '' });
-            setIsModalOpen(true);
-          }}
-          className="flex items-center px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-dark transition-colors"
-        >
-          <Plus size={20} className="mr-2" />
-          Novo Serviço Avulso
-        </button>
+        <div className="flex items-center space-x-3 w-full sm:w-auto justify-end">
+          <button
+            onClick={() => {
+              fetchJobs(true);
+              fetchEmployees();
+            }}
+            disabled={isRefreshing}
+            className="flex items-center justify-center bg-white border border-gray-200 text-gray-700 px-3.5 py-2 rounded-lg hover:bg-gray-50 active:bg-gray-100 transition-all shadow-sm font-medium text-sm shrink-0 disabled:opacity-60"
+            title="Atualizar serviços avulsos"
+          >
+            <RefreshCw size={17} className={`mr-1.5 text-primary ${isRefreshing ? 'animate-spin' : ''}`} />
+            <span>{isRefreshing ? 'Atualizando...' : 'Atualizar'}</span>
+          </button>
+          <button
+            onClick={() => {
+              setEditingJob(null);
+              setFormData({ clientName: '', clientPhone: '', address: '', date: '', price: 0, employeeId: '' });
+              setIsModalOpen(true);
+            }}
+            className="flex items-center px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-dark transition-colors text-sm font-medium shadow-sm whitespace-nowrap"
+          >
+            <Plus size={18} className="mr-1.5" />
+            Novo Serviço
+          </button>
+        </div>
       </div>
 
       <div className="flex space-x-2 border-b border-gray-200">

@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { openWhatsApp, sendMetaMessage, sendEvolutionMessage, sendAstraCallsMessage } from '../lib/whatsapp';
 import { formatClientMessageTemplate } from '../lib/messageTemplates';
-import { MessageCircle, AlertCircle, Clock, History, Settings, X, Play, MessageSquare, Calendar, CheckCircle, XCircle, DollarSign } from 'lucide-react';
+import { MessageCircle, AlertCircle, Clock, History, Settings, X, Play, MessageSquare, Calendar, CheckCircle, XCircle, DollarSign, RefreshCw } from 'lucide-react';
 
 interface ClientBilling {
   id: string;
@@ -24,6 +24,7 @@ export default function Billing() {
   const [upcomingClients, setUpcomingClients] = useState<ClientBilling[]>([]);
   const [allClients, setAllClients] = useState<ClientBilling[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Payment History State
   const [selectedClientId, setSelectedClientId] = useState<string>('');
@@ -148,140 +149,156 @@ export default function Billing() {
 
   
   
-  useEffect(() => {
+  const calculateNextDueDateHelper = (currentDateStr: string, baseDueDay: number) => {
+    const [yearStr, monthStr] = currentDateStr.split('-');
+    let year = parseInt(yearStr, 10);
+    let month = parseInt(monthStr, 10);
+
+    month += 1;
+    if (month > 12) {
+      month = 1;
+      year += 1;
+    }
+
+    const lastDayOfNewMonth = new Date(year, month, 0).getDate();
+    const nextDay = Math.min(baseDueDay, lastDayOfNewMonth);
+
+    const formattedMonth = month.toString().padStart(2, '0');
+    const formattedDay = nextDay.toString().padStart(2, '0');
+
+    return `${year}-${formattedMonth}-${formattedDay}`;
+  };
+
+  const fetchBillingData = useCallback(async (isManual = false) => {
     if (!userProfile?.uid) return;
-
-    const calculateNextDueDateHelper = (currentDateStr: string, baseDueDay: number) => {
-      const [yearStr, monthStr] = currentDateStr.split('-');
-      let year = parseInt(yearStr, 10);
-      let month = parseInt(monthStr, 10);
-
-      month += 1;
-      if (month > 12) {
-        month = 1;
-        year += 1;
+    if (isManual) setIsRefreshing(true);
+    try {
+      const adminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
+      
+      let queryBuilder = supabase.from('clients').select('*').eq('admin_id', adminId);
+      if (userProfile.role === 'employee') {
+        queryBuilder = queryBuilder.eq('employee_id', userProfile.uid);
       }
+      
+      const { data: clientsData, error } = await queryBuilder;
+      if(error) throw error;
+      
+      const delayed: ClientBilling[] = [];
+      const todayDues: ClientBilling[] = [];
+      const upcoming: ClientBilling[] = [];
+      const all: ClientBilling[] = [];
 
-      const lastDayOfNewMonth = new Date(year, month, 0).getDate();
-      const nextDay = Math.min(baseDueDay, lastDayOfNewMonth);
+      // Today at midnight for accurate date comparison
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
 
-      const formattedMonth = month.toString().padStart(2, '0');
-      const formattedDay = nextDay.toString().padStart(2, '0');
+      clientsData?.forEach(data => {
+        const clientId = data.id;
 
-      return `${year}-${formattedMonth}-${formattedDay}`;
-    };
+        if (!data.due_date) return;
 
-    const fetchBillingData = async () => {
-      try {
-        const adminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
-        
-        let queryBuilder = supabase.from('clients').select('*').eq('admin_id', adminId);
-        if (userProfile.role === 'employee') {
-          queryBuilder = queryBuilder.eq('employee_id', userProfile.uid);
-        }
-        
-        const { data: clientsData, error } = await queryBuilder;
-        if(error) throw error;
-        
-        const delayed: ClientBilling[] = [];
-        const todayDues: ClientBilling[] = [];
-        const upcoming: ClientBilling[] = [];
-        const all: ClientBilling[] = [];
+        all.push({
+          id: clientId,
+          name: data.name,
+          phone: data.phone,
+          monthlyFee: data.monthly_price || data.monthlyFee || 0,
+          dueDate: data.due_date,
+          status: 'upcoming',
+          extraAmount: data.extra_amount,
+          extraReason: data.extra_reason,
+          rawClient: data
+        });
 
-        // Today at midnight for accurate date comparison
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
+        // Generate multiple missing installments logic
+        const baseDay = data.base_due_day || parseInt(data.due_date.split('-')[2], 10) || 1;
+        let currentDueDateStr = data.due_date;
+        let iterations = 0;
+        const maxIterations = 24; // limit to prevent infinite loops (2 years max)
 
-        clientsData?.forEach(data => {
-          const clientId = data.id;
+        // Only the CURRENT / FIRST due iteration should get the extraAmount, 
+        // because it resets after payment. If it's already delayed, they owe it now.
+        let isFirstIteration = true;
 
-          if (!data.due_date) return;
+        while (iterations < maxIterations) {
+          const [year, month, day] = currentDueDateStr.split('-').map(Number);
+          const due = new Date(year, month - 1, day);
+          due.setHours(0, 0, 0, 0);
 
-          all.push({
-            id: clientId,
+          const diffTime = due.getTime() - today.getTime();
+          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+          const clientBillingId = `${clientId}-${currentDueDateStr}`;
+          const clientBilling: ClientBilling = {
+            id: clientBillingId,
             name: data.name,
             phone: data.phone,
             monthlyFee: data.monthly_price || data.monthlyFee || 0,
-            dueDate: data.due_date,
+            dueDate: currentDueDateStr,
             status: 'upcoming',
-            extraAmount: data.extra_amount,
-            extraReason: data.extra_reason,
+            extraAmount: isFirstIteration ? data.extra_amount : undefined,
+            extraReason: isFirstIteration ? data.extra_reason : undefined,
             rawClient: data
-          });
+          };
+          isFirstIteration = false;
 
-          // Generate multiple missing installments logic
-          const baseDay = data.base_due_day || parseInt(data.due_date.split('-')[2], 10) || 1;
-          let currentDueDateStr = data.due_date;
-          let iterations = 0;
-          const maxIterations = 24; // limit to prevent infinite loops (2 years max)
-
-          // Only the CURRENT / FIRST due iteration should get the extraAmount, 
-          // because it resets after payment. If it's already delayed, they owe it now.
-          let isFirstIteration = true;
-
-          while (iterations < maxIterations) {
-            const [year, month, day] = currentDueDateStr.split('-').map(Number);
-            const due = new Date(year, month - 1, day);
-            due.setHours(0, 0, 0, 0);
-
-            const diffTime = due.getTime() - today.getTime();
-            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-            const clientBillingId = `${clientId}-${currentDueDateStr}`;
-            const clientBilling: ClientBilling = {
-              id: clientBillingId,
-              name: data.name,
-              phone: data.phone,
-              monthlyFee: data.monthly_price || data.monthlyFee || 0,
-              dueDate: currentDueDateStr,
-              status: 'upcoming',
-              extraAmount: isFirstIteration ? data.extra_amount : undefined,
-              extraReason: isFirstIteration ? data.extra_reason : undefined,
-              rawClient: data
-            };
-            isFirstIteration = false;
-
-            if (diffDays < 0) {
-              clientBilling.status = 'delayed';
-              delayed.push(clientBilling);
-              // Calculate next month to see if that is ALSO missed/upcoming
-              currentDueDateStr = calculateNextDueDateHelper(currentDueDateStr, baseDay);
-            } else if (diffDays === 0) {
-              clientBilling.status = 'today';
-              todayDues.push(clientBilling);
-              break;
-            } else if (diffDays > 0 && diffDays <= (waSettings.reminderDays ?? 3)) {
-              clientBilling.status = 'upcoming';
-              upcoming.push(clientBilling);
-              break; // No need to check the month after the upcoming one, as it will be > reminderDays
-            } else {
-              // Current due date is beyond the reminder window, stop checking
-              break;
-            }
-
-            iterations++;
+          if (diffDays < 0) {
+            clientBilling.status = 'delayed';
+            delayed.push(clientBilling);
+            // Calculate next month to see if that is ALSO missed/upcoming
+            currentDueDateStr = calculateNextDueDateHelper(currentDueDateStr, baseDay);
+          } else if (diffDays === 0) {
+            clientBilling.status = 'today';
+            todayDues.push(clientBilling);
+            break;
+          } else if (diffDays > 0 && diffDays <= (waSettings.reminderDays ?? 3)) {
+            clientBilling.status = 'upcoming';
+            upcoming.push(clientBilling);
+            break; // No need to check the month after the upcoming one, as it will be > reminderDays
+          } else {
+            // Current due date is beyond the reminder window, stop checking
+            break;
           }
-        });
 
-        // Sort by due date
-        delayed.sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
-        todayDues.sort((a, b) => a.name.localeCompare(b.name));
-        upcoming.sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
-        all.sort((a, b) => a.name.localeCompare(b.name));
+          iterations++;
+        }
+      });
 
-        setDelayedClients(delayed);
-        setTodayClients(todayDues);
-        setUpcomingClients(upcoming);
-        setAllClients(all);
-      } catch (error) {
-        console.error(error);
-      } finally {
-        setLoading(false);
+      // Sort by due date
+      delayed.sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
+      todayDues.sort((a, b) => a.name.localeCompare(b.name));
+      upcoming.sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
+      all.sort((a, b) => a.name.localeCompare(b.name));
+
+      setDelayedClients(delayed);
+      setTodayClients(todayDues);
+      setUpcomingClients(upcoming);
+      setAllClients(all);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setLoading(false);
+      if (isManual) {
+        setTimeout(() => setIsRefreshing(false), 400);
       }
-    };
+    }
+  }, [userProfile, waSettings.reminderDays]);
 
+  useEffect(() => {
     fetchBillingData();
-  }, [userProfile, waSettings.reminderDays, fetchTrigger]);
+
+    const handleFocus = () => fetchBillingData();
+    const handleGlobal = () => fetchBillingData(true);
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('app-global-refresh', handleGlobal);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') fetchBillingData();
+    });
+
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('app-global-refresh', handleGlobal);
+    };
+  }, [fetchBillingData, fetchTrigger]);
 
   useEffect(() => {
     if (!selectedClientId || !userProfile?.uid) {
@@ -544,22 +561,6 @@ export default function Billing() {
     setPaymentModalOpen(true);
   };
 
-  const calculateNextDueDateHelper = (currentDateStr: string, baseDueDay: number) => {
-    const [yearStr, monthStr] = currentDateStr.split('-');
-    let year = parseInt(yearStr, 10);
-    let month = parseInt(monthStr, 10);
-    month += 1;
-    if (month > 12) {
-      month = 1;
-      year += 1;
-    }
-    const lastDayOfNewMonth = new Date(year, month, 0).getDate();
-    const nextDay = Math.min(baseDueDay, lastDayOfNewMonth);
-    const formattedMonth = month.toString().padStart(2, '0');
-    const formattedDay = nextDay.toString().padStart(2, '0');
-    return `${year}-${formattedMonth}-${formattedDay}`;
-  };
-
   const confirmPayment = async () => {
     if (!clientToPay || !clientToPay.rawClient || !userProfile || isSubmittingPayment) return;
     setIsSubmittingPayment(true);
@@ -630,18 +631,27 @@ export default function Billing() {
 
   return (
     <div className="max-w-7xl mx-auto">
-      <div className="mb-8 flex flex-col sm:flex-row justify-between items-start sm:items-center">
+      <div className="mb-8 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-800">Central de Cobranças e Notificações</h1>
-          <p className="text-gray-600 mt-1">Gerencie os vencimentos e envie lembretes via WhatsApp.</p>
+          <p className="text-gray-600 mt-1 text-sm">Gerencie os vencimentos e envie lembretes via WhatsApp.</p>
         </div>
-        <div className="flex gap-3 mt-4 sm:mt-0">
+        <div className="flex items-center gap-3 w-full sm:w-auto justify-end flex-wrap">
+          <button
+            onClick={() => setRefreshTrigger(prev => prev + 1)}
+            disabled={isRefreshing}
+            className="bg-white border border-gray-200 text-gray-700 px-3.5 py-2 rounded-lg hover:bg-gray-50 active:bg-gray-100 transition-all shadow-sm flex items-center font-medium text-sm disabled:opacity-60 shrink-0"
+            title="Atualizar lista de cobranças"
+          >
+            <RefreshCw size={17} className={`mr-1.5 text-primary ${isRefreshing ? 'animate-spin' : ''}`} />
+            <span>{isRefreshing ? 'Atualizando...' : 'Atualizar'}</span>
+          </button>
           {isAdmin && (
             <button
               onClick={() => setSettingsModalOpen(true)}
-              className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-200 transition-colors flex items-center font-medium"
+              className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-200 transition-colors flex items-center font-medium text-sm"
             >
-              <Settings size={20} className="mr-2" />
+              <Settings size={18} className="mr-1.5" />
               Configurar Mensagens
             </button>
           )}

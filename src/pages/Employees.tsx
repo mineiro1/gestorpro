@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { Edit, Trash2, Plus, MapPin } from 'lucide-react';
+import { Edit, Trash2, Plus, MapPin, RefreshCw } from 'lucide-react';
 import { openMap } from '../lib/maps';
 import { useRealtimeUpdates } from '../hooks/useRealtimeUpdates';
 
@@ -14,18 +14,19 @@ export default function Employees() {
 
   const [employees, setEmployees] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [employeeToDelete, setEmployeeToDelete] = useState<any>(null);
   const [filterActive, setFilterActive] = useState(true);
   const [hardDeleteModalOpen, setHardDeleteModalOpen] = useState(false);
   const [employeeToHardDelete, setEmployeeToHardDelete] = useState<any>(null);
 
-  useEffect(() => {
+  const fetchEmployees = useCallback(async (isManual = false) => {
     if (!userProfile?.uid) return;
+    if (isManual) setIsRefreshing(true);
 
     const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
-    
-    const fetchEmployees = async () => {
+    try {
       const { data, error } = await supabase
         .from('users')
         .select('*')
@@ -34,25 +35,45 @@ export default function Employees() {
         
       if (error) {
         console.error(error);
-        setLoading(false);
         return;
       }
       if (data) {
         setEmployees(data);
       }
+    } catch (e) {
+      console.error(e);
+    } finally {
       setLoading(false);
-    };
+      if (isManual) {
+        setTimeout(() => setIsRefreshing(false), 400);
+      }
+    }
+  }, [userProfile, isAdmin]);
 
+  useEffect(() => {
     fetchEmployees();
 
+    const adminId = isAdmin ? userProfile?.uid : userProfile?.adminId;
+    if (!adminId) return;
+
     const channel = supabase.channel('employees_realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'users', filter: `admin_id=eq.${adminId}` }, fetchEmployees)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users', filter: `admin_id=eq.${adminId}` }, () => fetchEmployees())
       .subscribe();
+
+    const handleFocus = () => fetchEmployees();
+    const handleGlobal = () => fetchEmployees(true);
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('app-global-refresh', handleGlobal);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') fetchEmployees();
+    });
 
     return () => {
       supabase.removeChannel(channel);
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('app-global-refresh', handleGlobal);
     };
-  }, [userProfile, refreshTrigger]);
+  }, [userProfile, refreshTrigger, fetchEmployees, isAdmin]);
 
   const handleDeleteClick = (employee: any) => {
     setEmployeeToDelete(employee);
@@ -120,17 +141,28 @@ export default function Employees() {
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-6">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
         <h1 className="text-2xl font-bold text-gray-800">Colaboradores</h1>
-        {isAdmin && (
-          <Link
-            to="/employees/new"
-            className="bg-primary text-white px-4 py-2 rounded-lg flex items-center hover:bg-primary-light transition-colors"
+        <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
+          <button
+            onClick={() => fetchEmployees(true)}
+            disabled={isRefreshing}
+            className="flex items-center justify-center bg-white border border-gray-200 text-gray-700 px-3.5 py-2 rounded-lg hover:bg-gray-50 active:bg-gray-100 transition-all shadow-sm font-medium text-sm shrink-0 disabled:opacity-60"
+            title="Atualizar lista de colaboradores"
           >
-            <Plus size={20} className="mr-2" />
-            Novo Colaborador
-          </Link>
-        )}
+            <RefreshCw size={17} className={`mr-1.5 text-primary ${isRefreshing ? 'animate-spin' : ''}`} />
+            <span>{isRefreshing ? 'Atualizando...' : 'Atualizar'}</span>
+          </button>
+          {isAdmin && (
+            <Link
+              to="/employees/new"
+              className="bg-primary text-white px-4 py-2 rounded-lg flex items-center hover:bg-primary-light transition-colors text-sm font-medium shadow-sm whitespace-nowrap"
+            >
+              <Plus size={18} className="mr-1.5" />
+              Novo Colaborador
+            </Link>
+          )}
+        </div>
       </div>
 
       <div className="flex border-b border-gray-200 mb-6">

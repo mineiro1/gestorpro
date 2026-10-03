@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { openWhatsApp, sendMetaMessage, sendAstraCallsMessage } from '../lib/whatsapp';
@@ -16,7 +16,8 @@ import {
   Send,
   Sparkles,
   Phone,
-  Clock
+  Clock,
+  RefreshCw
 } from 'lucide-react';
 import { useRealtimeUpdates } from '../hooks/useRealtimeUpdates';
 import { ChatModal } from '../components/ChatModal';
@@ -52,6 +53,7 @@ export default function Messages() {
   const [messageText, setMessageText] = useState('');
   const [mediaFile, setMediaFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendStatuses, setSendStatuses] = useState<Record<string, 'pending' | 'sending' | 'success' | 'error'>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -63,8 +65,9 @@ export default function Messages() {
   const [chatModalOpen, setChatModalOpen] = useState(false);
 
   // Fetch recipients and initial conversations
-  const fetchRecipientsAndConversations = async () => {
+  const fetchRecipientsAndConversations = useCallback(async (isManual = false) => {
     if (!userProfile) return;
+    if (isManual) setIsRefreshing(true);
     try {
       const currentAdminId = isAdmin ? userProfile.uid : userProfile.adminId;
       
@@ -200,13 +203,26 @@ export default function Messages() {
       console.error('Error fetching messages page data:', error);
     } finally {
       setLoading(false);
+      if (isManual) {
+        setTimeout(() => setIsRefreshing(false), 400);
+      }
     }
-  };
+  }, [userProfile, isAdmin, isManager]);
 
   useEffect(() => {
     if (!userProfile) return;
     fetchRecipientsAndConversations();
-  }, [userProfile, isAdmin, isManager, refreshTrigger]);
+
+    const handleFocus = () => fetchRecipientsAndConversations();
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') fetchRecipientsAndConversations();
+    });
+
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [userProfile, fetchRecipientsAndConversations, refreshTrigger]);
 
   // Real-time listener for incoming webhook updates or messages on chat_messages table
   useEffect(() => {
@@ -589,38 +605,50 @@ export default function Messages() {
           </p>
         </div>
 
-        {/* Tab Switcher */}
-        <div className="flex bg-gray-100 p-1 rounded-xl shadow-inner border border-gray-200 self-start sm:self-auto">
+        {/* Tab Switcher & Refresh */}
+        <div className="flex items-center gap-3 self-start sm:self-auto flex-wrap">
           <button
-            id="tab-conversations-btn"
-            onClick={() => setActiveTab('conversations')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
-              activeTab === 'conversations'
-                ? 'bg-white text-primary shadow-sm'
-                : 'text-gray-600 hover:text-gray-900'
-            }`}
+            onClick={() => fetchRecipientsAndConversations(true)}
+            disabled={isRefreshing}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-medium bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 active:bg-gray-100 shadow-sm transition-all disabled:opacity-60"
+            title="Atualizar conversas e mensagens"
           >
-            <MessageCircle size={17} />
-            Conversas & Chat
-            {conversations.some((c) => c.unreadCount > 0) && (
-              <span className="bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.2 rounded-full">
-                {conversations.reduce((acc, curr) => acc + (curr.unreadCount || 0), 0)}
-              </span>
-            )}
+            <RefreshCw size={16} className={`text-primary ${isRefreshing ? 'animate-spin' : ''}`} />
+            <span className="hidden sm:inline">{isRefreshing ? 'Atualizando...' : 'Atualizar'}</span>
           </button>
 
-          <button
-            id="tab-broadcast-btn"
-            onClick={() => setActiveTab('broadcast')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
-              activeTab === 'broadcast'
-                ? 'bg-white text-primary shadow-sm'
-                : 'text-gray-600 hover:text-gray-900'
-            }`}
-          >
-            <Play size={16} />
-            Envio em Lote
-          </button>
+          <div className="flex bg-gray-100 p-1 rounded-xl shadow-inner border border-gray-200">
+            <button
+              id="tab-conversations-btn"
+              onClick={() => setActiveTab('conversations')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
+                activeTab === 'conversations'
+                  ? 'bg-white text-primary shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <MessageCircle size={17} />
+              Conversas & Chat
+              {conversations.some((c) => c.unreadCount > 0) && (
+                <span className="bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.2 rounded-full">
+                  {conversations.reduce((acc, curr) => acc + (curr.unreadCount || 0), 0)}
+                </span>
+              )}
+            </button>
+
+            <button
+              id="tab-broadcast-btn"
+              onClick={() => setActiveTab('broadcast')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
+                activeTab === 'broadcast'
+                  ? 'bg-white text-primary shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <Play size={16} />
+              Envio em Lote
+            </button>
+          </div>
         </div>
       </div>
 

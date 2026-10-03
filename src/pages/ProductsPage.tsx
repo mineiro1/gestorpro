@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { Package, Send, Settings, Plus, Trash2, X, Save, Search, CheckCircle } from 'lucide-react';
+import { Package, Send, Settings, Plus, Trash2, X, Save, Search, CheckCircle, RefreshCw } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { openWhatsApp, sendEvolutionMessage, sendMetaMessage, sendAstraCallsMessage } from '../lib/whatsapp';
 
@@ -36,6 +36,7 @@ export default function ProductsPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedClient, setSelectedClient] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   
   const [supplies, setSupplies] = useState<SupplyItem[]>([]);
   const [isManaging, setIsManaging] = useState(false);
@@ -46,7 +47,34 @@ export default function ProductsPage() {
   const [selectedPartners, setSelectedPartners] = useState<string[]>([]);
   const [lastSentData, setLastSentData] = useState<{ client: any, products: SupplyItem[] } | null>(null);
 
-  
+  const fetchClients = useCallback(async (isManual = false) => {
+    if (!userProfile?.uid) return;
+    if (isManual) setIsRefreshing(true);
+    const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
+    
+    try {
+      let queryBuilder = supabase.from('clients').select('*').eq('admin_id', adminId).neq('active', false);
+      if (!isAdmin && !isManager) {
+        queryBuilder = queryBuilder.eq('employee_id', userProfile.uid);
+      }
+      
+      const { data, error } = await queryBuilder.order('name');
+      if (error) throw error;
+      
+      if (data) {
+        setClients(data);
+        setFilteredClients(data);
+      }
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setLoading(false);
+      if (isManual) {
+        setTimeout(() => setIsRefreshing(false), 400);
+      }
+    }
+  }, [userProfile, isAdmin, isManager]);
+
   useEffect(() => {
     const fetchSettings = async () => {
       const adminId = isAdmin ? userProfile?.uid : userProfile?.adminId;
@@ -87,32 +115,21 @@ export default function ProductsPage() {
   }, [userProfile]);
 
   useEffect(() => {
-    if (!userProfile?.uid) return;
-    const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
-    
-    const fetchClients = async () => {
-      try {
-        let queryBuilder = supabase.from('clients').select('*').eq('admin_id', adminId).neq('active', false);
-        if (!isAdmin && !isManager) {
-          queryBuilder = queryBuilder.eq('employee_id', userProfile.uid);
-        }
-        
-        const { data, error } = await queryBuilder.order('name');
-        if (error) throw error;
-        
-        if (data) {
-          setClients(data);
-          setFilteredClients(data);
-        }
-      } catch (error) {
-        console.error(error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
     fetchClients();
-  }, [userProfile, isAdmin, isManager]);
+
+    const handleFocus = () => fetchClients();
+    const handleGlobal = () => fetchClients(true);
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('app-global-refresh', handleGlobal);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') fetchClients();
+    });
+
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('app-global-refresh', handleGlobal);
+    };
+  }, [fetchClients]);
 
   useEffect(() => {
     if (!searchTerm) {
@@ -295,10 +312,19 @@ export default function ProductsPage() {
           </h1>
           <p className="text-gray-600">Pesquise o cliente e selecione os produtos necessários.</p>
         </div>
-        <div>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => fetchClients(true)}
+            disabled={isRefreshing}
+            className="flex items-center justify-center bg-white border border-gray-200 text-gray-700 px-3.5 py-2 rounded-lg hover:bg-gray-50 active:bg-gray-100 transition-all shadow-sm font-medium text-sm shrink-0 disabled:opacity-60"
+            title="Atualizar lista de clientes e estoque"
+          >
+            <RefreshCw size={17} className={`mr-1.5 text-primary ${isRefreshing ? 'animate-spin' : ''}`} />
+            <span>{isRefreshing ? 'Atualizando...' : 'Atualizar'}</span>
+          </button>
           <button 
             onClick={() => setIsManaging(true)}
-            className="flex items-center text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-2 rounded-lg transition-colors"
+            className="flex items-center text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-2 rounded-lg transition-colors font-medium"
           >
             <Settings size={16} className="mr-2" />
             Gerenciar Estoque

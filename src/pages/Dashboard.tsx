@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { Users, DollarSign, AlertCircle, CheckCircle, Clock, CreditCard, MessageCircle, Eye, EyeOff } from 'lucide-react';
+import { Users, DollarSign, AlertCircle, CheckCircle, Clock, CreditCard, MessageCircle, Eye, EyeOff, RefreshCw } from 'lucide-react';
 import { useRealtimeUpdates } from '../hooks/useRealtimeUpdates';
 
 interface DashboardStats {
@@ -25,16 +25,17 @@ export default function Dashboard() {
   });
   const [clientsWithoutVisits, setClientsWithoutVisits] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [showValues, setShowValues] = useState(false);
 
   const adminId = userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId;
   const refreshTrigger = useRealtimeUpdates(['clients', 'visits', 'oneoffjobs', 'payments'], 'admin_id', adminId);
 
-  useEffect(() => {
+  const fetchStats = useCallback(async (isManual = false) => {
     if (!userProfile?.uid) return;
+    if (isManual) setIsRefreshing(true);
 
-    const fetchStats = async () => {
-      try {
+    try {
         const currentDate = new Date();
         const currentMonth = currentDate.getMonth() + 1;
         const currentYear = currentDate.getFullYear();
@@ -236,15 +237,29 @@ export default function Dashboard() {
         });
 
         setClientsWithoutVisits(clientsNoVisit);
-      } catch (error) {
-        console.error(error);
-      } finally {
-        setLoading(false);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setLoading(false);
+      if (isManual) {
+        setTimeout(() => setIsRefreshing(false), 400);
       }
-    };
+    }
+  }, [userProfile]);
 
+  useEffect(() => {
     fetchStats();
-  }, [userProfile, refreshTrigger]);
+
+    const handleFocus = () => fetchStats();
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') fetchStats();
+    });
+
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [fetchStats, refreshTrigger]);
 
   if (loading) {
     return <div className="flex justify-center items-center h-64">Carregando métricas...</div>;
@@ -390,13 +405,24 @@ export default function Dashboard() {
 
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-800">Dashboard</h1>
-        <button 
-          onClick={() => setShowValues(!showValues)}
-          className="flex items-center justify-center p-2 bg-white rounded-lg shadow-sm border border-gray-200 text-gray-600 hover:text-primary transition-colors"
-          title={showValues ? "Ocultar valores" : "Mostrar valores"}
-        >
-          {showValues ? <EyeOff size={24} /> : <Eye size={24} />}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => fetchStats(true)}
+            disabled={isRefreshing}
+            className="flex items-center justify-center p-2 bg-white rounded-lg shadow-sm border border-gray-200 text-gray-600 hover:text-primary transition-colors text-sm font-medium gap-1.5 px-3 disabled:opacity-60"
+            title="Atualizar dados do Dashboard"
+          >
+            <RefreshCw size={18} className={`text-primary ${isRefreshing ? 'animate-spin' : ''}`} />
+            <span className="hidden sm:inline">{isRefreshing ? 'Atualizando...' : 'Atualizar'}</span>
+          </button>
+          <button 
+            onClick={() => setShowValues(!showValues)}
+            className="flex items-center justify-center p-2 bg-white rounded-lg shadow-sm border border-gray-200 text-gray-600 hover:text-primary transition-colors"
+            title={showValues ? "Ocultar valores" : "Mostrar valores"}
+          >
+            {showValues ? <EyeOff size={20} /> : <Eye size={20} />}
+          </button>
+        </div>
       </div>
       
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

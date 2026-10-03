@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { Calendar, CheckCircle, X, Download, Star } from 'lucide-react';
+import { Calendar, CheckCircle, X, Download, Star, RefreshCw } from 'lucide-react';
 import { useOutletContext } from 'react-router-dom';
 import { useRealtimeUpdates } from '../hooks/useRealtimeUpdates';
 
@@ -117,123 +117,87 @@ export default function ClientPanel() {
   const [employeesMap, setEmployeesMap] = useState<Record<string, string>>({});
   
   const [loadingDetails, setLoadingDetails] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [fullscreenImage, setFullscreenImage] = useState<string | null>(null);
 
-  useEffect(() => {
-    const loadClientDetails = async () => {
-      if (!selectedClientId) return;
-      if (!clientData) setLoadingDetails(true);
-      try {
-        const foundClient = availableClients.find(c => c.id === selectedClientId);
-        if (!foundClient) {
-           // Fallback if availableClients doesn't have the full object (we only requested id, name, phone, cpf_cnpj in Layout)
-           // It's better to fetch the full client here.
-           const { data: fullClient } = await supabase.from('clients').select('*').eq('id', selectedClientId).single();
-           if (!fullClient) return;
-           const mappedClient = { 
-            ...fullClient, 
-            id: fullClient.id, 
-            dueDate: fullClient.due_date, 
-            name: fullClient.name 
-           };
-           setClientData(mappedClient);
-           
-           // Fetch Visits
-           const { data: vSnap } = await supabase
-             .from('visits')
-             .select('*')
-             .eq('client_id', fullClient.id)
-             .eq('admin_id', fullClient.admin_id)
-             .order('date', { ascending: false });
-           
-           if (vSnap) {
-             setVisits(vSnap.map(d => ({...d, employeeId: d.employee_id})));
-           }
-
-           // Fetch Payments
-           const { data: pSnap } = await supabase
-             .from('payments')
-             .select('*')
-             .eq('client_id', fullClient.id)
-             .eq('admin_id', fullClient.admin_id)
-             .order('created_at', { ascending: false });
-           
-           if (pSnap) {
-             setPayments(pSnap.map(d => ({...d, date: d.paid_date || d.created_at})));
-           }
-
-           // Get employees mapping
-           const { data: eSnap } = await supabase
-             .from('users')
-             .select('id, name')
-             .eq('admin_id', fullClient.admin_id);
-           
-           const eMap: Record<string, string> = {};
-           if (eSnap) {
-             eSnap.forEach(data => {
-               eMap[data.id] = data.name || 'Desconhecido';
-             });
-           }
-           setEmployeesMap(eMap);
-        } else {
-           // We only have partial data in availableClients, fetch the rest anyway
-           const { data: fullClient } = await supabase.from('clients').select('*').eq('id', selectedClientId).single();
-           if (!fullClient) return;
-           const mappedClient = { 
-            ...fullClient, 
-            id: fullClient.id, 
-            dueDate: fullClient.due_date, 
-            name: fullClient.name 
-           };
-           setClientData(mappedClient);
-           
-           // Fetch Visits
-           const { data: vSnap } = await supabase
-             .from('visits')
-             .select('*')
-             .eq('client_id', fullClient.id)
-             .eq('admin_id', fullClient.admin_id)
-             .order('date', { ascending: false });
-           
-           if (vSnap) {
-             setVisits(vSnap.map(d => ({...d, employeeId: d.employee_id})));
-           }
-
-           // Fetch Payments
-           const { data: pSnap } = await supabase
-             .from('payments')
-             .select('*')
-             .eq('client_id', fullClient.id)
-             .eq('admin_id', fullClient.admin_id)
-             .order('created_at', { ascending: false });
-           
-           if (pSnap) {
-             setPayments(pSnap.map(d => ({...d, date: d.paid_date || d.created_at})));
-           }
-
-           // Get employees mapping
-           const { data: eSnap } = await supabase
-             .from('users')
-             .select('id, name')
-             .eq('admin_id', fullClient.admin_id);
-           
-           const eMap: Record<string, string> = {};
-           if (eSnap) {
-             eSnap.forEach(data => {
-               eMap[data.id] = data.name || 'Desconhecido';
-             });
-           }
-           setEmployeesMap(eMap);
-        }
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setLoadingDetails(false);
+  const loadClientDetails = useCallback(async (isManual = false) => {
+    if (!selectedClientId) return;
+    if (!clientData && !isManual) setLoadingDetails(true);
+    if (isManual) setIsRefreshing(true);
+    try {
+      const { data: fullClient } = await supabase.from('clients').select('*').eq('id', selectedClientId).single();
+      if (!fullClient) return;
+      const mappedClient = { 
+        ...fullClient, 
+        id: fullClient.id, 
+        dueDate: fullClient.due_date, 
+        name: fullClient.name 
+      };
+      setClientData(mappedClient);
+      
+      // Fetch Visits
+      const { data: vSnap } = await supabase
+        .from('visits')
+        .select('*')
+        .eq('client_id', fullClient.id)
+        .eq('admin_id', fullClient.admin_id)
+        .order('date', { ascending: false });
+      
+      if (vSnap) {
+        setVisits(vSnap.map(d => ({...d, employeeId: d.employee_id})));
       }
-    };
 
+      // Fetch Payments
+      const { data: pSnap } = await supabase
+        .from('payments')
+        .select('*')
+        .eq('client_id', fullClient.id)
+        .eq('admin_id', fullClient.admin_id)
+        .order('created_at', { ascending: false });
+      
+      if (pSnap) {
+        setPayments(pSnap.map(d => ({...d, date: d.paid_date || d.created_at})));
+      }
+
+      // Get employees mapping
+      const { data: eSnap } = await supabase
+        .from('users')
+        .select('id, name')
+        .eq('admin_id', fullClient.admin_id);
+      
+      const eMap: Record<string, string> = {};
+      if (eSnap) {
+        eSnap.forEach(data => {
+          eMap[data.id] = data.name || 'Desconhecido';
+        });
+      }
+      setEmployeesMap(eMap);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingDetails(false);
+      if (isManual) {
+        setTimeout(() => setIsRefreshing(false), 400);
+      }
+    }
+  }, [selectedClientId, clientData]);
+
+  useEffect(() => {
     loadClientDetails();
-  }, [selectedClientId, availableClients, refreshTrigger]);
+
+    const handleFocus = () => loadClientDetails();
+    const handleGlobal = () => loadClientDetails(true);
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('app-global-refresh', handleGlobal);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') loadClientDetails();
+    });
+
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('app-global-refresh', handleGlobal);
+    };
+  }, [loadClientDetails, refreshTrigger]);
 
   if (!availableClients || availableClients.length === 0) return <div className="p-8 text-center text-red-500">Dados do cliente não encontrados.</div>;
 
@@ -250,6 +214,15 @@ export default function ClientPanel() {
               <h1 className="text-3xl font-bold mb-2">Olá, {(clientData.name || 'Cliente').split(' ')[0]}!</h1>
               <p className="text-secondary-light">Bem-vindo(a) ao seu painel.</p>
             </div>
+            <button
+              onClick={() => loadClientDetails(true)}
+              disabled={isRefreshing}
+              className="bg-white/10 hover:bg-white/20 active:bg-white/30 border border-white/20 text-white px-4 py-2 rounded-lg flex items-center transition-all text-sm font-medium disabled:opacity-60 shadow-sm"
+              title="Atualizar painel"
+            >
+              <RefreshCw size={17} className={`mr-2 ${isRefreshing ? 'animate-spin' : ''}`} />
+              <span>{isRefreshing ? 'Atualizando...' : 'Atualizar'}</span>
+            </button>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
