@@ -141,6 +141,17 @@ export async function initCapacitorPushNotifications(
       await PushNotifications.register();
     }
 
+    // Sincroniza token em cache imediatamente se já disponível
+    const cachedToken = localStorage.getItem('fcm_token');
+    if (cachedToken && userProfile?.uid) {
+      try {
+        await supabase.from('users').update({ fcm_token: cachedToken }).eq('id', userProfile.uid);
+        console.log('[Capacitor Push] Token FCM em cache sincronizado com sucesso');
+      } catch (err) {
+        console.warn('[Capacitor Push] Aviso ao sincronizar token em cache:', err);
+      }
+    }
+
     // 1. Listen for device token registration
     const regListener = await PushNotifications.addListener('registration', async (token: Token) => {
       console.log('[Capacitor Push] Token recebido com sucesso:', token.value);
@@ -296,7 +307,7 @@ export async function sendTestPushNotification(adminId: string): Promise<{ succe
     const res = await fetch(getApiUrl('/api/notifications/test-push'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ adminId }),
+      body: JSON.stringify({ adminId, userId: adminId }),
     });
     return await res.json();
   } catch (e: any) {

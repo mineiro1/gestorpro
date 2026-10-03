@@ -446,7 +446,7 @@ app.post(['/api/chat/send', '/chat/send'], async (req, res) => {
         let lastResponseText = '';
         for (const num of numbersToTry) {
           let sendEndpoint = `${astracallsUrl}/api/sessions/${astraSessionId}/messages/text`;
-          const payload = {
+          let payload = {
             to: num,
             phone: num,
             recipient: num,
@@ -454,11 +454,37 @@ app.post(['/api/chat/send', '/chat/send'], async (req, res) => {
             message: text || ''
           };
 
-          if (publicMediaUrl || mediaBase64) {
-            payload.mediaUrl = publicMediaUrl || mediaBase64;
-            payload.mimeType = mimeType || undefined;
-            if (mimeType?.startsWith('audio/')) {
+          const mediaData = mediaBase64 || publicMediaUrl;
+          if (mediaData) {
+            const cleanCaption = (text && text !== '📸 Foto' && text !== '🎥 Vídeo') ? text : '';
+            if (mimeType?.startsWith('image/')) {
+              sendEndpoint = `${astracallsUrl}/api/sessions/${astraSessionId}/messages/image`;
+              payload = {
+                to: num,
+                base64: mediaData,
+                caption: cleanCaption
+              };
+            } else if (mimeType?.startsWith('video/')) {
+              sendEndpoint = `${astracallsUrl}/api/sessions/${astraSessionId}/messages/video`;
+              payload = {
+                to: num,
+                base64: mediaData,
+                caption: cleanCaption
+              };
+            } else if (mimeType?.startsWith('audio/')) {
               sendEndpoint = `${astracallsUrl}/api/sessions/${astraSessionId}/messages/audio`;
+              payload = {
+                to: num,
+                base64: mediaData
+              };
+            } else {
+              sendEndpoint = `${astracallsUrl}/api/sessions/${astraSessionId}/messages/document`;
+              payload = {
+                to: num,
+                base64: mediaData,
+                filename: 'documento',
+                caption: text || ''
+              };
             }
           }
 
@@ -1152,43 +1178,169 @@ app.post(['/api/notifications/send', '/notifications/send'], async (req, res) =>
   }
 });
 
+// Helper deduplicação e envio de Push Notification via FCM
+const recentPushCache = new Map();
+function shouldSendPush(key) {
+  const now = Date.now();
+  for (const [k, time] of recentPushCache.entries()) {
+    if (now - time > 120000) recentPushCache.delete(k);
+  }
+  if (recentPushCache.has(key) && (now - recentPushCache.get(key)) < 30000) {
+    return false;
+  }
+  recentPushCache.set(key, now);
+  return true;
+}
+
+async function sendPushToAdmin(adminId, title, body, data = {}) {
+  try {
+    const supabaseAdmin = getSupabaseAdmin();
+    let rawTokens = [];
+    if (adminId) {
+      const { data: users } = await supabaseAdmin
+        .from('users')
+        .select('id, name, fcm_token')
+        .eq('id', adminId);
+      rawTokens = (users || []).map(u => u.fcm_token).filter(Boolean);
+    }
+
+    if (rawTokens.length === 0) {
+      const { data: fallbackAdmins } = await supabaseAdmin
+        .from('users')
+        .select('id, name, fcm_token')
+        .eq('role', 'admin')
+        .not('fcm_token', 'is', null);
+      if (fallbackAdmins && fallbackAdmins.length > 0) {
+        rawTokens = fallbackAdmins.map(u => u.fcm_token).filter(Boolean);
+      }
+    }
+
+    const tokens = Array.from(new Set(rawTokens));
+    if (tokens.length === 0) {
+      return { sent: false, count: 0, reason: 'Nenhum token FCM registrado' };
+    }
+
+    const { initialized, messaging } = initFirebase();
+    if (!initialized || !messaging) {
+      return { sent: false, count: 0, reason: 'Firebase Admin não inicializado' };
+    }
+
+    const isChat = data?.channelId === 'chat_messages' || data?.type === 'chat_message';
+    const soundName = isChat ? 'chat_notification' : 'notificacao';
+    const soundFile = isChat ? 'chat_notification.mp3' : 'notificacao.mp3';
+    const channelTarget = data?.channelId || (isChat ? 'chat_messages' : 'atendimentos_v2');
+
+    let sentCount = 0;
+    for (const token of tokens) {
+      try {
+        await messaging.send({
+          token,
+          notification: {
+            title,
+            body
+          },
+          data: {
+            title,
+            body,
+            ...data,
+            click_action: 'FCM_PLUGIN_ACTIVITY',
+            url: data.url || (isChat ? '/messages' : '/routes'),
+            channelId: channelTarget,
+            channel_id: channelTarget,
+            sound: soundName
+          },
+          android: {
+            priority: 'high',
+            ttl: 2419200,
+            directBootOk: true,
+            notification: {
+              channelId: channelTarget,
+              title,
+              body,
+              sound: soundName,
+              priority: 'max',
+              visibility: 'public',
+              defaultSound: false,
+              defaultVibrateTimings: true,
+              localOnly: false,
+              notificationCount: 1,
+              tag: data.tag || (data.visitId ? `visit_${data.visitId}` : (data.jobId ? `job_${data.jobId}` : undefined))
+            }
+          },
+          apns: {
+            headers: {
+              'apns-priority': '10',
+              'apns-push-type': 'alert'
+            },
+            payload: {
+              aps: {
+                sound: soundFile,
+                badge: 1,
+                contentAvailable: true,
+                alert: {
+                  title,
+                  body
+                }
+              }
+            }
+          }
+        });
+        sentCount++;
+      } catch (fcmErr) {
+        console.error('[FCM Send Error]:', fcmErr.message);
+        if (fcmErr?.code === 'messaging/registration-token-not-registered' || fcmErr?.code === 'messaging/invalid-registration-token') {
+          await supabaseAdmin.from('users').update({ fcm_token: null }).eq('fcm_token', token);
+        }
+      }
+    }
+
+    return { sent: sentCount > 0, count: sentCount, tokensFound: tokens.length };
+  } catch (err) {
+    console.error('[sendPushToAdmin Error]:', err.message);
+    return { sent: false, error: err.message };
+  }
+}
+
 app.post(['/api/notifications/notify-visit-completion', '/notifications/notify-visit-completion'], async (req, res) => {
   try {
-    const { visitId, adminId, employeeId, clientId, clientName, techName } = req.body || {};
+    const { visitId, adminId, employeeId, clientId, clientName, techName, type } = req.body || {};
     const supabaseAdmin = getSupabaseAdmin();
+
+    const dedupeKey = `${type || 'visit'}_${clientId || clientName || 'unknown'}`;
+    if (!shouldSendPush(dedupeKey)) {
+      return res.json({ success: true, deduped: true });
+    }
 
     let empName = techName || "Colaborador";
     if (employeeId && !techName) {
       const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', employeeId).maybeSingle();
       if (empData?.name) empName = empData.name;
     }
-    let resolvedClientName = clientName || "Cliente";
-    if (clientId && !clientName) {
-      const { data: cliData } = await supabaseAdmin.from('clients').select('name').eq('id', clientId).maybeSingle();
+
+    let resolvedClientName = clientName;
+    let clientAdminId = null;
+    if (clientId) {
+      const { data: cliData } = await supabaseAdmin.from('clients').select('name, admin_id').eq('id', clientId).maybeSingle();
       if (cliData?.name) resolvedClientName = cliData.name;
+      if (cliData?.admin_id) clientAdminId = cliData.admin_id;
     }
+    if (!resolvedClientName) resolvedClientName = "Cliente";
 
-    const { data: users } = await supabaseAdmin.from('users').select('id, fcm_token').in('id', [adminId, employeeId].filter(Boolean));
-    let tokens = (users || []).map(u => u.fcm_token).filter(Boolean);
-    if (tokens.length === 0) {
-      const { data: activeAdmins } = await supabaseAdmin.from('users').select('fcm_token').eq('role', 'admin');
-      tokens = (activeAdmins || []).map(u => u.fcm_token).filter(Boolean);
-    }
+    const targetAdminId = clientAdminId || adminId;
+    const isJob = type === 'job';
+    const title = isJob ? '🏊 Serviço Avulso Finalizado' : '🏊 Visita Finalizada!';
+    const body = `O colaborador ${empName} finalizou o atendimento no cliente ${resolvedClientName}.`;
 
-    initFirebase();
-    if (admin.apps.length > 0) {
-      for (const token of tokens) {
-        try {
-          await admin.messaging().send({
-            token,
-            notification: { title: '🏊 Visita Finalizada!', body: `O colaborador ${empName} concluiu o atendimento em ${resolvedClientName}.` },
-            data: { url: '/routes', visitId: String(visitId || ''), clientId: String(clientId || ''), channelId: 'atendimentos' },
-            android: { priority: 'high' }
-          });
-        } catch (e) {}
-      }
-    }
-    return res.json({ success: true });
+    const result = await sendPushToAdmin(targetAdminId || '', title, body, {
+      url: '/routes',
+      channelId: 'atendimentos_v2',
+      type: isJob ? 'job_completed' : 'visit_completed',
+      visitId: String(visitId || ''),
+      clientId: String(clientId || ''),
+      employeeId: String(employeeId || '')
+    });
+
+    return res.json({ success: true, sent: result.sent, count: result.count });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -1196,13 +1348,35 @@ app.post(['/api/notifications/notify-visit-completion', '/notifications/notify-v
 
 app.post(['/api/notifications/test-push', '/notifications/test-push'], async (req, res) => {
   try {
-    const { userId, title, body } = req.body || {};
+    const { adminId, userId, title, body } = req.body || {};
+    const targetId = adminId || userId;
     const supabaseAdmin = getSupabaseAdmin();
-    const { data: u } = await supabaseAdmin.from('users').select('fcm_token').eq('id', userId).maybeSingle();
-    if (!u?.fcm_token) return res.status(404).json({ error: 'Nenhum token FCM registrado para o usuário' });
-    initFirebase();
-    await admin.messaging().send({ token: u.fcm_token, notification: { title: title || 'Teste GestãoPro', body: body || 'Notificação push funcionando!' } });
-    return res.json({ success: true });
+
+    let user = null;
+    if (targetId) {
+      const { data: u } = await supabaseAdmin.from('users').select('fcm_token, name').eq('id', targetId).maybeSingle();
+      user = u;
+    }
+
+    const result = await sendPushToAdmin(
+      targetId,
+      title || '🏊 Teste de Notificação Push',
+      body || 'Seu dispositivo está conectado e configurado para receber alertas em tempo real das rotas!',
+      {
+        url: '/routes',
+        channelId: 'atendimentos_v2',
+        type: 'test_push'
+      }
+    );
+
+    return res.json({
+      success: result.sent,
+      sent: result.sent,
+      count: result.count,
+      hasToken: !!user?.fcm_token,
+      tokenPreview: user?.fcm_token ? `${user.fcm_token.substring(0, 10)}...` : null,
+      reason: result.reason
+    });
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
@@ -1350,6 +1524,20 @@ app.all(['/api/webhook/astracalls', '/webhook/astracalls', '/api/astracalls/webh
                 media_url: mediaUrl || undefined,
                 created_at: new Date().toISOString()
               });
+
+              // Dispara notificação push para o responsável
+              const targetUserId = matched.admin_id || matched.employee_id;
+              sendPushToAdmin(
+                targetUserId,
+                `💬 ${matched.name || 'Cliente'}`,
+                textContent || 'Enviou uma mídia no WhatsApp',
+                {
+                  url: '/messages',
+                  channelId: 'chat_messages',
+                  type: 'chat_message',
+                  clientId: matched.id
+                }
+              ).catch(err => console.error('[Push Notification Error]', err));
             }
           }
         }

@@ -325,12 +325,35 @@ export const sendAstraCallsMessage = async (
     };
 
     if (mediaBase64 && mimeType) {
-      const isPublicUrl = mediaBase64.startsWith('http://') || mediaBase64.startsWith('https://');
-      const mediaUrlToSend = isPublicUrl ? mediaBase64 : await uploadMediaToPublicStorage(mediaBase64, mimeType);
-      bodyObj.mediaUrl = mediaUrlToSend;
-      bodyObj.mimeType = mimeType;
-      if (mimeType.startsWith('audio/')) {
+      const cleanCaption = (text && text !== '📸 Foto' && text !== '🎥 Vídeo') ? text : '';
+      if (mimeType.startsWith('image/')) {
+        endpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/image`;
+        bodyObj = {
+          to: currentTarget,
+          base64: mediaBase64,
+          caption: cleanCaption
+        };
+      } else if (mimeType.startsWith('video/')) {
+        endpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/video`;
+        bodyObj = {
+          to: currentTarget,
+          base64: mediaBase64,
+          caption: cleanCaption
+        };
+      } else if (mimeType.startsWith('audio/')) {
         endpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/audio`;
+        bodyObj = {
+          to: currentTarget,
+          base64: mediaBase64
+        };
+      } else {
+        endpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/document`;
+        bodyObj = {
+          to: currentTarget,
+          base64: mediaBase64,
+          filename: 'documento',
+          caption: text || ''
+        };
       }
     }
 

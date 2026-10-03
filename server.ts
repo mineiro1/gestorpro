@@ -538,7 +538,7 @@ setInterval(() => {
           let lastResponseText = '';
           for (const num of numbersToTry) {
             let sendEndpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/text`;
-            const payload: any = {
+            let payload: any = {
               to: num,
               phone: num,
               recipient: num,
@@ -546,11 +546,37 @@ setInterval(() => {
               message: text || ''
             };
 
-            if (publicMediaUrl || mediaBase64) {
-              payload.mediaUrl = publicMediaUrl || mediaBase64;
-              payload.mimeType = mimeType || undefined;
-              if (mimeType?.startsWith('audio/')) {
+            const mediaData = mediaBase64 || publicMediaUrl;
+            if (mediaData) {
+              const cleanCaption = (text && text !== '📸 Foto' && text !== '🎥 Vídeo') ? text : '';
+              if (mimeType?.startsWith('image/')) {
+                sendEndpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/image`;
+                payload = {
+                  to: num,
+                  base64: mediaData,
+                  caption: cleanCaption
+                };
+              } else if (mimeType?.startsWith('video/')) {
+                sendEndpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/video`;
+                payload = {
+                  to: num,
+                  base64: mediaData,
+                  caption: cleanCaption
+                };
+              } else if (mimeType?.startsWith('audio/')) {
                 sendEndpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/audio`;
+                payload = {
+                  to: num,
+                  base64: mediaData
+                };
+              } else {
+                sendEndpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/document`;
+                payload = {
+                  to: num,
+                  base64: mediaData,
+                  filename: 'documento',
+                  caption: text || ''
+                };
               }
             }
 
