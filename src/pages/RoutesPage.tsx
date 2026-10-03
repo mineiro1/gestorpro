@@ -108,6 +108,27 @@ export default function RoutesPage() {
   const [submittingReport, setSubmittingReport] = useState(false);
   const [confirmSendReportPopupOpen, setConfirmSendReportPopupOpen] = useState(false);
   const [parameters, setParameters] = useState({ cloro: '', ph: '', alcalinidade: '', acidoCianurico: '' });
+
+  const handleNumericParamChange = (field: 'cloro' | 'ph' | 'alcalinidade' | 'acidoCianurico', rawVal: string) => {
+    // Permite apenas números e no máximo um separador decimal (. ou ,)
+    let clean = rawVal.replace(/[^0-9.,]/g, '');
+    const firstSepIndex = clean.search(/[.,]/);
+    if (firstSepIndex !== -1) {
+      const sep = clean[firstSepIndex];
+      const before = clean.substring(0, firstSepIndex).replace(/[.,]/g, '');
+      const after = clean.substring(firstSepIndex + 1).replace(/[.,]/g, '');
+      clean = `${before}${sep}${after}`;
+    }
+    setParameters(prev => ({ ...prev, [field]: clean }));
+  };
+
+  const handleNumericKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    const allowedKeys = ['Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'Tab', 'Enter', '.', ','];
+    if (allowedKeys.includes(e.key) || e.ctrlKey || e.metaKey) return;
+    if (!/^[0-9]$/.test(e.key)) {
+      e.preventDefault();
+    }
+  };
   const [products, setProducts] = useState({ cloroGranulado: false, algicida: false, clarificante: false, barrilha: false, sulfatoAluminio: false, elevadorAlcalinidade: false, sulfatoCobre: false, redutorPh: false, peroxidoHidrogenio: false, hipoclorito: false, cloroPastilha: false });
   const [checklist, setChecklist] = useState({
     peneirar: false,
@@ -2020,19 +2041,59 @@ export default function RoutesPage() {
                 <div className="grid grid-cols-2 gap-3 bg-blue-50 p-3 rounded-lg border border-blue-100">
                   <div>
                     <label className="block text-xs font-medium text-gray-600 mb-1">Cloro (ppm)</label>
-                    <input type="text" placeholder="Ex: 2.0" value={parameters.cloro} onChange={e => setParameters({...parameters, cloro: e.target.value})} className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded focus:ring-primary focus:border-primary outline-none" />
+                    <input 
+                      type="text" 
+                      inputMode="decimal"
+                      pattern="[0-9]*[.,]?[0-9]*"
+                      autoComplete="off"
+                      placeholder="Ex: 2.0" 
+                      value={parameters.cloro} 
+                      onChange={e => handleNumericParamChange('cloro', e.target.value)}
+                      onKeyDown={handleNumericKeyDown}
+                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded focus:ring-primary focus:border-primary outline-none bg-white font-mono" 
+                    />
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-gray-600 mb-1">pH</label>
-                    <input type="text" placeholder="Ex: 7.2" value={parameters.ph} onChange={e => setParameters({...parameters, ph: e.target.value})} className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded focus:ring-primary focus:border-primary outline-none" />
+                    <input 
+                      type="text" 
+                      inputMode="decimal"
+                      pattern="[0-9]*[.,]?[0-9]*"
+                      autoComplete="off"
+                      placeholder="Ex: 7.2" 
+                      value={parameters.ph} 
+                      onChange={e => handleNumericParamChange('ph', e.target.value)}
+                      onKeyDown={handleNumericKeyDown}
+                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded focus:ring-primary focus:border-primary outline-none bg-white font-mono" 
+                    />
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-gray-600 mb-1">Alcalinidade</label>
-                    <input type="text" placeholder="Ex: 100" value={parameters.alcalinidade} onChange={e => setParameters({...parameters, alcalinidade: e.target.value})} className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded focus:ring-primary focus:border-primary outline-none" />
+                    <input 
+                      type="text" 
+                      inputMode="decimal"
+                      pattern="[0-9]*[.,]?[0-9]*"
+                      autoComplete="off"
+                      placeholder="Ex: 100" 
+                      value={parameters.alcalinidade} 
+                      onChange={e => handleNumericParamChange('alcalinidade', e.target.value)}
+                      onKeyDown={handleNumericKeyDown}
+                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded focus:ring-primary focus:border-primary outline-none bg-white font-mono" 
+                    />
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-gray-600 mb-1">Ácido Cianúrico</label>
-                    <input type="text" placeholder="Ex: 40" value={parameters.acidoCianurico} onChange={e => setParameters({...parameters, acidoCianurico: e.target.value})} className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded focus:ring-primary focus:border-primary outline-none" />
+                    <input 
+                      type="text" 
+                      inputMode="decimal"
+                      pattern="[0-9]*[.,]?[0-9]*"
+                      autoComplete="off"
+                      placeholder="Ex: 40" 
+                      value={parameters.acidoCianurico} 
+                      onChange={e => handleNumericParamChange('acidoCianurico', e.target.value)}
+                      onKeyDown={handleNumericKeyDown}
+                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded focus:ring-primary focus:border-primary outline-none bg-white font-mono" 
+                    />
                   </div>
                 </div>
               </div>
