@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import BeforeAfterSlider from '../components/BeforeAfterSlider';
+import TestimonialsCarousel from '../components/TestimonialsCarousel';
 import { 
   Droplets, 
   ShieldCheck, 
@@ -158,11 +159,12 @@ export default function Landing() {
           </a>
 
           {/* Zone 2: Navigation Links (Desktop) */}
-          <nav className="hidden lg:flex items-center gap-5 xl:gap-7 text-sm font-medium text-slate-300">
+          <nav className="hidden lg:flex items-center gap-4 xl:gap-6 text-sm font-medium text-slate-300">
             <a href="#antes-depois" className="hover:text-sky-400 text-sky-400/95 font-semibold transition-colors">Antes & Depois</a>
             <a href="#servicos" className="hover:text-sky-400 transition-colors">Serviços</a>
             <a href="#saude-familia" className="hover:text-sky-400 transition-colors">Saúde & Família</a>
             <a href="#por-que-profissional" className="hover:text-sky-400 transition-colors">Por Que Contratar</a>
+            <a href="#depoimentos" className="hover:text-sky-400 transition-colors">Depoimentos</a>
             <a href="#simulador" className="hover:text-sky-400 transition-colors">Orçamento</a>
             <a href="#faq" className="hover:text-sky-400 transition-colors">Dúvidas</a>
           </nav>
@@ -551,6 +553,9 @@ export default function Landing() {
 
         </div>
       </section>
+
+      {/* Customer Testimonials & Real Photos Carousel */}
+      <TestimonialsCarousel whatsappUrl={whatsappUrl} />
 
       {/* Interactive WhatsApp Quote Simulator */}
       <section id="simulador" className="py-16 sm:py-24 lg:py-28 bg-slate-950 border-t border-slate-800/80">
