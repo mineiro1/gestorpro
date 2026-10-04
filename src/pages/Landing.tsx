@@ -818,11 +818,12 @@ export default function Landing() {
 
             {/* Col 3: Atendimento e Acesso */}
             <div className="space-y-3">
-              <div className="text-white font-bold text-sm mb-3">Contato & Acesso</div>
-              <div className="text-xs text-slate-300 space-y-1">
-                <div>WhatsApp: <a href={whatsappUrl} className="text-emerald-400 font-semibold hover:underline">(67) 99249-9469</a></div>
-                <div>Instagram: <a href={instagramUrl} target="_blank" rel="noopener noreferrer" className="text-pink-400 font-semibold hover:underline">@rs_piscina_cg</a></div>
-                <div>Horário: Segunda a Sábado</div>
+              <div className="text-white font-bold text-sm mb-3">Contato & Atendimento</div>
+              <div className="text-xs text-slate-300 space-y-1.5 leading-relaxed">
+                <div><strong>WhatsApp:</strong> <a href={whatsappUrl} className="text-emerald-400 font-semibold hover:underline">(67) 99249-9469</a></div>
+                <div><strong>Instagram:</strong> <a href={instagramUrl} target="_blank" rel="noopener noreferrer" className="text-pink-400 font-semibold hover:underline">@rs_piscina_cg</a></div>
+                <div><strong>Localização:</strong> Campo Grande - MS</div>
+                <div><strong>Horário:</strong> Seg a Sex: 07h30 às 18h00 · Sáb: 07h30 às 12h30</div>
               </div>
               <div className="pt-2">
                 <Link 
