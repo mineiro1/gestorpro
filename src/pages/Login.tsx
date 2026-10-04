@@ -158,45 +158,54 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
-      <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 flex items-center justify-center p-4">
+      <div className="max-w-md w-full bg-white rounded-3xl shadow-2xl p-8 sm:p-10 border border-slate-100">
         <div className="text-center mb-8 flex flex-col items-center">
-          <img src="/logo.png" alt="GestãoPro Logo" className="w-16 h-16 mb-4 object-contain" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
-          <h1 className="text-3xl font-bold text-primary mb-2">GestãoPro</h1>
-          <p className="text-gray-500">Faça login para acessar sua conta</p>
+          <Link to="/" className="inline-block transition-transform hover:scale-105">
+            <img 
+              src="/logo.png" 
+              alt="RS Piscinas Logo" 
+              className="w-24 h-24 mb-3 object-contain drop-shadow-sm" 
+              onError={(e) => { 
+                e.currentTarget.src = '/rs-piscinas-logo.png'; 
+              }} 
+            />
+          </Link>
+          <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">RS Piscinas</h1>
+          <p className="text-sm text-slate-500 mt-1">Acesso exclusivo para clientes e equipe técnica</p>
         </div>
 
         {error && (
-          <div className="bg-red-50 text-red-500 p-3 rounded-md mb-6 text-sm">
+          <div className="bg-red-50 border border-red-200 text-red-600 p-3.5 rounded-xl mb-6 text-sm font-medium">
             {error}
           </div>
         )}
 
-        <form onSubmit={handleLogin} className="space-y-6">
+        <form onSubmit={handleLogin} className="space-y-5">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Número de Telefone (WhatsApp)
+            <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+              Telefone / WhatsApp ou E-mail
             </label>
             <input
               type="text"
               required
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-colors"
-              placeholder="(11) 99999-9999"
+              className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-600 focus:border-blue-600 outline-none transition-all text-slate-900 placeholder-slate-400 bg-slate-50/50 focus:bg-white"
+              placeholder="(67) 99249-9469"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Senha
+            <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+              Senha de Acesso
             </label>
             <input
               type="password"
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-colors"
+              className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-600 focus:border-blue-600 outline-none transition-all text-slate-900 placeholder-slate-400 bg-slate-50/50 focus:bg-white"
               placeholder="••••••••"
             />
           </div>
@@ -204,19 +213,16 @@ export default function Login() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-primary text-white py-3 rounded-lg font-semibold hover:bg-primary-light transition-colors disabled:opacity-50"
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3.5 px-4 rounded-xl font-bold transition-all duration-200 shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed text-base cursor-pointer"
           >
-            {loading ? 'Entrando...' : 'Entrar'}
+            {loading ? 'Entrando...' : 'Entrar no Sistema'}
           </button>
         </form>
 
-        <div className="mt-6 text-center">
-          <p className="text-sm text-gray-600">
-            É um novo Admin?{' '}
-            <Link to="/register" className="text-secondary-dark font-semibold hover:underline">
-              Criar Conta
-            </Link>
-          </p>
+        <div className="mt-8 pt-6 border-t border-slate-100 text-center">
+          <Link to="/" className="text-sm font-medium text-slate-500 hover:text-blue-600 transition-colors">
+            ← Voltar para a página inicial
+          </Link>
         </div>
       </div>
     </div>

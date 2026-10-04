@@ -127,7 +127,7 @@ export default function App() {
         <Router>
           <Routes>
             <Route path="/login" element={<Login />} />
-            <Route path="/register" element={<Register />} />
+            <Route path="/register" element={<Navigate to="/login" replace />} />
             
             <Route path="/" element={<RootRoute />} />
             <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
