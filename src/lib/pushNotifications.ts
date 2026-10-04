@@ -63,6 +63,17 @@ export async function setupPushNotificationChannels(): Promise<void> {
         vibration: true,
         lights: true,
         lightColor: '#2563eb',
+      },
+      {
+        id: 'cobrancas',
+        name: 'Cobranças e Vencimentos',
+        description: 'Notificações de clientes com mensalidades vencendo hoje ou em atraso',
+        importance: 5 as const,
+        visibility: 1 as const,
+        sound: 'notificacao',
+        vibration: true,
+        lights: true,
+        lightColor: '#eab308',
       }
     ];
 
@@ -72,6 +83,28 @@ export async function setupPushNotificationChannels(): Promise<void> {
     }
   } catch (err) {
     console.warn('[Push] Notification channel creation warning:', err);
+  }
+}
+
+/**
+ * Synchronizes the cached FCM token with Supabase users table
+ */
+export async function syncStoredFcmToken(userId?: string | null): Promise<boolean> {
+  if (!userId) return false;
+  const token = localStorage.getItem('fcm_token');
+  if (!token) return false;
+
+  try {
+    const { error } = await supabase.from('users').update({ fcm_token: token }).eq('id', userId);
+    if (error) {
+      console.warn('[Capacitor Push] Erro ao gravar token FCM:', error.message);
+      return false;
+    }
+    console.log('[Capacitor Push] Token FCM sincronizado com sucesso para o usuário:', userId);
+    return true;
+  } catch (e) {
+    console.error('[Capacitor Push] Falha ao sincronizar token:', e);
+    return false;
   }
 }
 
@@ -257,6 +290,18 @@ export async function initCapacitorPushNotifications(
       }
     );
     activeListeners.push(localActionListener);
+
+    // 6. Guarantee token is always fresh on resume/focus
+    const handleReSync = () => {
+      syncStoredFcmToken(userProfile?.uid);
+      if (Capacitor.isNativePlatform()) {
+        PushNotifications.register().catch(() => {});
+      }
+    };
+    window.addEventListener('focus', handleReSync);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') handleReSync();
+    });
 
     isInitialized = true;
   } catch (initErr) {

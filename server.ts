@@ -12,29 +12,48 @@ dotenv.config();
 const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
 
-import { initializeApp, cert } from 'firebase-admin/app';
+import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
 let fcmInitialized = false;
 try {
-  // Try to initialize Firebase Admin if service account exists
-  if (fs.existsSync('./service-account.json')) {
-    const serviceAccount = JSON.parse(fs.readFileSync('./service-account.json', 'utf8'));
-    initializeApp({
-      credential: cert(serviceAccount)
-    });
+  if (getApps().length > 0) {
     fcmInitialized = true;
-    console.log("Firebase Admin Initialized for Push Notifications");
-  } else if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    initializeApp({
-      credential: cert(serviceAccount)
-    });
-    fcmInitialized = true;
-    console.log("Firebase Admin Initialized from ENV");
   } else {
-    console.log("Firebase Admin NOT initialized. Missing service-account.json");
+    let serviceAccount = null;
+    if (fs.existsSync('./service-account.json')) {
+      try {
+        serviceAccount = JSON.parse(fs.readFileSync('./service-account.json', 'utf8'));
+      } catch (e) {}
+    } else if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+      try {
+        const raw = process.env.FIREBASE_SERVICE_ACCOUNT.trim();
+        serviceAccount = raw.startsWith('{') ? JSON.parse(raw) : JSON.parse(Buffer.from(raw, 'base64').toString('utf-8'));
+      } catch (e) {}
+    }
+
+    if (!serviceAccount || !serviceAccount.private_key) {
+      serviceAccount = {
+        type: "service_account",
+        project_id: "gestorpro-7d98c",
+        private_key_id: "fbd5e57675835fa590994a15c3ac0404557262d8",
+        private_key: "-----BEGIN PRIVATE KEY-----\nMIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQC8T3VtwP1slyxS\nHQj71quHQgr1E9N6rxERW9GK0KO78STZkwdCK9pihg9UQKjsmbrFC+f4WqJgSq4C\nz+niWPcALuVO0DMrjQbl90WD7K8H/P/x37vZin3Xp49AoeuPriULDvcCTG98vtlH\noTTpYalfUAlqZuYy0M1TzZKl1qWE55+4vKXsxB/+jbncWKTHz7+o4Vk16DVDTAV8\ntB8fBBg/uG+XPJV709p6ggkd7+pxWfTgMLoQdAjDtxH4unmSPX7b33MvoeMH8un9\nOxcfKAZyHcjgDvXbGvjKnUMEO/AcDiE8O8SDwONVm1X6ppVtmapfGMF1oUZsQtYC\nph1I3t4TAgMBAAECggEAHZ5R1gV41s+gRPoUI6hMKmYU2x9XMADBKn3Ko47VcgYn\nyaD6j0nee4iieJoC99PmMIAC6Gk5CPQ2EnMpUlSz5O97Wb4djkgMQbd2050ymosM\nprqODVVfHcBZI81UA7FcWjTsXQwwrOpHuqB8dgjKXxdzo6yzoGJ/KSM4YaU1O4X9\nhgQtk+LDfjOK+5I7NLksRK1WsdiRT9TJQZn3L73n/DBaO9ZGs28qc31hw9ftxdYz\ni9AOmzg3FlLgDlWfQhXnufJ+ux46moHMitQ3l+IyKY9Atwk55wDpFbOWAqCERx3x\nqiejT0iFeBJSsm9iSOMt8h7u7TBVL7Tsm92HEA/iQQKBgQDzW25nFgCaAcYlIaM6\ndRmf3bQtx4UHwe+vNezEOA4rJ83GEGhtILN1E0bMUESX0bZD9uBw4Eop2vYfcMaI\npRJlB1K9IMNZbPyM63661spcKaqEZ/fu30O8OWSpkGkWaVRZHH85m+t/7c/vCFl7\neHqybiK35YNpb2PKoU8qDIfW6QKBgQDGF+yBMljY6aGBFPqWKHt9IKsmFkp2grMI\nu1MCDK7OJYSUXMuNJNcirhCwTkXbLDTka0K3LQORQuft1P/SiRqQvopPZkPSZ0uf\nBAIJh5np91p5qJ6BETp5si93nywvPUASB9zKtXjiP5EetQ5M6Y+mQE/qEazBRVZY\nJpOTCOhnmwKBgQCMUjMls7UjGFTFglDZWz4sRS0onHwjjfsDn2dneR8KWUg4path\nCVMQ9c2D7+CtXdnn9IlT7LA21C/Iz0Fa9zvVD1TxAtxBSyuQohWP7FwAqnHNKRn4\nHbqz5LAbac5+gruFKn5dnH89Y8XbAYh/PmgZTJIuUWPlvrne1AaOq20ESQKBgQCA\nMHch3BzWscmLqLHIfgX7oSpgCUjCjC2jVuWOi/qK+IhlIe+vNMnrbUzrapuWC3Nm\n5WpU81I9rFg99fpemc6RIFyMqRb2j1XGX2eaFyAo4aKw28dGqol2uzIwbNbA8xgF\nEwV0QB8r+grFHlFUwEfvQ+rzA+ERaPdJMB2LptYORQKBgQCvJc6MOwytTWZKUC9D\nSbDb12QttP8UaIoj86dXB2A7H+rF1UhbdEunLmnVYgeR8szAWxUexgfC7Ui+48ZS\nG4ltlzUlHOUFPine5JlfEmEfBoPA8+suiKJJCRH79sx7olnugA1NouryKV/JKaSn\nWfhdQ4sm1OPnPvhu8PuVDpVcHA==\n-----END PRIVATE KEY-----\n",
+        client_email: "firebase-adminsdk-fbsvc@gestorpro-7d98c.iam.gserviceaccount.com",
+        client_id: "115774516866623649136",
+        auth_uri: "https://accounts.google.com/o/oauth2/auth",
+        token_uri: "https://oauth2.googleapis.com/token",
+        auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
+        client_x509_cert_url: "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-fbsvc%40gestorpro-7d98c.iam.gserviceaccount.com",
+        universe_domain: "googleapis.com"
+      };
+    }
+
+    initializeApp({
+      credential: cert(serviceAccount)
+    });
+    fcmInitialized = true;
+    console.log("Firebase Admin Initialized for Push Notifications (Project: " + serviceAccount.project_id + ")");
   }
-} catch (e) {
+} catch (e: any) {
   console.log("Error initializing Firebase Admin:", e.message);
 }
 
@@ -2778,6 +2797,16 @@ app.all("/api/sync-payment", async (req, res) => {
     }
   });
 
+  // Endpoint to manually trigger or test daily 7:00 AM billing reminders
+  app.post("/api/notifications/trigger-due-reminders", async (req, res) => {
+    try {
+      const summary = await sendDailyBillingReminders();
+      return res.json({ success: true, summary });
+    } catch (e: any) {
+      return res.status(500).json({ error: e.message });
+    }
+  });
+
   // Background listener for Push Notifications (incoming client chat messages, finished visits, one-off jobs)
   supabaseAdmin.channel('push-notifications-db-events')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'visits' }, async (payload) => {
@@ -2948,6 +2977,145 @@ app.all("/api/sync-payment", async (req, res) => {
   // Executa uma limpeza ao inicializar para expurgar mensagens órfãs anteriores e agenda para 00:00
   purgeOldChatMessages();
   scheduleMidnightPurge();
+
+  /**
+   * Rotina Diária das 07:00 da manhã (Horário de Brasília):
+   * Envia notificações push para o administrador informando:
+   * 1. Clientes com mensalidade vencendo HOJE para realizar a cobrança
+   * 2. Clientes com mensalidades já ATRASADAS para realizar a cobrança
+   */
+  async function sendDailyBillingReminders(): Promise<{ dueTodayCount: number; overdueCount: number; errors: any[] }> {
+    const summary = { dueTodayCount: 0, overdueCount: 0, errors: [] as any[] };
+    try {
+      // Obter data atual no fuso de Brasília (YYYY-MM-DD)
+      const now = new Date();
+      const brParts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Sao_Paulo',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      }).formatToParts(now);
+
+      const year = brParts.find(p => p.type === 'year')?.value || `${now.getFullYear()}`;
+      const month = brParts.find(p => p.type === 'month')?.value || `${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const day = brParts.find(p => p.type === 'day')?.value || `${String(now.getDate()).padStart(2, '0')}`;
+      const todayStr = `${year}-${month}-${day}`;
+
+      console.log(`[7AM Billing Reminder] Iniciando verificação de vencimentos para a data: ${todayStr}...`);
+
+      // Buscar todos os clientes cadastrados que possuam data de vencimento
+      const { data: clients, error: clientErr } = await supabaseAdmin
+        .from('clients')
+        .select('id, name, due_date, monthly_price, admin_id, active')
+        .not('due_date', 'is', null);
+
+      if (clientErr) {
+        console.error('[7AM Billing Reminder] Erro ao buscar clientes:', clientErr.message);
+        summary.errors.push(clientErr.message);
+        return summary;
+      }
+
+      if (!clients || clients.length === 0) {
+        console.log('[7AM Billing Reminder] Nenhum cliente encontrado com data de vencimento.');
+        return summary;
+      }
+
+      // Buscar admin padrão caso o client.admin_id esteja vazio
+      const { data: defaultAdmins } = await supabaseAdmin
+        .from('users')
+        .select('id')
+        .eq('role', 'admin');
+      const defaultAdminId = defaultAdmins && defaultAdmins.length > 0 ? defaultAdmins[0].id : null;
+
+      for (const client of clients) {
+        if (!client.due_date) continue;
+
+        // Pular clientes inativos se houver flag
+        if (client.active === false) continue;
+
+        const targetAdminId = client.admin_id || defaultAdminId;
+        if (!targetAdminId) continue;
+
+        const clientName = client.name || 'Cliente';
+        const clientDueDate = client.due_date;
+
+        if (clientDueDate === todayStr) {
+          // Vence HOJE
+          summary.dueTodayCount++;
+          const title = `💰 Vencimento Hoje: ${clientName}`;
+          const body = `Hoje vence a mensalidade de ${clientName}. Realize a cobrança!`;
+          
+          await sendPushToAdmin(
+            targetAdminId,
+            title,
+            body,
+            {
+              url: '/billing',
+              channelId: 'cobrancas',
+              type: 'billing_due_today',
+              clientId: String(client.id)
+            }
+          );
+        } else if (clientDueDate < todayStr) {
+          // Já está ATRASADO
+          summary.overdueCount++;
+          const [dYear, dMonth, dDay] = clientDueDate.split('-');
+          const formattedDueDate = dDay && dMonth ? `${dDay}/${dMonth}/${dYear}` : clientDueDate;
+          const title = `⚠️ Cobrança Atrasada: ${clientName}`;
+          const body = `O cliente ${clientName} está com mensalidade em atraso (venceu em ${formattedDueDate}). Realize a cobrança!`;
+
+          await sendPushToAdmin(
+            targetAdminId,
+            title,
+            body,
+            {
+              url: '/billing',
+              channelId: 'cobrancas',
+              type: 'billing_overdue',
+              clientId: String(client.id)
+            }
+          );
+        }
+      }
+
+      console.log(`[7AM Billing Reminder] Notificações concluídas: ${summary.dueTodayCount} vencendo hoje, ${summary.overdueCount} atrasados.`);
+    } catch (err: any) {
+      console.error('[7AM Billing Reminder] Erro inesperado na rotina de cobrança:', err);
+      summary.errors.push(err?.message || String(err));
+    }
+    return summary;
+  }
+
+  // Agenda a execução da rotina de cobrança diariamente às 07:00 da manhã (Horário de Brasília)
+  function schedule7AMBillingReminders() {
+    function calculateMsUntil7AM(): number {
+      const now = new Date();
+      // Converte hora atual para horário de Brasília
+      const brTimeStr = now.toLocaleString("en-US", { timeZone: "America/Sao_Paulo" });
+      const brDate = new Date(brTimeStr);
+
+      const targetDate = new Date(brDate);
+      targetDate.setHours(7, 0, 0, 0);
+
+      // Se já passou das 07:00 de hoje no Brasil, agenda para as 07:00 de amanhã
+      if (brDate.getTime() >= targetDate.getTime()) {
+        targetDate.setDate(targetDate.getDate() + 1);
+      }
+
+      return targetDate.getTime() - brDate.getTime();
+    }
+
+    const msUntil7AM = calculateMsUntil7AM();
+    console.log(`[7AM Billing Reminder] Próxima notificação agendada para daqui a ${Math.round(msUntil7AM / 60000)} minutos (07:00 Horário de Brasília).`);
+
+    setTimeout(() => {
+      sendDailyBillingReminders();
+      // Repete diariamente a cada 24 horas
+      setInterval(sendDailyBillingReminders, 24 * 60 * 60 * 1000);
+    }, msUntil7AM);
+  }
+
+  schedule7AMBillingReminders();
 
   // Vite middleware for development (must be mounted AFTER all API routes)
   if (process.env.NODE_ENV !== "production") {
