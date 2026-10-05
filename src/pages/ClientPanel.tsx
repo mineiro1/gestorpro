@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { Calendar, CheckCircle, X, Download, Star, RefreshCw } from 'lucide-react';
+import { Calendar, CheckCircle, X, Download, Star, RefreshCw, Store, Wrench, MessageCircle, Phone } from 'lucide-react';
 import { useOutletContext } from 'react-router-dom';
 import { useRealtimeUpdates } from '../hooks/useRealtimeUpdates';
+import { openWhatsApp, normalizePhoneNumber } from '../lib/whatsapp';
 
 
 
@@ -115,6 +116,8 @@ export default function ClientPanel() {
   const [visits, setVisits] = useState<any[]>([]);
   const [payments, setPayments] = useState<any[]>([]);
   const [employeesMap, setEmployeesMap] = useState<Record<string, string>>({});
+  const [partnerStores, setPartnerStores] = useState<any[]>([]);
+  const [partnerTechnicians, setPartnerTechnicians] = useState<any[]>([]);
   
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -172,6 +175,24 @@ export default function ClientPanel() {
         });
       }
       setEmployeesMap(eMap);
+
+      // Fetch Partner Stores & Technicians from the company's admin
+      let pStores: any[] = [];
+      let pTechs: any[] = [];
+      const targetAdminId = fullClient.admin_id;
+      if (targetAdminId) {
+        const { data: adminUser } = await supabase
+          .from('users')
+          .select('whatsapp_settings')
+          .eq('id', targetAdminId)
+          .maybeSingle();
+        if (adminUser?.whatsapp_settings) {
+          pStores = adminUser.whatsapp_settings.partnerStores || [];
+          pTechs = adminUser.whatsapp_settings.partnerTechnicians || [];
+        }
+      }
+      setPartnerStores(pStores);
+      setPartnerTechnicians(pTechs);
     } catch (err) {
       console.error(err);
     } finally {
@@ -250,16 +271,104 @@ export default function ClientPanel() {
               <div className="w-12 h-12 rounded-xl bg-purple-500/20 text-purple-400 border border-purple-500/30 flex items-center justify-center mr-4 shrink-0">
                 <Calendar size={22} />
               </div>
-              <div>
-                <p className="text-xs text-slate-400 font-medium">Dias de Visita</p>
-                <p className="text-base sm:text-lg font-bold text-white truncate">
-                  {clientData.visit_days && clientData.visit_days.length > 0 
-                    ? clientData.visit_days.join(', ') 
-                    : 'A combinar'}
-                </p>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs text-slate-400 font-medium mb-1">Dias de Visita</p>
+                {clientData.visit_days && clientData.visit_days.length > 0 ? (
+                  <div className="flex flex-wrap gap-1.5 mt-0.5">
+                    {clientData.visit_days.map((day: string, idx: number) => (
+                      <span 
+                        key={idx} 
+                        className="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-bold bg-purple-950/80 text-purple-300 border border-purple-800/60 shadow-sm"
+                      >
+                        {day}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm font-semibold text-slate-300">A combinar</p>
+                )}
               </div>
             </div>
           </div>
+
+          {/* Lojas e Técnicos Parceiros */}
+          {(partnerStores.length > 0 || partnerTechnicians.length > 0) && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+              {partnerStores.length > 0 && (
+                <div className="bg-slate-900/90 rounded-2xl shadow-xl border border-slate-800 overflow-hidden flex flex-col">
+                  <div className="p-4 sm:p-5 border-b border-slate-800 bg-slate-900 flex items-center justify-between">
+                    <div className="flex items-center space-x-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-sky-500/20 text-sky-400 border border-sky-500/30 flex items-center justify-center">
+                        <Store size={16} />
+                      </div>
+                      <div>
+                        <h2 className="text-base font-black text-white">Lojas Parceiras</h2>
+                        <p className="text-[11px] text-slate-400">Produtos e químicos recomendados</p>
+                      </div>
+                    </div>
+                    <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-800 text-sky-400 border border-slate-700">
+                      {partnerStores.length}
+                    </span>
+                  </div>
+                  <div className="p-4 space-y-3 flex-1">
+                    {partnerStores.map((store, idx) => (
+                      <div key={idx} className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3.5 flex items-center justify-between hover:border-slate-700 transition-colors">
+                        <div className="min-w-0 flex-1 mr-2.5">
+                          <h3 className="font-bold text-white text-xs sm:text-sm truncate">{store.name}</h3>
+                          <p className="text-[11px] text-slate-400 mt-0.5">{normalizePhoneNumber(store.phone)}</p>
+                        </div>
+                        <button
+                          onClick={() => openWhatsApp(store.phone, `Olá! Sou cliente da RS Piscinas (${clientData?.name || 'Cliente'}) e gostaria de fazer um orçamento de produtos para minha piscina.`)}
+                          className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 shadow-sm shrink-0 cursor-pointer transition-all active:scale-95"
+                          title="Falar no WhatsApp"
+                        >
+                          <MessageCircle size={14} />
+                          <span>WhatsApp</span>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {partnerTechnicians.length > 0 && (
+                <div className="bg-slate-900/90 rounded-2xl shadow-xl border border-slate-800 overflow-hidden flex flex-col">
+                  <div className="p-4 sm:p-5 border-b border-slate-800 bg-slate-900 flex items-center justify-between">
+                    <div className="flex items-center space-x-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center justify-center">
+                        <Wrench size={16} />
+                      </div>
+                      <div>
+                        <h2 className="text-base font-black text-white">Técnicos Parceiros</h2>
+                        <p className="text-[11px] text-slate-400">Manutenções e reparos especializados</p>
+                      </div>
+                    </div>
+                    <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-800 text-amber-400 border border-slate-700">
+                      {partnerTechnicians.length}
+                    </span>
+                  </div>
+                  <div className="p-4 space-y-3 flex-1">
+                    {partnerTechnicians.map((tech, idx) => (
+                      <div key={idx} className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3.5 flex items-center justify-between hover:border-slate-700 transition-colors">
+                        <div className="min-w-0 flex-1 mr-2.5">
+                          <h3 className="font-bold text-white text-xs sm:text-sm truncate">{tech.name}</h3>
+                          <p className="text-[11px] text-slate-400 mt-0.5">{normalizePhoneNumber(tech.phone)}</p>
+                        </div>
+                        <button
+                          onClick={() => openWhatsApp(tech.phone, `Olá ${tech.name}! Sou cliente da RS Piscinas (${clientData?.name || 'Cliente'}) e gostaria de solicitar uma manutenção técnica na minha piscina.`)}
+                          className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 shadow-sm shrink-0 cursor-pointer transition-all active:scale-95"
+                          title="Falar no WhatsApp"
+                        >
+                          <MessageCircle size={14} />
+                          <span>WhatsApp</span>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="bg-slate-900/90 rounded-2xl shadow-xl border border-slate-800 overflow-hidden">
             <div className="p-5 sm:p-6 border-b border-slate-800 bg-slate-900 flex items-center justify-between">
@@ -318,11 +427,11 @@ export default function ClientPanel() {
             </div>
           </div>
 
-          <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-            <div className="p-6 border-b border-gray-100 bg-gray-50">
-              <h2 className="text-xl font-bold text-gray-800">Histórico de Pagamentos</h2>
+          <div className="bg-slate-900/90 rounded-2xl shadow-xl border border-slate-800 overflow-hidden">
+            <div className="p-5 sm:p-6 border-b border-slate-800 bg-slate-900">
+              <h2 className="text-lg sm:text-xl font-black text-white">Histórico de Pagamentos</h2>
             </div>
-            <div className="divide-y divide-gray-100">
+            <div className="divide-y divide-slate-800">
               {payments.map(p => {
                 const paymentDateStr = p.date;
                 let paymentDate = null;
@@ -331,18 +440,18 @@ export default function ClientPanel() {
                   paymentDate = isJustDate ? new Date(`${paymentDateStr}T12:00:00`) : new Date(paymentDateStr);
                 }
                 return (
-                <div key={p.id} className="p-4 hover:bg-gray-50 transition-colors flex justify-between items-center">
+                <div key={p.id} className="p-4 sm:p-5 hover:bg-slate-800/40 transition-colors flex justify-between items-center">
                   <div>
-                    <div className="font-semibold text-gray-800">
+                    <div className="font-bold text-white text-sm sm:text-base">
                       Mês de Referência: {String(p.ref_month || p.month || (paymentDate ? paymentDate.getMonth() + 1 : '')).padStart(2, '0')}/{p.ref_year || p.year || (paymentDate ? paymentDate.getFullYear() : '')}
                     </div>
-                    <div className="text-sm text-gray-500 flex items-center mt-1">
-                      <Calendar size={14} className="mr-1" />
+                    <div className="text-xs text-slate-400 flex items-center mt-1">
+                      <Calendar size={13} className="mr-1.5 text-sky-400" />
                       Pago em: {paymentDate ? paymentDate.toLocaleDateString('pt-BR') : 'Data Indisponível'}
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className="text-lg font-bold text-green-600">
+                    <div className="text-base sm:text-lg font-black text-emerald-400">
                       R$ {Number(p.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                     </div>
                   </div>
@@ -350,7 +459,7 @@ export default function ClientPanel() {
                 )
               })}
               {payments.length === 0 && (
-                <p className="p-8 text-center text-gray-500">Nenhum pagamento registrado ainda.</p>
+                <p className="p-8 text-center text-slate-400 text-sm">Nenhum pagamento registrado ainda.</p>
               )}
             </div>
           </div>
