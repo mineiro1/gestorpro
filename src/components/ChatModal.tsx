@@ -7,7 +7,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { evaluateSessionExpiry, checkDailyChatAvailability, markClientChatAsRead } from '../lib/chatSessionUtils';
 import { getApiUrl } from '../lib/apiConfig';
-import { sendAstraCallsMessage, sendMetaMessage, sendEvolutionMessage, checkWhatsAppMessageStatus, uploadMediaToPublicStorage } from '../lib/whatsapp';
+import { sendAstraCallsMessage, sendMetaMessage, sendEvolutionMessage, checkWhatsAppMessageStatus, uploadMediaToPublicStorage, getEffectiveWhatsAppProvider, openWhatsApp } from '../lib/whatsapp';
 
 export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const { userProfile } = useAuth();
@@ -519,34 +519,36 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         // Tentativa 2: Fallback direto no navegador (caso o backend esteja inacessível ou estático)
         if (!sentSuccess && !insertedMessageId) {
           try {
-            const isMeta = currentSettings.useMetaApi && currentSettings.metaToken;
-            const isEvo = currentSettings.useEvolutionApi && currentSettings.evolutionApiKey;
-            const isAstra = currentSettings.provider === 'astracalls' || currentSettings.useAstracalls || (!isMeta && !isEvo);
+            const effectiveProvider = getEffectiveWhatsAppProvider(currentSettings);
 
-            if (isAstra) {
+            if (effectiveProvider === 'astracalls') {
               const astraRes = await sendAstraCallsMessage(clientPhone, text, currentSettings, message_client_id, mediaBase64, mimeType);
               if (astraRes) {
                 sentSuccess = true;
                 externalId = astraRes.id || astraRes.messageId || astraRes.key?.id || `astra_${Date.now()}`;
               }
-            } else if (isMeta) {
+            } else if (effectiveProvider === 'meta') {
               const metaRes = await sendMetaMessage(clientPhone, text, currentSettings, message_client_id, mediaBase64, mimeType);
               if (metaRes) {
                 sentSuccess = true;
                 externalId = metaRes.id || metaRes.messages?.[0]?.id || metaRes.key?.id || '';
               }
-            } else if (isEvo) {
+            } else if (effectiveProvider === 'evolution') {
               const evoRes = await sendEvolutionMessage(clientPhone, text, currentSettings, message_client_id, mediaBase64, mimeType);
               if (evoRes) {
                 sentSuccess = true;
                 externalId = evoRes.key?.id || evoRes.id || evoRes.messageId || '';
               }
             } else {
-              sendError = 'Nenhuma configuração de WhatsApp ativa encontrada.';
+              // Modo Manual / Web: abre o WhatsApp com a mensagem pronta
+              openWhatsApp(clientPhone, text);
+              sentSuccess = true;
             }
           } catch (directErr: any) {
-            console.error('[ChatModal] Falha no fallback de envio direto:', directErr);
+            console.error('[ChatModal] Falha no envio direto:', directErr);
             sendError = directErr.message || 'Erro ao enviar mensagem via WhatsApp';
+            // Em caso de falha na API, abre no app do WhatsApp para não perder o texto
+            openWhatsApp(clientPhone, text);
           }
         }
       } else {

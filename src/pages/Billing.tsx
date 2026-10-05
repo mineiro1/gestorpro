@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { openWhatsApp, sendMetaMessage, sendEvolutionMessage, sendAstraCallsMessage } from '../lib/whatsapp';
+import { openWhatsApp, sendMetaMessage, sendEvolutionMessage, sendAstraCallsMessage, getEffectiveWhatsAppProvider } from '../lib/whatsapp';
 import { formatClientMessageTemplate } from '../lib/messageTemplates';
 import { MessageCircle, AlertCircle, Clock, History, Settings, X, Play, MessageSquare, Calendar, CheckCircle, XCircle, DollarSign, RefreshCw } from 'lucide-react';
 
@@ -364,9 +364,15 @@ export default function Billing() {
       : processMessageTemplate(waSettings.reminderMessage, client);
 
     const billingMsgClientId = `billing_${client.id}_${isDelayed ? 'delayed' : 'reminder'}_${new Date().toISOString().slice(0, 10)}`;
-    const isAstracalls = currentSettings.useAstracalls !== false || currentSettings.provider === 'astracalls' || !!currentSettings.astracallsUrl;
+    const effectiveProvider = getEffectiveWhatsAppProvider(currentSettings);
 
-    if (isAstracalls) {
+    if (effectiveProvider === 'manual') {
+      openWhatsApp(`55${cleanPhone}`, message);
+      setSentClients(prev => ({ ...prev, [client.id]: 'success' }));
+      return;
+    }
+
+    if (effectiveProvider === 'astracalls') {
       try {
         await sendAstraCallsMessage(client.phone, message, currentSettings, billingMsgClientId);
         setSentClients(prev => ({ ...prev, [client.id]: 'success' }));
@@ -374,9 +380,11 @@ export default function Billing() {
       } catch (error: any) {
         setSentClients(prev => ({ ...prev, [client.id]: 'error' }));
         console.error(error);
-        alert(`Falha ao enviar via WhatsApp para ${client.name}: ${error.message}`);
+        if (confirm(`Falha no AstraCalls (${error.message}).\n\nDeseja abrir o WhatsApp no seu aparelho para enviar manualmente?`)) {
+          openWhatsApp(`55${cleanPhone}`, message);
+        }
       }
-    } else if (currentSettings.useMetaApi) {
+    } else if (effectiveProvider === 'meta') {
       try {
         await sendMetaMessage(client.phone, message, currentSettings, billingMsgClientId);
         setSentClients(prev => ({ ...prev, [client.id]: 'success' }));
@@ -384,9 +392,11 @@ export default function Billing() {
       } catch (error: any) {
         setSentClients(prev => ({ ...prev, [client.id]: 'error' }));
         console.error(error);
-        alert(`Falha ao enviar via API Oficial para ${client.name}:\n\n${error.message}`);
+        if (confirm(`Falha na API Meta (${error.message}).\n\nDeseja abrir o WhatsApp no seu aparelho para enviar manualmente?`)) {
+          openWhatsApp(`55${cleanPhone}`, message);
+        }
       }
-    } else if (currentSettings.useEvolutionApi) {
+    } else if (effectiveProvider === 'evolution') {
       try {
         await sendEvolutionMessage(client.phone, message, currentSettings, billingMsgClientId);
         setSentClients(prev => ({ ...prev, [client.id]: 'success' }));
@@ -394,12 +404,13 @@ export default function Billing() {
       } catch (error: any) {
         setSentClients(prev => ({ ...prev, [client.id]: 'error' }));
         console.error(error);
-        alert(`Falha ao enviar mensagem para ${client.name}: ${error.message}`);
+        if (confirm(`Falha na Evolution API (${error.message}).\n\nDeseja abrir o WhatsApp no seu aparelho para enviar manualmente?`)) {
+          openWhatsApp(`55${cleanPhone}`, message);
+        }
       }
     } else {
-      import('../lib/whatsapp').then(({ openWhatsApp }) => {
-        openWhatsApp(`55${cleanPhone}`, message);
-      });
+      openWhatsApp(`55${cleanPhone}`, message);
+      setSentClients(prev => ({ ...prev, [client.id]: 'success' }));
     }
   };
 
@@ -413,10 +424,10 @@ export default function Billing() {
       }
     }
 
-    const isAstracalls = currentSettings.useAstracalls !== false || currentSettings.provider === 'astracalls' || !!currentSettings.astracallsUrl;
+    const effectiveProvider = getEffectiveWhatsAppProvider(currentSettings);
 
-    if (isAstracalls || currentSettings.useMetaApi || currentSettings.useEvolutionApi) {
-      const apiName = isAstracalls ? "WhatsApp (AstraCalls)" : (currentSettings.useMetaApi ? "API Oficial (Meta)" : "Evolution API");
+    if (effectiveProvider !== 'manual') {
+      const apiName = effectiveProvider === 'astracalls' ? "WhatsApp (AstraCalls)" : (effectiveProvider === 'meta' ? "API Oficial (Meta)" : "Evolution API");
       if (!silent && !confirm(`Deseja enviar ${clients.length} mensagens automaticamente via ${apiName}?`)) return;
       
       setSendingBatch(true);

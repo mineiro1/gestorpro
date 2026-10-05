@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { Package, Send, Settings, Plus, Trash2, X, Save, Search, CheckCircle, RefreshCw } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { openWhatsApp, sendEvolutionMessage, sendMetaMessage, sendAstraCallsMessage } from '../lib/whatsapp';
+import { openWhatsApp, sendEvolutionMessage, sendMetaMessage, sendAstraCallsMessage, getEffectiveWhatsAppProvider } from '../lib/whatsapp';
 
 const PREDEFINED_PRODUCTS = [
   'Balde de Cloro 10kg',
@@ -256,12 +256,12 @@ export default function ProductsPage() {
       `\n\nPor favor, providencie assim que possível para não interrompermos o tratamento.`;
       
     const settings = waSettings || userProfile?.whatsappSettings || {};
+    const effectiveProvider = getEffectiveWhatsAppProvider(settings);
     const partnerStores = settings.partnerStores || [];
-    const isAstracalls = settings.useAstracalls !== false || settings.provider === 'astracalls' || !!settings.astracallsUrl;
     
     setLastSentData({ client: selectedClient, products: selected });
     
-    if (!isAstracalls && !settings.useMetaApi && !settings.useEvolutionApi) {
+    if (effectiveProvider === 'manual') {
        openWhatsApp(number, message);
        if (partnerStores.length > 0) {
          setShowPartnerModal(true);
@@ -274,15 +274,17 @@ export default function ProductsPage() {
 
     setSendingMessage(true);
     try {
-      if (isAstracalls) {
+      if (effectiveProvider === 'astracalls') {
         await sendAstraCallsMessage(number, message, settings);
         alert('Mensagem de insumos enviada com sucesso via WhatsApp!');
-      } else if (settings.useMetaApi) {
+      } else if (effectiveProvider === 'meta') {
         await sendMetaMessage(number, message, settings);
         alert('Mensagem de insumos enviada com sucesso via Meta API!');
-      } else if (settings.useEvolutionApi) {
+      } else if (effectiveProvider === 'evolution') {
         await sendEvolutionMessage(number, message, settings);
         alert('Mensagem de insumos enviada com sucesso via Evolution API!');
+      } else {
+        openWhatsApp(number, message);
       }
       
       if (partnerStores.length > 0) {

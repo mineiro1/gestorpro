@@ -92,21 +92,87 @@ export const formatWhatsAppNumber = (phone: string): string => {
   return cleanPhone.startsWith('55') ? cleanPhone : `55${cleanPhone}`;
 };
 
+export type WhatsAppProvider = 'astracalls' | 'evolution' | 'meta' | 'manual';
+
+export const getEffectiveWhatsAppProvider = (settings?: any): WhatsAppProvider => {
+  if (!settings) return 'manual';
+
+  // 1. Se explicitamente definido como 'manual' ou 'web'
+  if (settings.provider === 'manual' || settings.provider === 'web') {
+    return 'manual';
+  }
+
+  // 2. Se explicitamente definido Meta
+  if (settings.provider === 'meta' || settings.useMetaApi === true) {
+    if (settings.metaToken) return 'meta';
+  }
+
+  // 3. Se explicitamente definido Evolution
+  if (settings.provider === 'evolution' || settings.useEvolutionApi === true) {
+    if (settings.evolutionApiKey && settings.evolutionInstanceName) return 'evolution';
+  }
+
+  // 4. Se explicitamente definido AstraCalls
+  if (settings.provider === 'astracalls' || settings.useAstraCalls === true || settings.useAstracalls === true) {
+    if (settings.astracallsUrl && settings.astracallsApiKey) return 'astracalls';
+  }
+
+  // 5. Se nenhuma API estiver ativa e validada, o padrão absoluto é 'manual' (WhatsApp Web / App)
+  return 'manual';
+};
+
 export const openWhatsApp = (phone: string, text: string = "") => {
   if (!phone) return;
   const targetNumber = formatWhatsAppNumber(phone);
-  const encodedMessage = encodeURIComponent(text);
+  const encodedMessage = encodeURIComponent(text || '');
   
-  if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
-    const mobileUrl = `whatsapp://send?phone=${targetNumber}&text=${encodedMessage}`;
-    window.location.href = mobileUrl;
+  const apiWaUrl = `https://api.whatsapp.com/send?phone=${targetNumber}&text=${encodedMessage}`;
+  const waMeUrl = `https://wa.me/${targetNumber}?text=${encodedMessage}`;
+  const mobileDeepLink = `whatsapp://send?phone=${targetNumber}&text=${encodedMessage}`;
+
+  const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
+  if (isMobile) {
+    // 1. Tenta acionar o intent do WhatsApp através de um clique de link dinâmico
+    try {
+      const link = document.createElement('a');
+      link.href = apiWaUrl;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(() => {
+        try {
+          if (document.body.contains(link)) document.body.removeChild(link);
+        } catch (e) {}
+      }, 500);
+    } catch (e) {
+      window.location.href = apiWaUrl;
+    }
+
+    // 2. Fallback de redirecionamento direto
     setTimeout(() => {
-      const webUrl = `https://wa.me/${targetNumber}?text=${encodedMessage}`;
-      window.open(webUrl, '_blank');
-    }, 500);
+      try {
+        window.location.assign(mobileDeepLink);
+      } catch (e) {
+        try {
+          window.location.assign(waMeUrl);
+        } catch (err) {}
+      }
+    }, 400);
   } else {
-    const webUrl = `https://wa.me/${targetNumber}?text=${encodedMessage}`;
-    window.open(webUrl, '_blank');
+    // Desktop: abre em nova aba
+    const link = document.createElement('a');
+    link.href = waMeUrl;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    document.body.appendChild(link);
+    link.click();
+    setTimeout(() => {
+      try {
+        if (document.body.contains(link)) document.body.removeChild(link);
+      } catch (e) {}
+    }, 500);
   }
 };
 

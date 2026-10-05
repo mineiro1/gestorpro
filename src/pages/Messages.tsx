@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { openWhatsApp, sendMetaMessage, sendAstraCallsMessage } from '../lib/whatsapp';
+import { openWhatsApp, sendMetaMessage, sendAstraCallsMessage, getEffectiveWhatsAppProvider } from '../lib/whatsapp';
 import { 
   MessageSquare, 
   MessageCircle, 
@@ -434,11 +434,12 @@ export default function Messages() {
       }
     }
     
-    const isMetaOrWame = waSettings?.useMetaApi;
-    const isEvolution = waSettings?.useEvolutionApi;
-    const isAstracalls = waSettings?.provider === 'astracalls' || waSettings?.useAstracalls || (!isMetaOrWame && !isEvolution && (waSettings?.astracallsApiKey || waSettings?.wavoipApiKey));
+    const effectiveProvider = getEffectiveWhatsAppProvider(waSettings);
+    const isMetaOrWame = effectiveProvider === 'meta';
+    const isEvolution = effectiveProvider === 'evolution';
+    const isAstracalls = effectiveProvider === 'astracalls';
 
-    if (!isEvolution && !isMetaOrWame && !isAstracalls && mediaFile) {
+    if (effectiveProvider === 'manual' && mediaFile) {
       alert("Avisos com mídia no modo WhatsApp Web não suportam anexo automático (apenas o texto).");
     }
 
@@ -463,6 +464,25 @@ export default function Messages() {
 
     const targets = clients.filter(c => selectedClients.has(c.id));
     targets.forEach(c => setSendStatuses(prev => ({ ...prev, [c.id]: 'pending' })));
+
+    if (effectiveProvider === 'manual') {
+      for (const client of targets) {
+        if (!client.phone) {
+          setSendStatuses(prev => ({ ...prev, [client.id]: 'error' }));
+          errorCount++;
+          continue;
+        }
+        setSendStatuses(prev => ({ ...prev, [client.id]: 'sending' }));
+        const personalizedText = messageText.replace(/\{nome\}/g, client.name || '');
+        openWhatsApp(client.phone, personalizedText);
+        setSendStatuses(prev => ({ ...prev, [client.id]: 'success' }));
+        successCount++;
+        await new Promise(r => setTimeout(r, 600));
+      }
+      alert(`Envios via WhatsApp iniciados para ${successCount} destinatário(s)!`);
+      setSending(false);
+      return;
+    }
 
     if (isAstracalls) {
       let lastError = '';

@@ -2822,7 +2822,7 @@ app.all("/api/sync-payment", async (req, res) => {
           if (cli?.admin_id) targetAdminId = cli.admin_id;
        }
 
-       if (targetAdminId && targetAdminId !== newVisit.employee_id) {
+       if (targetAdminId) {
            const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', newVisit.employee_id).single();
            const { data: cliData } = await supabaseAdmin.from('clients').select('name').eq('id', newVisit.client_id).single();
 
@@ -2851,7 +2851,7 @@ app.all("/api/sync-payment", async (req, res) => {
        const dedupeKey = `job_${newJob.id}`;
        if (!shouldSendPush(dedupeKey)) return;
 
-       if (newJob.admin_id && newJob.admin_id !== newJob.employee_id) {
+       if (newJob.admin_id) {
            const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', newJob.employee_id).single();
            const empName = empData?.name || 'Colaborador';
            const cliName = newJob.client_name || 'Cliente';

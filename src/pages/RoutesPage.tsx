@@ -8,7 +8,7 @@ import { Share2, FileText, Map, Camera, CheckCircle, MapPin, Image as ImageIcon,
 import { motion, AnimatePresence } from 'motion/react';
 import { useCall } from '../contexts/CallContext';
 import { openMap, openRouteMap, openWaze } from '../lib/maps';
-import { openWhatsApp, sendEvolutionMessage, sendMetaMessage, sendAstraCallsMessage } from '../lib/whatsapp';
+import { openWhatsApp, sendEvolutionMessage, sendMetaMessage, sendAstraCallsMessage, getEffectiveWhatsAppProvider } from '../lib/whatsapp';
 import { formatClientMessageTemplate } from '../lib/messageTemplates';
 import { notifyAdminAttendanceFinished } from '../lib/pushNotifications';
 import { getLocalDayUtcRange, checkDailyChatAvailability, evaluateSessionExpiry, markClientChatAsRead } from '../lib/chatSessionUtils';
@@ -1198,7 +1198,7 @@ export default function RoutesPage() {
         });
 
         const reportMsgClientId = `visit_rep_${targetClient.id}_${Date.now()}`;
-        const isAstracalls = currentSettings.useAstracalls !== false || currentSettings.provider === 'astracalls' || !!currentSettings.astracallsUrl;
+        const effectiveProvider = getEffectiveWhatsAppProvider(currentSettings);
 
         if (currentSettings.useSmsForReports) {
           await supabase.from('sms_queue').insert({
@@ -1207,9 +1207,12 @@ export default function RoutesPage() {
             message: message
           });
           console.log('Mensagem de relatório adicionada à fila de SMS.');
-        } else if (isAstracalls || currentSettings.useMetaApi || currentSettings.useEvolutionApi) {
+        } else if (effectiveProvider === 'manual') {
+          // Envio direto via WhatsApp Web / App no dispositivo
+          openWhatsApp(cleanPhone || targetClient.phone || clientPhone, message);
+        } else {
+          // Envio via API (astracalls, meta, evolution)
           let sent = false;
-          // Envio primário: endpoint seguro do servidor (/api/chat/send)
           try {
             const sendUrl = getApiUrl('/api/chat/send');
             const apiRes = await fetch(sendUrl, {
@@ -1238,22 +1241,26 @@ export default function RoutesPage() {
           // Fallback: se o backend falhar, tenta envio direto pelo navegador
           if (!sent) {
             try {
-              if (isAstracalls) {
+              if (effectiveProvider === 'astracalls') {
                 await sendAstraCallsMessage(cleanPhone, message, currentSettings, reportMsgClientId);
                 sent = true;
-              } else if (currentSettings.useMetaApi) {
+              } else if (effectiveProvider === 'meta') {
                 await sendMetaMessage(clientPhone, message, currentSettings, reportMsgClientId);
                 sent = true;
-              } else if (currentSettings.useEvolutionApi) {
+              } else if (effectiveProvider === 'evolution') {
                 await sendEvolutionMessage(clientPhone, message, currentSettings, reportMsgClientId);
                 sent = true;
               }
             } catch (directErr) {
-              console.error('[WhatsApp Relatório] Falha também no envio direto:', directErr);
+              console.error('[WhatsApp Relatório] Falha no envio direto pela API:', directErr);
             }
           }
-        } else {
-          openWhatsApp(clientPhone, message);
+
+          // Fallback final: se as APIs falharem, abre o WhatsApp no aparelho para garantir o envio
+          if (!sent) {
+            console.log('[WhatsApp Relatório] Acionando abertura no WhatsApp como fallback');
+            openWhatsApp(cleanPhone || targetClient.phone || clientPhone, message);
+          }
         }
       } catch (err: any) {
         console.error('Erro ao enviar mensagem via WhatsApp:', err);
