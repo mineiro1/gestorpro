@@ -375,7 +375,7 @@ export default function Layout() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex">
+    <div className="h-screen w-full bg-slate-950 text-slate-100 flex overflow-hidden">
       <EmployeeLocationTracker />
       <SmsGatewayListener />
       {/* Mobile drawer overlay */}
@@ -389,7 +389,7 @@ export default function Layout() {
       {/* Sidebar */}
       <aside
         className={clsx(
-          "fixed inset-y-0 left-0 z-50 w-72 bg-slate-950 text-slate-100 border-r border-slate-800 flex flex-col transform transition-transform duration-300 ease-in-out lg:translate-x-0 lg:static lg:inset-0 shadow-2xl lg:shadow-none",
+          "fixed inset-y-0 left-0 z-50 w-72 h-screen bg-slate-950 text-slate-100 border-r border-slate-800 flex flex-col transform transition-transform duration-300 ease-in-out lg:translate-x-0 lg:static lg:h-screen lg:shrink-0 shadow-2xl lg:shadow-none overflow-hidden",
           isDrawerOpen ? "translate-x-0" : "-translate-x-full"
         )}
       >
@@ -432,7 +432,7 @@ export default function Layout() {
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 px-3 py-5 space-y-1.5 overflow-y-auto">
+        <nav className="flex-1 px-3 py-5 space-y-1.5 overflow-y-auto overscroll-contain">
           <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-3 px-3">
             Menu Principal
           </div>
@@ -509,7 +509,7 @@ export default function Layout() {
       </aside>
 
       {/* Main content */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden relative pb-16 lg:pb-0 bg-slate-100">
+      <div className="flex-1 h-screen flex flex-col min-w-0 overflow-hidden relative pb-16 lg:pb-0 bg-slate-100">
         <header className="bg-slate-900 border-b border-slate-800 h-16 flex items-center justify-between px-4 lg:hidden shrink-0">
           <div className="flex items-center">
             <button
@@ -535,7 +535,7 @@ export default function Layout() {
         </header>
 
         <NotificationBanner />
-        <main className="flex-1 p-4 lg:p-8 overflow-y-auto bg-slate-100 text-slate-900">
+        <main className="flex-1 p-4 lg:p-8 overflow-y-auto overscroll-contain bg-slate-100 text-slate-900">
           <Outlet context={{ availableClients, selectedClientId }} />
         </main>
         
