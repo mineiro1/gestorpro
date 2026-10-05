@@ -158,32 +158,38 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 flex items-center justify-center p-4">
-      <div className="max-w-md w-full bg-white rounded-3xl shadow-2xl p-8 sm:p-10 border border-slate-100">
+    <div className="min-h-screen bg-slate-950 bg-gradient-to-b from-slate-900 via-slate-900 to-slate-950 flex items-center justify-center p-4 relative overflow-hidden">
+      {/* Background Ambient Glow */}
+      <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-sky-500/10 rounded-full blur-3xl pointer-events-none" />
+
+      <div className="max-w-md w-full bg-slate-900/90 backdrop-blur-md rounded-3xl shadow-2xl p-8 sm:p-10 border border-slate-800 relative z-10">
         <div className="text-center mb-8 flex flex-col items-center">
           <Link to="/" className="inline-block transition-transform hover:scale-105">
             <img 
               src="/logo.png" 
               alt="RS Piscinas Logo" 
-              className="w-24 h-24 mb-3 object-contain drop-shadow-sm" 
+              className="w-20 h-20 mb-3 object-contain drop-shadow-md" 
               onError={(e) => { 
                 e.currentTarget.src = '/rs-piscinas-logo.png'; 
               }} 
             />
           </Link>
-          <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">RS Piscinas</h1>
-          <p className="text-sm text-slate-500 mt-1">Acesso exclusivo para clientes e equipe técnica</p>
+          <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight">
+            RS <span className="text-sky-400">Piscinas</span>
+          </h1>
+          <p className="text-xs sm:text-sm text-slate-400 mt-1">Portal do Cliente & Equipe Técnica</p>
         </div>
 
         {error && (
-          <div className="bg-red-50 border border-red-200 text-red-600 p-3.5 rounded-xl mb-6 text-sm font-medium">
-            {error}
+          <div className="bg-red-950/40 border border-red-900/50 text-red-300 p-3.5 rounded-xl mb-6 text-xs sm:text-sm font-medium flex items-center gap-2">
+            <span>⚠️</span>
+            <span>{error}</span>
           </div>
         )}
 
-        <form onSubmit={handleLogin} className="space-y-5">
+        <form onSubmit={handleLogin} className="space-y-4 sm:space-y-5">
           <div>
-            <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+            <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
               Telefone / WhatsApp ou E-mail
             </label>
             <input
@@ -191,13 +197,13 @@ export default function Login() {
               required
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
-              className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-600 focus:border-blue-600 outline-none transition-all text-slate-900 placeholder-slate-400 bg-slate-50/50 focus:bg-white"
+              className="w-full px-4 py-3 border border-slate-700 rounded-xl focus:ring-2 focus:ring-sky-500/30 focus:border-sky-400 outline-none transition-all text-white placeholder-slate-500 bg-slate-950/80 focus:bg-slate-950 text-sm"
               placeholder="(67) 99249-9469"
             />
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+            <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
               Senha de Acesso
             </label>
             <input
@@ -205,7 +211,7 @@ export default function Login() {
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-600 focus:border-blue-600 outline-none transition-all text-slate-900 placeholder-slate-400 bg-slate-50/50 focus:bg-white"
+              className="w-full px-4 py-3 border border-slate-700 rounded-xl focus:ring-2 focus:ring-sky-500/30 focus:border-sky-400 outline-none transition-all text-white placeholder-slate-500 bg-slate-950/80 focus:bg-slate-950 text-sm"
               placeholder="••••••••"
             />
           </div>
@@ -213,14 +219,14 @@ export default function Login() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3.5 px-4 rounded-xl font-bold transition-all duration-200 shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed text-base cursor-pointer"
+            className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-3.5 px-4 rounded-xl font-extrabold transition-all duration-200 shadow-lg shadow-emerald-600/25 hover:shadow-emerald-500/35 disabled:opacity-50 disabled:cursor-not-allowed text-sm sm:text-base cursor-pointer mt-2"
           >
             {loading ? 'Entrando...' : 'Entrar no Sistema'}
           </button>
         </form>
 
-        <div className="mt-8 pt-6 border-t border-slate-100 text-center">
-          <Link to="/" className="text-sm font-medium text-slate-500 hover:text-blue-600 transition-colors">
+        <div className="mt-8 pt-6 border-t border-slate-800 text-center">
+          <Link to="/" className="text-xs sm:text-sm font-medium text-slate-400 hover:text-sky-400 transition-colors">
             ← Voltar para a página inicial
           </Link>
         </div>

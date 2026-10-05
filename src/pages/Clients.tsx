@@ -450,43 +450,43 @@ export default function Clients() {
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="bg-gray-50 border-b border-gray-200">
-                <th className="p-4 font-semibold text-gray-600">Nome</th>
-                <th className="p-4 font-semibold text-gray-600">Telefone</th>
+              <tr className="bg-slate-50 border-b border-slate-200">
+                <th className="p-4 font-bold text-slate-800">Nome</th>
+                <th className="p-4 font-bold text-slate-800">Telefone</th>
                 {(isAdmin || isManager) && (
                   <>
-                    <th className="p-4 font-semibold text-gray-600">Mensalidade</th>
-                    <th className="p-4 font-semibold text-gray-600">Vencimento</th>
+                    <th className="p-4 font-bold text-slate-800">Mensalidade</th>
+                    <th className="p-4 font-bold text-slate-800">Vencimento</th>
                   </>
                 )}
-                <th className="p-4 font-semibold text-gray-600 text-right">Ações</th>
+                <th className="p-4 font-bold text-slate-800 text-right">Ações</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="text-slate-900">
               {paginatedClients.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="p-4 text-center text-gray-500">
+                  <td colSpan={5} className="p-4 text-center text-slate-500">
                     {clients.length === 0 ? 'Nenhum cliente cadastrado.' : 'Nenhum cliente encontrado na busca.'}
                   </td>
                 </tr>
               ) : (
                 paginatedClients.map((client) => (
-                  <tr key={client.id} className="border-b border-gray-100 hover:bg-gray-50">
-                    <td className="p-4 font-medium text-gray-800">{client.name}</td>
-                    <td className="p-4">{client.phone}</td>
+                  <tr key={client.id} className="border-b border-slate-100 hover:bg-slate-50">
+                    <td className="p-4 font-bold text-slate-900">{client.name}</td>
+                    <td className="p-4 text-slate-700 font-medium">{client.phone}</td>
                     {(isAdmin || isManager) && (
                       <>
-                      <td className="p-4">
+                      <td className="p-4 font-semibold text-slate-900">
                         <div className="flex flex-col">
                           <span>R$ {((client.monthlyFee || 0) + (client.extraAmount || 0)).toFixed(2)}</span>
                           {client.extraAmount && client.extraAmount > 0 && (
-                            <span className="text-[10px] text-pink-600 font-semibold bg-pink-50 px-1.5 py-0.5 rounded-full inline-block w-max mt-1">
+                            <span className="text-[10px] text-pink-700 font-bold bg-pink-50 border border-pink-200 px-1.5 py-0.5 rounded-full inline-block w-max mt-1">
                               +R$ {client.extraAmount.toFixed(2)} Extra
                             </span>
                           )}
                         </div>
                       </td>
-                      <td className="p-4">
+                      <td className="p-4 text-slate-700 font-medium">
                         {client.dueDate ? new Date(client.dueDate + 'T12:00:00').toLocaleDateString('pt-BR') : 'N/A'}
                       </td>
                       </>

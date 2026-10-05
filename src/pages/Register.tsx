@@ -108,23 +108,38 @@ export default function Register() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
-      <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8">
+    <div className="min-h-screen bg-slate-950 bg-gradient-to-b from-slate-900 via-slate-900 to-slate-950 flex items-center justify-center p-4 relative overflow-hidden">
+      {/* Ambient Glow */}
+      <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-sky-500/10 rounded-full blur-3xl pointer-events-none" />
+
+      <div className="max-w-md w-full bg-slate-900/90 backdrop-blur-md rounded-3xl shadow-2xl p-8 sm:p-10 border border-slate-800 relative z-10">
         <div className="text-center mb-8 flex flex-col items-center">
-          <img src="/logo.png" alt="GestãoPro Logo" className="w-16 h-16 mb-4 object-contain" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
-          <h1 className="text-3xl font-bold text-primary mb-2">Criar Conta</h1>
-          <p className="text-gray-500">Cadastre-se como Administrador</p>
+          <Link to="/" className="inline-block transition-transform hover:scale-105">
+            <img 
+              src="/logo.png" 
+              alt="RS Piscinas Logo" 
+              className="w-20 h-20 mb-3 object-contain drop-shadow-md" 
+              onError={(e) => { 
+                e.currentTarget.src = '/rs-piscinas-logo.png'; 
+              }} 
+            />
+          </Link>
+          <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight">
+            Criar <span className="text-sky-400">Conta</span>
+          </h1>
+          <p className="text-xs sm:text-sm text-slate-400 mt-1">Cadastro de Administrador / Empresa</p>
         </div>
 
         {error && (
-          <div className="bg-red-50 text-red-500 p-3 rounded-md mb-6 text-sm">
-            {error}
+          <div className="bg-red-950/40 border border-red-900/50 text-red-300 p-3.5 rounded-xl mb-6 text-xs sm:text-sm font-medium flex items-center gap-2">
+            <span>⚠️</span>
+            <span>{error}</span>
           </div>
         )}
 
-        <form onSubmit={handleRegister} className="space-y-5">
+        <form onSubmit={handleRegister} className="space-y-4 sm:space-y-5">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
               Nome Completo
             </label>
             <input
@@ -132,13 +147,13 @@ export default function Register() {
               required
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-colors"
+              className="w-full px-4 py-3 border border-slate-700 rounded-xl focus:ring-2 focus:ring-sky-500/30 focus:border-sky-400 outline-none transition-all text-white placeholder-slate-500 bg-slate-950/80 focus:bg-slate-950 text-sm"
               placeholder="Seu nome"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
               Número de Telefone (WhatsApp)
             </label>
             <input
@@ -146,13 +161,13 @@ export default function Register() {
               required
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-colors"
-              placeholder="(11) 99999-9999"
+              className="w-full px-4 py-3 border border-slate-700 rounded-xl focus:ring-2 focus:ring-sky-500/30 focus:border-sky-400 outline-none transition-all text-white placeholder-slate-500 bg-slate-950/80 focus:bg-slate-950 text-sm"
+              placeholder="(67) 99249-9469"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
               Senha
             </label>
             <input
@@ -161,7 +176,7 @@ export default function Register() {
               minLength={6}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-colors"
+              className="w-full px-4 py-3 border border-slate-700 rounded-xl focus:ring-2 focus:ring-sky-500/30 focus:border-sky-400 outline-none transition-all text-white placeholder-slate-500 bg-slate-950/80 focus:bg-slate-950 text-sm"
               placeholder="••••••••"
             />
           </div>
@@ -169,16 +184,16 @@ export default function Register() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-secondary-dark text-white py-3 rounded-lg font-semibold hover:bg-secondary transition-colors disabled:opacity-50 mt-2"
+            className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-3.5 px-4 rounded-xl font-extrabold transition-all duration-200 shadow-lg shadow-emerald-600/25 hover:shadow-emerald-500/35 disabled:opacity-50 disabled:cursor-not-allowed text-sm sm:text-base cursor-pointer mt-2"
           >
             {loading ? 'Criando...' : 'Criar Conta'}
           </button>
         </form>
 
-        <div className="mt-6 text-center">
-          <p className="text-sm text-gray-600">
+        <div className="mt-8 pt-6 border-t border-slate-800 text-center">
+          <p className="text-xs sm:text-sm text-slate-400">
             Já tem uma conta?{' '}
-            <Link to="/login" className="text-primary font-semibold hover:underline">
+            <Link to="/login" className="text-sky-400 font-bold hover:underline">
               Fazer Login
             </Link>
           </p>

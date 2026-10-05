@@ -337,25 +337,25 @@ export default function Dashboard() {
   };
 
   const statCards = [
-    { title: 'Total de Clientes (Ativos)', value: stats.totalClients, icon: Users, color: 'bg-blue-500' },
-    { title: 'Clientes Inativos', value: stats.inactiveClients, icon: Users, color: 'bg-gray-400' },
-    { title: 'Valor Total a Receber', value: formatCurrency(stats.totalToReceive), icon: DollarSign, color: 'bg-primary' },
-    { title: 'Clientes Atrasados', value: stats.delayedClients, icon: AlertCircle, color: 'bg-red-500' },
-    { title: 'Recebido no Mês', value: formatCurrency(stats.receivedThisMonth), icon: CheckCircle, color: 'bg-green-500' },
-    { title: 'Pendente no Mês', value: formatCurrency(stats.pendingThisMonth), icon: Clock, color: 'bg-secondary-dark' },
+    { title: 'Total de Clientes (Ativos)', value: stats.totalClients, icon: Users, bgBadge: 'bg-sky-500/20 text-sky-400 border border-sky-500/30' },
+    { title: 'Clientes Inativos', value: stats.inactiveClients, icon: Users, bgBadge: 'bg-slate-800 text-slate-400 border border-slate-700' },
+    { title: 'Valor Total a Receber', value: formatCurrency(stats.totalToReceive), icon: DollarSign, bgBadge: 'bg-blue-500/20 text-blue-400 border border-blue-500/30' },
+    { title: 'Clientes Atrasados', value: stats.delayedClients, icon: AlertCircle, bgBadge: 'bg-red-500/20 text-red-400 border border-red-500/30' },
+    { title: 'Recebido no Mês', value: formatCurrency(stats.receivedThisMonth), icon: CheckCircle, bgBadge: 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' },
+    { title: 'Pendente no Mês', value: formatCurrency(stats.pendingThisMonth), icon: Clock, bgBadge: 'bg-amber-500/20 text-amber-400 border border-amber-500/30' },
   ];
 
   return (
-    <div>
+    <div className="space-y-6">
       
       {userProfile?.role === 'admin' && userProfile?.subscriptionExpiresAt && !isTrial && (
-        <div className="bg-gradient-to-r from-blue-100 to-indigo-50 border border-blue-200 rounded-xl p-4 flex flex-col sm:flex-row items-center justify-between shadow-sm mb-6">
+        <div className="bg-gradient-to-r from-blue-950 via-slate-900 to-blue-950 border border-sky-500/40 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-center justify-between shadow-lg">
           <div className="flex items-center mb-4 sm:mb-0">
-            <Clock className="text-blue-600 mr-3 hidden sm:block" size={24} />
+            <Clock className="text-sky-400 mr-3.5 hidden sm:block shrink-0" size={26} />
             <div>
-              <h3 className="font-bold text-blue-800">Assinatura Ativa</h3>
-              <p className="text-sm text-blue-700">
-                Sua mensalidade vence em: <span className="font-bold">{formatDate(userProfile.subscriptionExpiresAt)}</span>
+              <h3 className="font-bold text-white text-base">Assinatura Ativa</h3>
+              <p className="text-xs sm:text-sm text-sky-200 mt-0.5">
+                Sua mensalidade vence em: <span className="font-bold text-white">{formatDate(userProfile.subscriptionExpiresAt)}</span>
               </p>
             </div>
           </div>
@@ -363,7 +363,7 @@ export default function Dashboard() {
             <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto mt-4 sm:mt-0">
               <button
                 onClick={handlePay}
-                className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-sm transition-colors flex items-center justify-center whitespace-nowrap"
+                className="px-6 py-2.5 bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold rounded-xl shadow-md transition-all flex items-center justify-center whitespace-nowrap cursor-pointer"
               >
                 <CreditCard size={18} className="mr-2" />
                 Renovar Assinatura
@@ -374,27 +374,27 @@ export default function Dashboard() {
       )}
 
       {isTrial && (
-        <div className="bg-gradient-to-r from-yellow-100 to-yellow-50 border border-yellow-200 rounded-xl p-4 flex flex-col sm:flex-row items-center justify-between shadow-sm mb-6">
+        <div className="bg-gradient-to-r from-amber-950/80 via-slate-900 to-amber-950/80 border border-amber-500/40 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-center justify-between shadow-lg">
           <div className="flex items-center mb-4 sm:mb-0">
-            <Clock className="text-yellow-600 mr-3 hidden sm:block" size={24} />
+            <Clock className="text-amber-400 mr-3.5 hidden sm:block shrink-0" size={26} />
             <div>
-              <h3 className="font-bold text-yellow-800">Você está no período de teste (7 dias)</h3>
-              <p className="text-sm text-yellow-700">
-                Evite a interrupção do serviço. Assine agora e garanta acesso contínuo para sua empresa.
+              <h3 className="font-bold text-amber-200 text-base">Período de Teste (7 dias)</h3>
+              <p className="text-xs sm:text-sm text-amber-300/80 mt-0.5">
+                Evite a interrupção do serviço. Assine agora e garanta acesso contínuo.
               </p>
             </div>
           </div>
           <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto mt-4 sm:mt-0">
             <button
               onClick={() => window.open('https://wa.me/5567992499469', '_blank')}
-              className="px-6 py-2 bg-yellow-100 text-yellow-800 hover:bg-yellow-200 border border-yellow-300 font-semibold rounded-lg shadow-sm transition-colors flex items-center justify-center whitespace-nowrap"
+              className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-amber-300 border border-amber-500/40 font-bold rounded-xl shadow-sm transition-all flex items-center justify-center whitespace-nowrap cursor-pointer text-sm"
             >
               <MessageCircle size={18} className="mr-2" />
               Contato
             </button>
             <button
               onClick={handlePay}
-              className="px-6 py-2 bg-yellow-500 hover:bg-yellow-600 text-white font-semibold rounded-lg shadow-sm transition-colors flex items-center justify-center whitespace-nowrap"
+              className="px-6 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl shadow-md transition-all flex items-center justify-center whitespace-nowrap cursor-pointer text-sm"
             >
               <CreditCard size={18} className="mr-2" />
               Assinar Agora
@@ -403,39 +403,42 @@ export default function Dashboard() {
         </div>
       )}
 
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-gray-800">Dashboard</h1>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight">Dashboard</h1>
+          <p className="text-xs sm:text-sm text-slate-400 mt-0.5">Visão geral do gerenciamento e atendimentos</p>
+        </div>
         <div className="flex items-center gap-2">
           <button
             onClick={() => fetchStats(true)}
             disabled={isRefreshing}
-            className="flex items-center justify-center p-2 bg-white rounded-lg shadow-sm border border-gray-200 text-gray-600 hover:text-primary transition-colors text-sm font-medium gap-1.5 px-3 disabled:opacity-60"
+            className="flex items-center justify-center p-2.5 bg-slate-900 hover:bg-slate-800 rounded-xl shadow-sm border border-slate-800 text-slate-300 hover:text-white transition-all text-xs sm:text-sm font-semibold gap-2 px-3.5 disabled:opacity-60 cursor-pointer"
             title="Atualizar dados do Dashboard"
           >
-            <RefreshCw size={18} className={`text-primary ${isRefreshing ? 'animate-spin' : ''}`} />
+            <RefreshCw size={17} className={`text-sky-400 ${isRefreshing ? 'animate-spin' : ''}`} />
             <span className="hidden sm:inline">{isRefreshing ? 'Atualizando...' : 'Atualizar'}</span>
           </button>
           <button 
             onClick={() => setShowValues(!showValues)}
-            className="flex items-center justify-center p-2 bg-white rounded-lg shadow-sm border border-gray-200 text-gray-600 hover:text-primary transition-colors"
+            className="flex items-center justify-center p-2.5 bg-slate-900 hover:bg-slate-800 rounded-xl shadow-sm border border-slate-800 text-slate-300 hover:text-white transition-all cursor-pointer"
             title={showValues ? "Ocultar valores" : "Mostrar valores"}
           >
-            {showValues ? <EyeOff size={20} /> : <Eye size={20} />}
+            {showValues ? <EyeOff size={19} className="text-slate-400" /> : <Eye size={19} className="text-sky-400" />}
           </button>
         </div>
       </div>
       
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
         {statCards.map((stat, index) => {
           const Icon = stat.icon;
           return (
-            <div key={index} className="bg-white rounded-xl shadow-sm p-6 flex items-center">
-              <div className={`p-4 rounded-full ${stat.color} text-white mr-4`}>
-                <Icon size={24} />
+            <div key={index} className="bg-slate-900/90 border border-slate-800 hover:border-slate-700/80 rounded-2xl shadow-xl p-5 sm:p-6 flex items-center justify-between transition-all duration-200">
+              <div className="space-y-1">
+                <p className="text-xs sm:text-sm text-slate-400 font-medium">{stat.title}</p>
+                <p className="text-xl sm:text-2xl font-black text-white tracking-tight">{stat.value}</p>
               </div>
-              <div>
-                <p className="text-sm text-gray-500 font-medium">{stat.title}</p>
-                <p className="text-2xl font-bold text-gray-800">{stat.value}</p>
+              <div className={`p-3.5 rounded-2xl ${stat.bgBadge} shadow-sm shrink-0 ml-3`}>
+                <Icon size={24} />
               </div>
             </div>
           );
@@ -443,26 +446,26 @@ export default function Dashboard() {
       </div>
 
       {clientsWithoutVisits.length > 0 && (
-        <div className="mt-8 bg-red-50 border-l-4 border-red-500 p-6 rounded-r-xl shadow-sm">
+        <div className="bg-red-950/20 border-l-4 border-red-500 border border-red-900/30 p-5 sm:p-6 rounded-r-2xl shadow-xl">
           <div className="flex items-center mb-2">
-            <AlertCircle className="text-red-500 mr-2" size={24} />
-            <h2 className="text-xl font-bold text-red-800">Alerta de Visitas Pendentes</h2>
+            <AlertCircle className="text-red-400 mr-2.5 shrink-0" size={22} />
+            <h2 className="text-lg sm:text-xl font-bold text-red-200">Alerta de Visitas Pendentes</h2>
           </div>
-          <p className="text-red-700 font-medium mb-4">
+          <p className="text-xs sm:text-sm text-red-300/80 font-medium mb-4">
             Você possui {clientsWithoutVisits.length} clientes que não receberam visitas nos últimos 7 dias.
           </p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
             {clientsWithoutVisits.slice(0, 9).map(client => (
-              <div key={client.id} className="bg-white p-3 rounded shadow-sm border border-red-100 flex flex-col justify-center">
-                <span className="font-bold text-gray-800">{client.name}</span>
-                <span className="text-sm text-gray-500">
+              <div key={client.id} className="bg-slate-900/90 border border-red-900/40 p-3.5 rounded-xl shadow-sm flex flex-col justify-center">
+                <span className="font-bold text-white text-sm truncate">{client.name}</span>
+                <span className="text-xs text-slate-400 mt-0.5">
                   {client.lastVisitDate ? `Última visita: ${new Date(client.lastVisitDate).toLocaleDateString('pt-BR')}` : 'Nenhuma visita registrada'}
                 </span>
               </div>
             ))}
           </div>
           {clientsWithoutVisits.length > 9 && (
-            <p className="text-sm text-red-600 mt-4 font-semibold italic">... e mais {clientsWithoutVisits.length - 9} clientes.</p>
+            <p className="text-xs text-red-400 mt-3 font-semibold italic">... e mais {clientsWithoutVisits.length - 9} clientes.</p>
           )}
         </div>
       )}

@@ -1015,14 +1015,14 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
                   className={`flex ${msg.sender_type === 'tech' ? 'justify-end' : 'justify-start'}`}
                 >
                   <div 
-                    className={`max-w-[80%] rounded-2xl px-3.5 py-2.5 shadow-xs ${
+                    className={`max-w-[80%] rounded-2xl px-3.5 py-2.5 shadow-sm ${
                       msg.sender_type === 'tech' 
-                        ? 'bg-primary text-white rounded-br-xs' 
-                        : 'bg-white text-gray-800 border border-gray-100 rounded-bl-xs'
+                        ? 'bg-sky-600 text-white rounded-br-xs' 
+                        : 'bg-white text-slate-900 border border-slate-200 rounded-bl-xs font-medium'
                     }`}
                   >
                     {senderDisplayName && (
-                      <div className={`text-[10px] font-semibold mb-1 ${msg.sender_type === 'tech' ? 'text-blue-200' : 'text-primary'}`}>
+                      <div className={`text-[10px] font-bold mb-1 ${msg.sender_type === 'tech' ? 'text-sky-200' : 'text-sky-700'}`}>
                         {senderDisplayName}
                       </div>
                     )}
@@ -1030,7 +1030,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
                     {realMediaUrl ? (
                       isAudioMsg ? (
                         <div className="space-y-1">
-                          <p className="text-xs opacity-80">{msg.content || '🎤 Mensagem de voz'}</p>
+                          <p className={`text-xs ${msg.sender_type === 'tech' ? 'text-white/90' : 'text-slate-700'}`}>{msg.content || '🎤 Mensagem de voz'}</p>
                           <AudioViewer url={realMediaUrl} className="max-w-[220px] md:max-w-[300px]" />
                         </div>
                       ) : (
@@ -1042,15 +1042,15 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
                             className="max-w-full md:max-w-[300px] max-h-[300px] object-cover rounded-lg cursor-pointer hover:opacity-90" 
                           />
                           {msg.content && msg.content !== '📸 Foto' && msg.content !== '🎥 Vídeo' && (
-                            <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                            <p className={`text-sm whitespace-pre-wrap ${msg.sender_type === 'tech' ? 'text-white' : 'text-slate-900'}`}>{msg.content}</p>
                           )}
                         </div>
                       )
                     ) : (
-                      <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                      <p className={`text-sm whitespace-pre-wrap ${msg.sender_type === 'tech' ? 'text-white' : 'text-slate-900 font-medium'}`}>{msg.content}</p>
                     )}
                     
-                    <div className={`text-[10px] mt-1 flex items-center gap-1 ${msg.sender_type === 'tech' ? 'text-blue-100 justify-end' : 'text-gray-400 justify-start'}`}>
+                    <div className={`text-[10px] mt-1 flex items-center gap-1 ${msg.sender_type === 'tech' ? 'text-sky-200 justify-end' : 'text-slate-400 justify-start'}`}>
                       <span>{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                       {msg.sender_type === 'tech' && (
                         <MessageStatus
@@ -1200,7 +1200,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
                 }}
                 placeholder={selectedMedia ? "Adicione uma legenda opcional..." : "Digite uma mensagem..."}
                 disabled={sendMutation.isPending}
-                className="flex-1 bg-gray-100 border-transparent focus:bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 rounded-full px-4 py-2 text-sm transition-all disabled:bg-gray-50"
+                className="flex-1 bg-slate-100 border border-slate-200 text-slate-900 placeholder-slate-400 focus:bg-white focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20 rounded-full px-4 py-2 text-sm transition-all disabled:bg-gray-50"
               />
 
               {/* Botão de Envio */}

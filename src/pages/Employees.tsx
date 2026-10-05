@@ -184,24 +184,24 @@ export default function Employees() {
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="bg-gray-50 border-b border-gray-200">
-                <th className="p-4 font-semibold text-gray-600">Nome</th>
-                <th className="p-4 font-semibold text-gray-600">Telefone</th>
-                <th className="p-4 font-semibold text-gray-600 text-right">Ações</th>
+              <tr className="bg-slate-50 border-b border-slate-200">
+                <th className="p-4 font-bold text-slate-800">Nome</th>
+                <th className="p-4 font-bold text-slate-800">Telefone</th>
+                <th className="p-4 font-bold text-slate-800 text-right">Ações</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="text-slate-900">
               {filteredEmployees.length === 0 ? (
                 <tr>
-                  <td colSpan={3} className="p-4 text-center text-gray-500">
+                  <td colSpan={3} className="p-4 text-center text-slate-500">
                     {employees.length === 0 ? 'Nenhum colaborador cadastrado.' : 'Nenhum colaborador encontrado.'}
                   </td>
                 </tr>
               ) : (
                 filteredEmployees.map((employee) => (
-                  <tr key={employee.id} className="border-b border-gray-100 hover:bg-gray-50">
-                    <td className="p-4">{employee.name} {employee.role === 'manager' && '(Gestor)'}</td>
-                    <td className="p-4">{employee.phone}</td>
+                  <tr key={employee.id} className="border-b border-slate-100 hover:bg-slate-50">
+                    <td className="p-4 text-slate-900 font-semibold">{employee.name} {employee.role === 'manager' && '(Gestor)'}</td>
+                    <td className="p-4 text-slate-700 font-medium">{employee.phone}</td>
                     <td className="p-4 flex justify-end space-x-2">
                       {employee.last_location && (
                         <button

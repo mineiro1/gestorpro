@@ -42,24 +42,24 @@ const renderNotes = (notes: string) => {
   mainNotes = tarResult.remaining;
 
   if (tarefas.length === 0 && parametros.length === 0 && produtos.length === 0) {
-    return <p className="text-sm text-gray-700 bg-gray-50 p-4 rounded-lg border border-gray-100 whitespace-pre-wrap">{notes}</p>;
+    return <p className="text-xs sm:text-sm text-slate-300 bg-slate-950/70 p-4 rounded-xl border border-slate-800 whitespace-pre-wrap">{notes}</p>;
   }
 
   return (
-    <div className="bg-white rounded-lg border border-gray-100 overflow-hidden shadow-sm">
+    <div className="bg-slate-950/80 rounded-xl border border-slate-800 overflow-hidden shadow-inner mt-2">
       {mainNotes.trim() && (
-        <div className="p-4 bg-gray-50 border-b border-gray-100">
-          <p className="text-sm text-gray-700 whitespace-pre-wrap">{mainNotes.trim()}</p>
+        <div className="p-3.5 bg-slate-900/90 border-b border-slate-800">
+          <p className="text-xs sm:text-sm text-slate-200 whitespace-pre-wrap">{mainNotes.trim()}</p>
         </div>
       )}
       
       {tarefas.length > 0 && (
-        <div className="p-4 border-b border-gray-100">
-          <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Serviços Executados</h4>
+        <div className="p-3.5 border-b border-slate-800">
+          <h4 className="text-[11px] font-bold text-sky-400 uppercase tracking-wider mb-2.5">Serviços Executados</h4>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {tarefas.map((item, idx) => (
-              <div key={idx} className="flex items-center space-x-2 text-sm text-gray-700">
-                <CheckCircle size={16} className="text-primary flex-shrink-0" />
+              <div key={idx} className="flex items-center space-x-2 text-xs sm:text-sm text-slate-300">
+                <CheckCircle size={15} className="text-emerald-400 shrink-0" />
                 <span>{item}</span>
               </div>
             ))}
@@ -68,15 +68,15 @@ const renderNotes = (notes: string) => {
       )}
 
       {parametros.length > 0 && (
-        <div className="p-4 border-b border-gray-100">
-          <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Parâmetros da Água</h4>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="p-3.5 border-b border-slate-800">
+          <h4 className="text-[11px] font-bold text-sky-400 uppercase tracking-wider mb-2.5">Parâmetros da Água</h4>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
             {parametros.map((item, idx) => {
               const [label, val] = item.split(': ');
               return (
-                <div key={idx} className="bg-blue-50 p-2 rounded border border-blue-100">
-                  <span className="block text-xs text-blue-600 font-medium">{label}</span>
-                  <span className="block text-sm font-bold text-gray-800">{val}</span>
+                <div key={idx} className="bg-slate-900 p-2.5 rounded-lg border border-slate-800">
+                  <span className="block text-[10px] text-slate-400 font-semibold">{label}</span>
+                  <span className="block text-xs sm:text-sm font-bold text-sky-300">{val}</span>
                 </div>
               );
             })}
@@ -85,11 +85,11 @@ const renderNotes = (notes: string) => {
       )}
 
       {produtos.length > 0 && (
-        <div className="p-4 bg-green-50/30">
-          <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Produtos Utilizados</h4>
-          <div className="flex flex-wrap gap-2">
+        <div className="p-3.5 bg-slate-900/40">
+          <h4 className="text-[11px] font-bold text-sky-400 uppercase tracking-wider mb-2.5">Produtos Utilizados</h4>
+          <div className="flex flex-wrap gap-1.5">
             {produtos.map((item, idx) => (
-              <span key={idx} className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800 border border-green-200">
+              <span key={idx} className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-950/80 text-emerald-300 border border-emerald-800/50">
                 {item}
               </span>
             ))}
@@ -209,50 +209,50 @@ export default function ClientPanel() {
         <div className="p-8 text-center text-gray-500">Carregando detalhes do cadastro...</div>
       ) : clientData ? (
         <>
-          <div className="bg-gradient-to-r from-primary to-primary-light rounded-xl shadow-lg p-6 text-white flex justify-between items-center">
+          <div className="bg-gradient-to-r from-blue-950 via-slate-900 to-blue-950 border border-sky-500/40 rounded-2xl shadow-xl p-5 sm:p-6 text-white flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
             <div>
-              <h1 className="text-3xl font-bold mb-2">Olá, {(clientData.name || 'Cliente').split(' ')[0]}!</h1>
-              <p className="text-secondary-light">Bem-vindo(a) ao seu painel.</p>
+              <h1 className="text-2xl sm:text-3xl font-black mb-1 text-white">Olá, {(clientData.name || 'Cliente').split(' ')[0]}!</h1>
+              <p className="text-xs sm:text-sm text-sky-300">Bem-vindo(a) ao seu painel RS Piscinas.</p>
             </div>
             <button
               onClick={() => loadClientDetails(true)}
               disabled={isRefreshing}
-              className="bg-white/10 hover:bg-white/20 active:bg-white/30 border border-white/20 text-white px-4 py-2 rounded-lg flex items-center transition-all text-sm font-medium disabled:opacity-60 shadow-sm"
+              className="bg-slate-800 hover:bg-slate-700 active:bg-slate-600 border border-slate-700 text-slate-200 px-4 py-2 rounded-xl flex items-center transition-all text-xs sm:text-sm font-bold disabled:opacity-60 shadow-sm cursor-pointer"
               title="Atualizar painel"
             >
-              <RefreshCw size={17} className={`mr-2 ${isRefreshing ? 'animate-spin' : ''}`} />
+              <RefreshCw size={16} className={`mr-2 text-sky-400 ${isRefreshing ? 'animate-spin' : ''}`} />
               <span>{isRefreshing ? 'Atualizando...' : 'Atualizar'}</span>
             </button>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100 flex items-center">
-              <div className="w-12 h-12 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center mr-4">
-                <Calendar size={24} />
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
+            <div className="bg-slate-900/90 rounded-2xl shadow-xl p-5 sm:p-6 border border-slate-800 flex items-center">
+              <div className="w-12 h-12 rounded-xl bg-sky-500/20 text-sky-400 border border-sky-500/30 flex items-center justify-center mr-4 shrink-0">
+                <Calendar size={22} />
               </div>
               <div>
-                <p className="text-sm text-gray-500 font-medium">Vencimento da Mensalidade</p>
-                <p className="text-2xl font-bold text-gray-800">{dueDate}</p>
+                <p className="text-xs text-slate-400 font-medium">Vencimento da Mensalidade</p>
+                <p className="text-xl sm:text-2xl font-black text-white">{dueDate}</p>
               </div>
             </div>
 
-            <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100 flex items-center">
-              <div className="w-12 h-12 rounded-full bg-green-100 text-green-600 flex items-center justify-center mr-4">
-                <CheckCircle size={24} />
+            <div className="bg-slate-900/90 rounded-2xl shadow-xl p-5 sm:p-6 border border-slate-800 flex items-center">
+              <div className="w-12 h-12 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center mr-4 shrink-0">
+                <CheckCircle size={22} />
               </div>
               <div>
-                <p className="text-sm text-gray-500 font-medium">Situação Atual</p>
-                <p className="text-lg font-bold text-gray-800">No sistema</p>
+                <p className="text-xs text-slate-400 font-medium">Situação Atual</p>
+                <p className="text-lg sm:text-xl font-bold text-emerald-400">Ativo no Sistema</p>
               </div>
             </div>
 
-            <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100 flex items-center">
-              <div className="w-12 h-12 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center mr-4">
-                <Calendar size={24} />
+            <div className="bg-slate-900/90 rounded-2xl shadow-xl p-5 sm:p-6 border border-slate-800 flex items-center">
+              <div className="w-12 h-12 rounded-xl bg-purple-500/20 text-purple-400 border border-purple-500/30 flex items-center justify-center mr-4 shrink-0">
+                <Calendar size={22} />
               </div>
               <div>
-                <p className="text-sm text-gray-500 font-medium">Dias de Visita</p>
-                <p className="text-lg font-bold text-gray-800">
+                <p className="text-xs text-slate-400 font-medium">Dias de Visita</p>
+                <p className="text-base sm:text-lg font-bold text-white truncate">
                   {clientData.visit_days && clientData.visit_days.length > 0 
                     ? clientData.visit_days.join(', ') 
                     : 'A combinar'}
@@ -261,21 +261,24 @@ export default function ClientPanel() {
             </div>
           </div>
 
-          <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-            <div className="p-6 border-b border-gray-100 bg-gray-50">
-              <h2 className="text-xl font-bold text-gray-800">Histórico de Visitas</h2>
+          <div className="bg-slate-900/90 rounded-2xl shadow-xl border border-slate-800 overflow-hidden">
+            <div className="p-5 sm:p-6 border-b border-slate-800 bg-slate-900 flex items-center justify-between">
+              <h2 className="text-lg sm:text-xl font-black text-white">Histórico de Visitas</h2>
+              <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-800 text-sky-400 border border-slate-700">
+                {visits.length} {visits.length === 1 ? 'visita' : 'visitas'}
+              </span>
             </div>
-            <div className="divide-y divide-gray-100">
+            <div className="divide-y divide-slate-800">
               {visits.map(v => (
-                <div key={v.id} className="p-4 hover:bg-gray-50 transition-colors">
+                <div key={v.id} className="p-4 sm:p-5 hover:bg-slate-800/40 transition-colors">
                   <div className="flex justify-between items-start mb-2">
-                    <div className="flex items-center text-primary font-semibold">
-                      <CheckCircle size={16} className="mr-2" />
+                    <div className="flex items-center text-sky-400 font-bold text-sm">
+                      <CheckCircle size={16} className="mr-2 text-emerald-400 shrink-0" />
                       {v.date ? new Date(v.date).toLocaleString('pt-BR') : 'Data Indisponível'}
                     </div>
                     {v.employeeId && (
-                      <div className="text-sm font-medium text-gray-500">
-                        Colaborador: {employeesMap[v.employeeId] || 'Desconhecido'}
+                      <div className="text-xs font-medium text-slate-400">
+                        Técnico: <span className="text-slate-200">{employeesMap[v.employeeId] || 'Desconhecido'}</span>
                       </div>
                     )}
                   </div>
@@ -288,21 +291,21 @@ export default function ClientPanel() {
                         src={v.photo_url} 
                         alt="Foto da visita" 
                         onClick={() => setFullscreenImage(v.photo_url)}
-                        className="w-32 h-32 object-cover rounded-lg shadow-sm border border-gray-200 cursor-pointer hover:opacity-90 transition-opacity" 
+                        className="w-28 h-28 sm:w-36 sm:h-36 object-cover rounded-xl shadow-md border border-slate-700 cursor-pointer hover:opacity-90 transition-opacity" 
                       />
                     </div>
                   )}
                   
                   {/* Modern multiple photos support */}
                   {v.photo_urls && v.photo_urls.length > 0 && (
-                    <div className="mt-3 flex gap-2 overflow-x-auto pb-2">
+                    <div className="mt-3 flex gap-2.5 overflow-x-auto pb-2">
                       {v.photo_urls.map((photo: string, index: number) => (
                         <img 
                           key={index}
                           src={photo} 
                           alt={`Foto da visita ${index}`} 
                           onClick={() => setFullscreenImage(photo)}
-                          className="w-32 h-32 object-cover rounded-lg shadow-sm border border-gray-200 cursor-pointer hover:opacity-90 transition-opacity shrink-0" 
+                          className="w-28 h-28 sm:w-36 sm:h-36 object-cover rounded-xl shadow-md border border-slate-700 cursor-pointer hover:opacity-90 transition-opacity shrink-0" 
                         />
                       ))}
                     </div>
@@ -310,7 +313,7 @@ export default function ClientPanel() {
                 </div>
               ))}
               {visits.length === 0 && (
-                <p className="p-8 text-center text-gray-500">Nenhuma visita registrada ainda.</p>
+                <p className="p-8 text-center text-slate-400 text-sm">Nenhuma visita registrada ainda.</p>
               )}
             </div>
           </div>

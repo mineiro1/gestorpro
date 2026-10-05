@@ -57,14 +57,14 @@ const NotificationBanner = () => {
   };
 
   return (
-    <div className="bg-blue-600 text-white p-4 flex flex-col sm:flex-row items-center justify-between shadow-md relative z-50">
+    <div className="bg-gradient-to-r from-blue-950 via-slate-900 to-blue-950 border-b border-sky-500/30 text-sky-200 p-4 flex flex-col sm:flex-row items-center justify-between shadow-lg relative z-50">
       <div className="flex items-center space-x-3 mb-2 sm:mb-0">
-        <Bell className="w-6 h-6 animate-pulse" />
-        <span className="text-sm font-medium">Ative as notificações push para receber alertas em tempo real das rotas e serviços finalizados.</span>
+        <Bell className="w-5 h-5 text-sky-400 animate-pulse" />
+        <span className="text-xs sm:text-sm font-medium">Ative as notificações push para receber alertas em tempo real das rotas e serviços.</span>
       </div>
       <div className="flex space-x-2">
-        <button onClick={requestPermission} className="bg-white text-blue-600 px-4 py-1.5 rounded-md text-sm font-bold shadow hover:bg-blue-50 transition cursor-pointer">Ativar</button>
-        <button onClick={dismiss} className="bg-blue-700 text-white px-3 py-1.5 rounded-md text-sm hover:bg-blue-800 transition cursor-pointer">Depois</button>
+        <button onClick={requestPermission} className="bg-sky-500 hover:bg-sky-400 text-slate-950 px-4 py-1.5 rounded-xl text-xs sm:text-sm font-bold shadow-md transition cursor-pointer">Ativar</button>
+        <button onClick={dismiss} className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-xl text-xs sm:text-sm border border-slate-700 transition cursor-pointer">Depois</button>
       </div>
     </div>
   );
@@ -375,13 +375,13 @@ export default function Layout() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-100 flex">
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex">
       <EmployeeLocationTracker />
       <SmsGatewayListener />
       {/* Mobile drawer overlay */}
       {isDrawerOpen && (
         <div 
-          className="fixed inset-0 bg-black/50 z-40 lg:hidden transition-opacity"
+          className="fixed inset-0 bg-black/70 backdrop-blur-sm z-40 lg:hidden transition-opacity"
           onClick={() => setIsDrawerOpen(false)}
         />
       )}
@@ -389,25 +389,27 @@ export default function Layout() {
       {/* Sidebar */}
       <aside
         className={clsx(
-          "fixed inset-y-0 left-0 z-50 w-72 bg-primary-dark text-white flex flex-col transform transition-transform duration-300 ease-in-out lg:translate-x-0 lg:static lg:inset-0 shadow-2xl lg:shadow-none",
+          "fixed inset-y-0 left-0 z-50 w-72 bg-slate-950 text-slate-100 border-r border-slate-800 flex flex-col transform transition-transform duration-300 ease-in-out lg:translate-x-0 lg:static lg:inset-0 shadow-2xl lg:shadow-none",
           isDrawerOpen ? "translate-x-0" : "-translate-x-full"
         )}
       >
         {/* Header */}
-        <div className="flex flex-col bg-primary shadow-md shrink-0">
+        <div className="flex flex-col bg-slate-900 border-b border-slate-800 shrink-0">
           <div className="flex items-center justify-between h-16 px-6">
-            <span className="text-2xl font-bold text-secondary-light tracking-wide truncate max-w-[200px]">{userProfile?.whatsappSettings?.companyName || "GestãoPro"}</span>
-            <button onClick={() => setIsDrawerOpen(false)} className="lg:hidden text-white hover:text-gray-200 transition-colors">
+            <span className="text-xl font-black text-white tracking-tight truncate max-w-[200px]">
+              {userProfile?.whatsappSettings?.companyName || "RS Piscinas"}
+            </span>
+            <button onClick={() => setIsDrawerOpen(false)} className="lg:hidden text-slate-400 hover:text-white transition-colors">
               <X size={24} />
             </button>
           </div>
           {userProfile?.whatsappSettings?.companyLogo && (
-            <div className="w-full aspect-square bg-white overflow-hidden border-b border-gray-200">
+            <div className="w-full aspect-video bg-slate-950 overflow-hidden border-b border-slate-800 p-2 flex items-center justify-center">
               <img 
                 key={userProfile.whatsappSettings.companyLogo} 
                 src={userProfile.whatsappSettings.companyLogo} 
                 alt="Logo" 
-                className="w-full h-full object-cover" 
+                className="max-h-full max-w-full object-contain" 
                 onError={(e) => { e.currentTarget.style.display = "none"; }} 
               />
             </div>
@@ -415,14 +417,14 @@ export default function Layout() {
         </div>
 
         {/* User Profile Section */}
-        <div className="p-6 bg-primary-dark border-b border-primary-light/20 shrink-0">
-          <div className="flex items-center space-x-4">
-            <div className="w-12 h-12 rounded-full bg-primary flex items-center justify-center text-secondary-light font-bold text-xl shadow-inner">
+        <div className="p-5 bg-slate-900/60 border-b border-slate-800 shrink-0">
+          <div className="flex items-center space-x-3.5">
+            <div className="w-11 h-11 rounded-xl bg-gradient-to-tr from-sky-600 to-blue-500 flex items-center justify-center text-white font-bold text-lg shadow-md shadow-sky-500/20">
               {userProfile?.name?.charAt(0).toUpperCase() || 'U'}
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-white truncate">{userProfile?.name}</p>
-              <p className="text-xs text-secondary-light uppercase tracking-wider mt-1 font-semibold">
+              <p className="text-sm font-bold text-white truncate">{userProfile?.name}</p>
+              <p className="text-[11px] text-sky-400 font-semibold tracking-wider uppercase mt-0.5">
                 {userProfile?.role === 'admin' ? 'Administrador' : userProfile?.role === 'manager' ? 'Gestor' : userProfile?.role === 'client' ? 'Cliente' : 'Colaborador'}
               </p>
             </div>
@@ -430,8 +432,8 @@ export default function Layout() {
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 px-4 py-6 space-y-2 overflow-y-auto">
-          <div className="text-xs font-bold text-primary-light uppercase tracking-wider mb-4 px-2">
+        <nav className="flex-1 px-3 py-5 space-y-1.5 overflow-y-auto">
+          <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-3 px-3">
             Menu Principal
           </div>
           {navItems.map((item) => {
@@ -444,26 +446,26 @@ export default function Layout() {
                   to={item.path}
                   onClick={() => setIsDrawerOpen(false)}
                   className={clsx(
-                    "flex items-center px-4 py-3 rounded-xl transition-all duration-200 group",
+                    "flex items-center px-3.5 py-2.5 rounded-xl transition-all duration-200 group text-sm font-medium",
                     isActive 
-                      ? "bg-primary text-white shadow-md" 
-                      : "text-gray-300 hover:bg-primary/40 hover:text-white"
+                      ? "bg-gradient-to-r from-sky-500/20 to-blue-600/20 text-sky-300 border border-sky-500/30 shadow-sm font-semibold" 
+                      : "text-slate-400 hover:bg-slate-900 hover:text-white"
                   )}
                 >
                   <Icon 
-                    size={20} 
+                    size={19} 
                     className={clsx(
-                      "mr-3 transition-colors duration-200",
-                      isActive ? "text-secondary-light" : "text-gray-400 group-hover:text-secondary-light"
+                      "mr-3 transition-colors duration-200 shrink-0",
+                      isActive ? "text-sky-400" : "text-slate-500 group-hover:text-sky-400"
                     )} 
                   />
-                  <span className="font-medium">{item.name}</span>
+                  <span className="truncate">{item.name}</span>
                 </Link>
                 
                 {/* Client Selection List (If client has multiple profiles) */}
                 {item.name === 'Meu Painel' && isClient && availableClients.length > 1 && (
-                  <div className="mt-2 ml-4 pl-4 border-l border-primary-light/20 space-y-1">
-                    <div className="text-[10px] font-bold text-primary-light uppercase tracking-wider mb-2 mt-2">
+                  <div className="mt-1.5 ml-4 pl-3 border-l border-slate-800 space-y-1">
+                    <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 mt-1.5">
                       Meus Cadastros
                     </div>
                     {availableClients.map(client => (
@@ -471,18 +473,18 @@ export default function Layout() {
                         key={client.id}
                         onClick={() => {
                           setSelectedClientId(client.id);
-                          setIsDrawerOpen(false); // Close drawer on mobile after selection
+                          setIsDrawerOpen(false);
                         }}
                         className={clsx(
-                          "flex items-center w-full px-3 py-2 rounded-lg transition-all duration-200 text-left",
+                          "flex items-center w-full px-2.5 py-1.5 rounded-lg transition-all duration-200 text-left",
                           selectedClientId === client.id
-                            ? "bg-primary/30 text-white shadow-sm ring-1 ring-primary-light/30"
-                            : "text-gray-400 hover:bg-primary/30 hover:text-white"
+                            ? "bg-sky-500/20 text-sky-300 shadow-sm border border-sky-500/30"
+                            : "text-slate-400 hover:bg-slate-900 hover:text-white"
                         )}
                       >
-                        <Users size={14} className={clsx(
+                        <Users size={13} className={clsx(
                           "mr-2 shrink-0",
-                          selectedClientId === client.id ? "text-secondary-light" : "text-gray-500"
+                          selectedClientId === client.id ? "text-sky-400" : "text-slate-500"
                         )} />
                         <span className="text-xs font-medium truncate">{client.name}</span>
                       </button>
@@ -495,48 +497,50 @@ export default function Layout() {
         </nav>
 
         {/* Footer / Logout */}
-        <div className="p-4 border-t border-primary-light/20 shrink-0">
+        <div className="p-3 border-t border-slate-800 shrink-0">
           <button
             onClick={handleLogout}
-            className="flex items-center w-full px-4 py-3 text-gray-300 rounded-xl hover:bg-red-500/10 hover:text-red-400 transition-all duration-200 group"
+            className="flex items-center w-full px-3.5 py-2.5 text-slate-400 rounded-xl hover:bg-red-950/40 hover:text-red-300 border border-transparent hover:border-red-900/40 transition-all duration-200 group text-sm font-medium"
           >
-            <LogOut size={20} className="mr-3 text-gray-400 group-hover:text-red-400 transition-colors" />
-            <span className="font-medium">Sair do Sistema</span>
+            <LogOut size={18} className="mr-3 text-slate-500 group-hover:text-red-400 transition-colors shrink-0" />
+            <span>Sair do Sistema</span>
           </button>
         </div>
       </aside>
 
       {/* Main content */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden relative pb-16 lg:pb-0">
-        <header className="bg-white shadow-sm h-16 flex items-center justify-between px-4 lg:hidden shrink-0">
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden relative pb-16 lg:pb-0 bg-slate-100">
+        <header className="bg-slate-900 border-b border-slate-800 h-16 flex items-center justify-between px-4 lg:hidden shrink-0">
           <div className="flex items-center">
             <button
               onClick={() => setIsDrawerOpen(true)}
-              className="text-gray-500 hover:text-primary transition-colors focus:outline-none p-2 -ml-2"
+              className="text-slate-400 hover:text-white transition-colors focus:outline-none p-2 -ml-2 cursor-pointer"
             >
               <Menu size={24} />
             </button>
             <div className="flex items-center space-x-2 ml-2">
-              <span className="text-lg font-bold text-primary truncate max-w-[160px]">{userProfile?.whatsappSettings?.companyName || "GestãoPro"}</span>
+              <span className="text-lg font-bold text-white truncate max-w-[180px]">
+                {userProfile?.whatsappSettings?.companyName || "RS Piscinas"}
+              </span>
             </div>
           </div>
           <button
             onClick={handleGlobalRefresh}
             disabled={isGlobalRefreshing}
-            className="flex items-center justify-center p-2 text-gray-600 hover:text-primary active:bg-gray-100 rounded-lg transition-colors border border-gray-200 bg-gray-50"
+            className="flex items-center justify-center p-2 text-slate-300 hover:text-white active:bg-slate-800 rounded-xl transition-colors border border-slate-700 bg-slate-800/80 cursor-pointer"
             title="Atualizar dados do aplicativo"
           >
-            <RefreshCw size={20} className={clsx("text-primary", isGlobalRefreshing && "animate-spin")} />
+            <RefreshCw size={19} className={clsx("text-sky-400", isGlobalRefreshing && "animate-spin")} />
           </button>
         </header>
 
         <NotificationBanner />
-        <main className="flex-1 p-4 lg:p-8 overflow-y-auto bg-gray-100">
+        <main className="flex-1 p-4 lg:p-8 overflow-y-auto bg-slate-100 text-slate-900">
           <Outlet context={{ availableClients, selectedClientId }} />
         </main>
         
         {/* Mobile Bottom Navigation */}
-        <nav className="lg:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 h-16 flex justify-around items-center z-40 px-2 pb-safe">
+        <nav className="lg:hidden fixed bottom-0 left-0 right-0 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 h-16 flex justify-around items-center z-40 px-2 pb-safe shadow-2xl">
           {(isClient ? [
              { name: 'Painel', path: '/client-panel', icon: Home },
              { name: 'Lojas', path: '/partners', icon: Store },
@@ -558,10 +562,10 @@ export default function Layout() {
                 to={item.path}
                 className={clsx(
                   "flex flex-col items-center justify-center w-full h-full space-y-1 transition-colors",
-                  isActive ? "text-primary" : "text-gray-500 hover:text-primary"
+                  isActive ? "text-sky-400 font-bold" : "text-slate-400 hover:text-slate-200"
                 )}
               >
-                <Icon size={20} className={isActive ? "text-primary" : ""} />
+                <Icon size={20} className={isActive ? "text-sky-400" : "text-slate-400"} />
                 <span className="text-[10px] font-medium leading-none truncate w-full text-center px-1">{item.name}</span>
               </Link>
             );
