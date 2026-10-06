@@ -300,6 +300,28 @@ export async function checkWhatsAppMessageStatus(
           return 'sent';
         }
       }
+    } else if (waSettings?.useAstracalls !== false && (waSettings?.astracallsUrl || waSettings?.provider === 'astracalls')) {
+      // 3. AstraCalls
+      const astracallsUrl = (waSettings?.astracallsUrl || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
+      const astracallsApiKey = waSettings?.astracallsApiKey || 'rs_piscinas_segredo_2026';
+      const sessionId = waSettings?.astracallsSessionId || '8090cca3add0b8eb3e41efb9eec363e4';
+      const url = `${astracallsUrl}/api/sessions/${sessionId}/messages/${externalId}`;
+      const res = await fetch(url, {
+        headers: { 'X-Api-Key': astracallsApiKey }
+      }).catch(() => null);
+      if (res && res.ok) {
+        const aData = await res.json().catch(() => null);
+        const raw = String(aData?.status || aData?.ack || '').toUpperCase().trim();
+        if (raw === '4' || raw === '5' || raw === 'READ' || raw === 'PLAYED' || raw === 'READ_RECEIPT' || raw === 'VIEWED') {
+          return 'read';
+        }
+        if (raw === '3' || raw === 'DELIVERY_ACK' || raw === 'DELIVERED' || raw === 'RECEIVED') {
+          return 'delivered';
+        }
+        if (raw === '2' || raw === 'SERVER_ACK' || raw === 'SENT') {
+          return 'sent';
+        }
+      }
     }
   } catch (e) {
     console.warn('[checkWhatsAppMessageStatus] Erro ao checar status:', e);

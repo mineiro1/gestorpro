@@ -93,7 +93,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
 
   const session = sessionData?.session || null;
 
-  // 2. React Query: Carregar Mensagens diretamente do Supabase
+  // 2. React Query: Carregar Mensagens diretamente sincronizadas com o backend e Supabase
   const { data: messages = [], isLoading: loadingMessages } = useQuery<any[]>({
     queryKey: ['chat-messages', clientId],
     queryFn: async () => {
@@ -102,22 +102,37 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       let loadedMsgs: any[] = [];
 
       try {
-        const { data: sData } = await supabase
-          .from('chat_sessions')
-          .select('id')
-          .eq('client_id', clientId);
-
-        if (sData && sData.length > 0) {
-          const sessionIds = sData.map((s) => s.id);
-          const { data: directMsgs } = await supabase
-            .from('chat_messages')
-            .select('*')
-            .in('session_id', sessionIds)
-            .order('created_at', { ascending: true });
-          if (directMsgs) loadedMsgs = directMsgs;
+        const msgApiUrl = getApiUrl(`/api/chat/messages/${clientId}`);
+        const apiRes = await fetch(msgApiUrl);
+        if (apiRes.ok) {
+          const apiData = await apiRes.json();
+          if (Array.isArray(apiData?.messages)) {
+            loadedMsgs = apiData.messages;
+          }
         }
-      } catch (e) {
-        console.warn('[ChatModal] Erro ao carregar mensagens:', e);
+      } catch (apiErr) {
+        console.warn('[ChatModal] Falha ao buscar via API backend, buscando via Supabase:', apiErr);
+      }
+
+      if (loadedMsgs.length === 0) {
+        try {
+          const { data: sData } = await supabase
+            .from('chat_sessions')
+            .select('id')
+            .eq('client_id', clientId);
+
+          if (sData && sData.length > 0) {
+            const sessionIds = sData.map((s) => s.id);
+            const { data: directMsgs } = await supabase
+              .from('chat_messages')
+              .select('*')
+              .in('session_id', sessionIds)
+              .order('created_at', { ascending: true });
+            if (directMsgs) loadedMsgs = directMsgs;
+          }
+        } catch (e) {
+          console.warn('[ChatModal] Erro ao carregar mensagens do Supabase:', e);
+        }
       }
 
       // Deduplicação e preservação de mensagens otimistas locais
@@ -152,7 +167,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       );
     },
     enabled: !!isOpen && !!clientId,
-    refetchInterval: 4000,
+    refetchInterval: 3000,
     refetchOnWindowFocus: true,
     staleTime: 1000,
   });

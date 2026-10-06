@@ -220,10 +220,149 @@ setInterval(() => {
   }
 }, 60000);
 
+  // Sincronização direta e bidirecional de mensagens e status com AstraCalls
+  async function syncAstraCallsMessagesForClient(clientId: string, clientPhone?: string, waSettings?: any) {
+    if (!clientId) return;
+    try {
+      if (!waSettings?.astracallsUrl && !waSettings?.useAstracalls) {
+        const { data: adminUsers } = await supabaseAdmin.from('users').select('whatsapp_settings').not('whatsapp_settings', 'is', null);
+        const validAdmin = adminUsers?.find(u => u.whatsapp_settings?.useAstracalls || u.whatsapp_settings?.astracallsUrl);
+        if (validAdmin?.whatsapp_settings) waSettings = validAdmin.whatsapp_settings;
+      }
+
+      const astracallsUrl = (waSettings?.astracallsUrl || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
+      const astracallsApiKey = waSettings?.astracallsApiKey || 'rs_piscinas_segredo_2026';
+      let sessionId = waSettings?.astracallsSessionId || '8090cca3add0b8eb3e41efb9eec363e4';
+
+      let targetPhone = clientPhone;
+      let matchedClient: any = null;
+      if (!targetPhone) {
+        const { data: clientRow } = await supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id, employee_id').eq('id', clientId).maybeSingle();
+        if (clientRow) {
+          matchedClient = clientRow;
+          targetPhone = clientRow.local_phone || clientRow.phone;
+        }
+      } else {
+        const { data: clientRow } = await supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id, employee_id').eq('id', clientId).maybeSingle();
+        matchedClient = clientRow;
+      }
+
+      if (!targetPhone) return;
+      const cleanDigits = String(targetPhone).replace(/\D/g, '');
+      if (cleanDigits.length < 8) return;
+
+      const { data: sessions } = await supabaseAdmin
+        .from('chat_sessions')
+        .select('*')
+        .eq('client_id', clientId)
+        .order('created_at', { ascending: false });
+
+      let activeSession = (sessions || []).find((s: any) => s.status === 'open');
+      if (!activeSession && sessions && sessions.length > 0) {
+        activeSession = sessions[0];
+      }
+
+      const chatIds: string[] = [];
+      const ddd = cleanDigits.length >= 10 ? cleanDigits.slice(-10, -8) : '67';
+      const num8 = cleanDigits.slice(-8);
+      chatIds.push(`55${ddd}${num8}@s.whatsapp.net`);
+      chatIds.push(`55${ddd}9${num8}@s.whatsapp.net`);
+      chatIds.push(`${cleanDigits}@s.whatsapp.net`);
+
+      for (const cId of chatIds) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 2500);
+          const astraRes = await fetch(`${astracallsUrl}/api/sessions/${sessionId}/messages?chatId=${encodeURIComponent(cId)}&limit=30`, {
+            headers: { 'X-Api-Key': astracallsApiKey },
+            signal: controller.signal
+          });
+          clearTimeout(timeoutId);
+
+          if (astraRes.ok) {
+            const msgsList = await astraRes.json();
+            if (Array.isArray(msgsList) && msgsList.length > 0) {
+              for (const aMsg of msgsList) {
+                if (!aMsg || !aMsg.id) continue;
+                const aMsgId = String(aMsg.id);
+                const isFromMe = aMsg.fromMe === true;
+                const content = aMsg.body || aMsg.message || (aMsg.type === 'audio' ? '🎵 Mensagem de Áudio' : (aMsg.type === 'image' ? '📸 Imagem' : (aMsg.type === 'video' ? '🎥 Vídeo' : '')));
+                const aTimestamp = aMsg.timestamp ? new Date(Number(aMsg.timestamp)).toISOString() : new Date().toISOString();
+
+                if (!content && aMsg.type !== 'audio' && aMsg.type !== 'image' && aMsg.type !== 'video') continue;
+
+                // Verificar se esta mensagem já existe no banco
+                const { data: existing } = await supabaseAdmin
+                  .from('chat_messages')
+                  .select('id, media_url, sender_type')
+                  .ilike('media_url', `%${aMsgId}%`)
+                  .limit(1);
+
+                if (!existing || existing.length === 0) {
+                  // Se for mensagem recebida do cliente (fromMe === false)
+                  if (!isFromMe) {
+                    if (!activeSession) {
+                      const { data: newSess } = await supabaseAdmin
+                        .from('chat_sessions')
+                        .insert({
+                          client_id: clientId,
+                          admin_id: matchedClient?.admin_id || null,
+                          employee_id: matchedClient?.employee_id || matchedClient?.admin_id || null,
+                          status: 'open',
+                          created_at: new Date().toISOString()
+                        })
+                        .select()
+                        .single();
+                      activeSession = newSess;
+                    }
+
+                    if (activeSession) {
+                      await supabaseAdmin.from('chat_messages').insert({
+                        session_id: activeSession.id,
+                        sender_type: 'client',
+                        content: String(content),
+                        media_url: JSON.stringify({ external_id: aMsgId, astra_id: aMsgId, status: 'read' }),
+                        created_at: aTimestamp
+                      });
+
+                      // Cliente respondeu: marca mensagens anteriores do tech como lidas
+                      const { data: unreadTech } = await supabaseAdmin
+                        .from('chat_messages')
+                        .select('id, media_url')
+                        .eq('session_id', activeSession.id)
+                        .eq('sender_type', 'tech');
+
+                      if (unreadTech) {
+                        for (const utm of unreadTech) {
+                          let mMeta: any = {};
+                          try { mMeta = JSON.parse(utm.media_url); } catch(e) {}
+                          if (mMeta.status !== 'read') {
+                            await supabaseAdmin.from('chat_messages').update({
+                              media_url: JSON.stringify({ ...mMeta, status: 'read' })
+                            }).eq('id', utm.id);
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } catch(e) {}
+      }
+    } catch(err) {
+      console.warn('[syncAstraCallsMessagesForClient] Erro:', err);
+    }
+  }
+
   app.get("/api/chat/messages/:clientId", async (req, res) => {
     try {
       const { clientId } = req.params;
       if (!clientId) return res.status(400).json({ error: "Missing clientId" });
+
+      // Sincroniza em segundo plano/tempo real com AstraCalls caso o cliente tenha novas mensagens
+      await syncAstraCallsMessagesForClient(clientId);
 
       const { data: sData } = await supabaseAdmin
         .from('chat_sessions')
@@ -2374,15 +2513,41 @@ setInterval(() => {
 
       // 2. Process incoming client message if present
       const msgData = body.data || body;
-      const remotePhone = msgData.phone || msgData.to || msgData.from || msgData.sender || body.from || "";
-      const content = msgData.text || msgData.message || msgData.content || body.text || body.message || "";
-      const isFromMe = msgData.fromMe === true || body.fromMe === true || msgData.direction === 'outbound';
+      const isFromMe = Boolean(
+        msgData.key?.fromMe === true ||
+        msgData.fromMe === true ||
+        body.fromMe === true ||
+        msgData.direction === 'outbound'
+      );
 
-      if (isFromMe || !remotePhone || !content) {
+      if (isFromMe) {
+        return res.status(200).json({ success: true, fromMe: true, ...statusResult });
+      }
+
+      let rawRemote = msgData.key?.remoteJid || msgData.remoteJid || msgData.chat || msgData.chatId || msgData.from || msgData.sender || msgData.phone || msgData.to || body.chat || body.from || "";
+      const cleanIncoming = cleanJidToPhone(rawRemote);
+
+      let extracted = extractMessageData(msgData.message || msgData);
+      let content = extracted.content || msgData.body || msgData.text || msgData.message || msgData.content || body.body || body.text || body.message || "";
+      let mediaUrl = extracted.mediaUrl || msgData.mediaUrl || msgData.url || "";
+      let externalMsgId = String(msgData.key?.id || msgData.id || body.id || body.messageId || "");
+
+      if (msgData.type === 'audio' && !content) content = "🎵 Mensagem de Áudio";
+      if (msgData.type === 'image' && !content) content = "📸 Imagem";
+      if (msgData.type === 'video' && !content) content = "🎥 Vídeo";
+      if (msgData.type === 'document' && !content) content = "📄 Documento";
+
+      if (!cleanIncoming || (!content && !mediaUrl)) {
         return res.status(200).json({ success: true, ...statusResult });
       }
 
-      const cleanIncoming = String(remotePhone).replace(/\D/g, '');
+      // Deduplicação
+      const dedupKey = externalMsgId ? `astra_${externalMsgId}` : `astra_txt_${cleanIncoming}_${content}`;
+      if (isDuplicateIncomingMsg(dedupKey)) {
+        console.log("Ignorando mensagem duplicada AstraCalls:", dedupKey);
+        return res.status(200).json({ success: true, duplicate: true });
+      }
+
       const [{ data: clients }, { data: agendaContacts }] = await Promise.all([
         supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id, employee_id'),
         supabaseAdmin.from('agenda_contacts').select('id, name, phone, admin_id')
@@ -2425,12 +2590,38 @@ setInterval(() => {
       }
 
       if (activeSession) {
+        const metadataPayload = {
+          external_id: externalMsgId || undefined,
+          astra_id: externalMsgId || undefined,
+          url: mediaUrl || undefined,
+          status: 'read'
+        };
+
         await supabaseAdmin.from('chat_messages').insert({
            session_id: activeSession.id,
            sender_type: 'client',
            content: String(content),
-           media_url: ''
+           media_url: JSON.stringify(metadataPayload)
         });
+
+        // Cliente respondeu: marca mensagens anteriores do tech como lidas
+        const { data: unreadTech } = await supabaseAdmin
+          .from('chat_messages')
+          .select('id, media_url')
+          .eq('session_id', activeSession.id)
+          .eq('sender_type', 'tech');
+
+        if (unreadTech) {
+          for (const utm of unreadTech) {
+            let mMeta: any = {};
+            try { mMeta = JSON.parse(utm.media_url); } catch(e) {}
+            if (mMeta.status !== 'read') {
+              await supabaseAdmin.from('chat_messages').update({
+                media_url: JSON.stringify({ ...mMeta, status: 'read' })
+              }).eq('id', utm.id);
+            }
+          }
+        }
 
         const targetUserId = matchedClient.employee_id || matchedClient.admin_id;
         if (targetUserId) {
@@ -3140,6 +3331,30 @@ app.all("/api/sync-payment", async (req, res) => {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
+
+    // Auto-registro do Webhook no AstraCalls
+    setTimeout(async () => {
+      try {
+        const { data: adminUsers } = await supabaseAdmin.from('users').select('whatsapp_settings').not('whatsapp_settings', 'is', null);
+        const validAdmin = adminUsers?.find(u => u.whatsapp_settings?.useAstracalls || u.whatsapp_settings?.astracallsUrl);
+        const wa = validAdmin?.whatsapp_settings;
+        if (wa?.astracallsUrl || wa?.useAstracalls) {
+          const astracallsUrl = (wa.astracallsUrl || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
+          const astracallsApiKey = wa.astracallsApiKey || 'rs_piscinas_segredo_2026';
+          const sessionId = wa.astracallsSessionId || '8090cca3add0b8eb3e41efb9eec363e4';
+          const webhookUrl = `${(process.env.PUBLIC_URL || 'https://www.rspiscinas.app.br')}/api/webhook/astracalls`;
+
+          await fetch(`${astracallsUrl}/api/sessions/${sessionId}/webhook`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Api-Key': astracallsApiKey
+            },
+            body: JSON.stringify({ url: webhookUrl, webhook: webhookUrl })
+          }).catch(() => null);
+        }
+      } catch (err) {}
+    }, 3000);
   });
 }
 
