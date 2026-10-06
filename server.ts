@@ -220,6 +220,8 @@ setInterval(() => {
   }
 }, 60000);
 
+  const lidToClientIdCache = new Map<string, string>();
+
   // Sincronização direta e bidirecional de mensagens e status com AstraCalls
   async function syncAstraCallsMessagesForClient(clientId: string, clientPhone?: string, waSettings?: any) {
     if (!clientId) return;
@@ -247,6 +249,14 @@ setInterval(() => {
         matchedClient = clientRow;
       }
 
+      let fallbackAdminId = matchedClient?.admin_id;
+      let fallbackEmpId = matchedClient?.employee_id || fallbackAdminId;
+      if (!fallbackAdminId) {
+        const { data: anyAdmin } = await supabaseAdmin.from('users').select('id').eq('role', 'admin').limit(1).maybeSingle();
+        fallbackAdminId = anyAdmin?.id;
+        fallbackEmpId = fallbackAdminId;
+      }
+
       if (!targetPhone) return;
       const cleanDigits = String(targetPhone).replace(/\D/g, '');
       if (cleanDigits.length < 8) return;
@@ -262,52 +272,83 @@ setInterval(() => {
         activeSession = sessions[0];
       }
 
-      const chatIds: string[] = [];
+      const chatIds = new Set<string>();
       const ddd = cleanDigits.length >= 10 ? cleanDigits.slice(-10, -8) : '67';
       const num8 = cleanDigits.slice(-8);
-      chatIds.push(`55${ddd}${num8}@s.whatsapp.net`);
-      chatIds.push(`55${ddd}9${num8}@s.whatsapp.net`);
-      chatIds.push(`${cleanDigits}@s.whatsapp.net`);
+      chatIds.add(`55${ddd}${num8}@s.whatsapp.net`);
+      chatIds.add(`55${ddd}9${num8}@s.whatsapp.net`);
+      chatIds.add(`${cleanDigits}@s.whatsapp.net`);
 
-      for (const cId of chatIds) {
-        try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 2500);
-          const astraRes = await fetch(`${astracallsUrl}/api/sessions/${sessionId}/messages?chatId=${encodeURIComponent(cId)}&limit=30`, {
-            headers: { 'X-Api-Key': astracallsApiKey },
-            signal: controller.signal
-          });
-          clearTimeout(timeoutId);
+      // Se já temos um LID mapeado para este cliente
+      for (const [lidKey, mappedCId] of lidToClientIdCache.entries()) {
+        if (mappedCId === clientId) {
+          chatIds.add(`${lidKey}@lid`);
+        }
+      }
 
-          if (astraRes.ok) {
-            const msgsList = await astraRes.json();
-            if (Array.isArray(msgsList) && msgsList.length > 0) {
-              for (const aMsg of msgsList) {
-                if (!aMsg || !aMsg.id) continue;
-                const aMsgId = String(aMsg.id);
-                const isFromMe = aMsg.fromMe === true;
-                const content = aMsg.body || aMsg.message || (aMsg.type === 'audio' ? '🎵 Mensagem de Áudio' : (aMsg.type === 'image' ? '📸 Imagem' : (aMsg.type === 'video' ? '🎥 Vídeo' : '')));
-                const aTimestamp = aMsg.timestamp ? new Date(Number(aMsg.timestamp)).toISOString() : new Date().toISOString();
+      // Buscar os chats mais recentes no AstraCalls para descobrir LIDs recentes
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 1200);
+        const chatsRes = await fetch(`${astracallsUrl}/api/sessions/${sessionId}/chats`, {
+          headers: { 'X-Api-Key': astracallsApiKey },
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        if (chatsRes.ok) {
+          const chatsList = await chatsRes.json();
+          if (Array.isArray(chatsList)) {
+            const recentChats = chatsList.sort((a: any, b: any) => (b.timestamp || 0) - (a.timestamp || 0)).slice(0, 5);
+            for (const rc of recentChats) {
+              const chatIdStr = rc.chat || rc.id || '';
+              if (chatIdStr.includes('@lid')) {
+                chatIds.add(chatIdStr);
+                const rawLid = chatIdStr.replace('@lid', '').replace(/\D/g, '');
+                if (rawLid) lidToClientIdCache.set(rawLid, clientId);
+              }
+            }
+          }
+        }
+      } catch(e) {}
 
-                if (!content && aMsg.type !== 'audio' && aMsg.type !== 'image' && aMsg.type !== 'video') continue;
+      await Promise.all(
+        Array.from(chatIds).map(async (cId) => {
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 1500);
+            const astraRes = await fetch(`${astracallsUrl}/api/sessions/${sessionId}/messages?chatId=${encodeURIComponent(cId)}&limit=25`, {
+              headers: { 'X-Api-Key': astracallsApiKey },
+              signal: controller.signal
+            });
+            clearTimeout(timeoutId);
 
-                // Verificar se esta mensagem já existe no banco
-                const { data: existing } = await supabaseAdmin
-                  .from('chat_messages')
-                  .select('id, media_url, sender_type')
-                  .ilike('media_url', `%${aMsgId}%`)
-                  .limit(1);
+            if (astraRes.ok) {
+              const msgsList = await astraRes.json();
+              if (Array.isArray(msgsList) && msgsList.length > 0) {
+                for (const aMsg of msgsList) {
+                  if (!aMsg || !aMsg.id) continue;
+                  const aMsgId = String(aMsg.id);
+                  const isFromMe = aMsg.fromMe === true;
+                  const content = aMsg.body || aMsg.message || (aMsg.type === 'audio' ? '🎵 Mensagem de Áudio' : (aMsg.type === 'image' ? '📸 Imagem' : (aMsg.type === 'video' ? '🎥 Vídeo' : '')));
+                  const aTimestamp = aMsg.timestamp ? new Date(Number(aMsg.timestamp)).toISOString() : new Date().toISOString();
 
-                if (!existing || existing.length === 0) {
-                  // Se for mensagem recebida do cliente (fromMe === false)
-                  if (!isFromMe) {
+                  if (!content && aMsg.type !== 'audio' && aMsg.type !== 'image' && aMsg.type !== 'video') continue;
+
+                  // Verificar se esta mensagem já existe no banco
+                  const { data: existing } = await supabaseAdmin
+                    .from('chat_messages')
+                    .select('id, media_url, sender_type')
+                    .ilike('media_url', `%${aMsgId}%`)
+                    .limit(1);
+
+                  if (!existing || existing.length === 0) {
                     if (!activeSession) {
                       const { data: newSess } = await supabaseAdmin
                         .from('chat_sessions')
                         .insert({
                           client_id: clientId,
-                          admin_id: matchedClient?.admin_id || null,
-                          employee_id: matchedClient?.employee_id || matchedClient?.admin_id || null,
+                          admin_id: fallbackAdminId,
+                          employee_id: fallbackEmpId,
                           status: 'open',
                           created_at: new Date().toISOString()
                         })
@@ -319,27 +360,29 @@ setInterval(() => {
                     if (activeSession) {
                       await supabaseAdmin.from('chat_messages').insert({
                         session_id: activeSession.id,
-                        sender_type: 'client',
+                        sender_type: isFromMe ? 'tech' : 'client',
                         content: String(content),
-                        media_url: JSON.stringify({ external_id: aMsgId, astra_id: aMsgId, status: 'read' }),
+                        media_url: JSON.stringify({ external_id: aMsgId, astra_id: aMsgId, status: isFromMe ? 'delivered' : 'read' }),
                         created_at: aTimestamp
                       });
 
-                      // Cliente respondeu: marca mensagens anteriores do tech como lidas
-                      const { data: unreadTech } = await supabaseAdmin
-                        .from('chat_messages')
-                        .select('id, media_url')
-                        .eq('session_id', activeSession.id)
-                        .eq('sender_type', 'tech');
+                      // Se foi resposta do cliente, marcar mensagens anteriores do tech como lidas
+                      if (!isFromMe) {
+                        const { data: unreadTech } = await supabaseAdmin
+                          .from('chat_messages')
+                          .select('id, media_url')
+                          .eq('session_id', activeSession.id)
+                          .eq('sender_type', 'tech');
 
-                      if (unreadTech) {
-                        for (const utm of unreadTech) {
-                          let mMeta: any = {};
-                          try { mMeta = JSON.parse(utm.media_url); } catch(e) {}
-                          if (mMeta.status !== 'read') {
-                            await supabaseAdmin.from('chat_messages').update({
-                              media_url: JSON.stringify({ ...mMeta, status: 'read' })
-                            }).eq('id', utm.id);
+                        if (unreadTech) {
+                          for (const utm of unreadTech) {
+                            let mMeta: any = {};
+                            try { mMeta = JSON.parse(utm.media_url); } catch(e) {}
+                            if (mMeta.status !== 'read') {
+                              await supabaseAdmin.from('chat_messages').update({
+                                media_url: JSON.stringify({ ...mMeta, status: 'read' })
+                              }).eq('id', utm.id);
+                            }
                           }
                         }
                       }
@@ -348,9 +391,9 @@ setInterval(() => {
                 }
               }
             }
-          }
-        } catch(e) {}
-      }
+          } catch(e) {}
+        })
+      );
     } catch(err) {
       console.warn('[syncAstraCallsMessagesForClient] Erro:', err);
     }
@@ -2558,12 +2601,39 @@ setInterval(() => {
         ...(agendaContacts || []).map((a: any) => ({ ...a, local_phone: '', employee_id: a.admin_id, is_agenda: true }))
       ];
 
-      const matchedClient = allTargets.find((c: any) => {
+      // 1. Tentar por telefone direto
+      let matchedClient = allTargets.find((c: any) => {
          return isMatchingClientPhone(c.phone || '', cleanIncoming) || isMatchingClientPhone(c.local_phone || '', cleanIncoming);
       });
 
+      // 2. Se for um LID do WhatsApp, checar cache ou sessão ativa recente
+      if (!matchedClient && (rawRemote.includes('@lid') || cleanIncoming.length > 13)) {
+        const cachedCId = lidToClientIdCache.get(cleanIncoming);
+        if (cachedCId) {
+          matchedClient = allTargets.find((c: any) => c.id === cachedCId);
+        }
+
+        if (!matchedClient) {
+          // Checar se há uma sessão de chat aberta nos últimos 30 minutos
+          const { data: recentOpenSessions } = await supabaseAdmin
+            .from('chat_sessions')
+            .select('client_id, created_at')
+            .eq('status', 'open')
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+          if (recentOpenSessions && recentOpenSessions.length > 0) {
+            const candidateId = recentOpenSessions[0].client_id;
+            matchedClient = allTargets.find((c: any) => c.id === candidateId);
+            if (matchedClient) {
+              lidToClientIdCache.set(cleanIncoming, candidateId);
+            }
+          }
+        }
+      }
+
       if (!matchedClient) {
-        console.log("[Webhook AstraCalls] Nenhum cliente encontrado para:", cleanIncoming);
+        console.log("[Webhook AstraCalls] Nenhum cliente encontrado para:", cleanIncoming, rawRemote);
         return res.status(200).json({ success: true, matched: false });
       }
 
@@ -2573,14 +2643,22 @@ setInterval(() => {
         .eq('client_id', matchedClient.id)
         .order('created_at', { ascending: false });
 
+      let fallbackAdminId = matchedClient.admin_id;
+      let fallbackEmpId = matchedClient.employee_id || fallbackAdminId;
+      if (!fallbackAdminId) {
+        const { data: anyAdmin } = await supabaseAdmin.from('users').select('id').eq('role', 'admin').limit(1).maybeSingle();
+        fallbackAdminId = anyAdmin?.id;
+        fallbackEmpId = fallbackAdminId;
+      }
+
       let activeSession: any = (sessions || []).find((s: any) => s.status === 'open');
       if (!activeSession) {
         const { data: newSess } = await supabaseAdmin
           .from('chat_sessions')
           .insert({
             client_id: matchedClient.id,
-            admin_id: matchedClient.admin_id,
-            employee_id: matchedClient.employee_id || matchedClient.admin_id,
+            admin_id: fallbackAdminId,
+            employee_id: fallbackEmpId,
             status: 'open',
             created_at: new Date().toISOString()
           })
