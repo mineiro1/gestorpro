@@ -12,7 +12,7 @@ import { initCapacitorPushNotifications, requestPushPermissions } from '../lib/p
 import EmployeeLocationTracker from './EmployeeLocationTracker';
 import SmsGatewayListener from './SmsGatewayListener';
 import { evaluateSessionExpiry } from '../lib/chatSessionUtils';
-import logoImg from '../assets/logo.png';
+import { RS_LOGO_BASE64 } from '../assets/logoBase64';
 
 
 const NotificationBanner = () => {
@@ -406,12 +406,12 @@ export default function Layout() {
           </div>
           <div className="w-full aspect-video bg-slate-950 overflow-hidden border-b border-slate-800 p-2 flex items-center justify-center">
             <img 
-              src={userProfile?.whatsappSettings?.companyLogo || logoImg} 
+              src={userProfile?.whatsappSettings?.companyLogo || RS_LOGO_BASE64} 
               alt="Logo" 
               className="max-h-full max-w-full object-contain" 
               onError={(e) => { 
-                if (e.currentTarget.src !== logoImg) {
-                  e.currentTarget.src = logoImg;
+                if (e.currentTarget.src !== RS_LOGO_BASE64) {
+                  e.currentTarget.src = RS_LOGO_BASE64;
                 } else {
                   e.currentTarget.style.display = "none";
                 }

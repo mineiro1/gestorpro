@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
-import logoImg from '../assets/logo.png';
+import { RS_LOGO_BASE64 } from '../assets/logoBase64';
 
 export default function Login() {
   const location = useLocation();
@@ -167,7 +167,7 @@ export default function Login() {
         <div className="text-center mb-8 flex flex-col items-center">
           <Link to="/" className="inline-block transition-transform hover:scale-105">
             <img 
-              src={logoImg} 
+              src={RS_LOGO_BASE64} 
               alt="RS Piscinas Logo" 
               className="w-24 h-24 mb-2 object-contain drop-shadow-lg" 
             />

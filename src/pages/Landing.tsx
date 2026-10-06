@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import BeforeAfterSlider from '../components/BeforeAfterSlider';
 import TestimonialsCarousel from '../components/TestimonialsCarousel';
-import logoImg from '../assets/logo.png';
+import { RS_LOGO_BASE64 } from '../assets/logoBase64';
 import { 
   Droplets, 
   ShieldCheck, 
@@ -149,7 +149,7 @@ export default function Landing() {
           {/* Zone 1: Company Logo + Name (Locked, never compressed or covered) */}
           <a href="#" className="flex items-center gap-2 sm:gap-3 group focus:outline-none shrink-0 min-w-0">
             <img 
-              src={logoImg} 
+              src={RS_LOGO_BASE64} 
               alt="RS Piscinas Logo" 
               className="h-9 w-9 sm:h-12 sm:w-12 object-contain transition-transform group-hover:scale-105 drop-shadow shrink-0" 
             />
@@ -282,7 +282,7 @@ export default function Landing() {
                 <div className="flex items-center justify-between pb-4 sm:pb-5 border-b border-slate-700/60">
                   <div className="flex items-center gap-3">
                     <img 
-                      src={logoImg} 
+                      src={RS_LOGO_BASE64} 
                       alt="RS Piscinas" 
                       className="w-10 h-10 object-contain" 
                     />
@@ -765,7 +765,7 @@ export default function Landing() {
             <div className="space-y-3 md:col-span-2">
               <div className="flex items-center gap-3">
                 <img 
-                  src={logoImg} 
+                  src={RS_LOGO_BASE64} 
                   alt="RS Piscinas" 
                   className="h-10 w-auto object-contain" 
                 />
