@@ -1,7 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import BeforeAfterSlider from '../components/BeforeAfterSlider';
-import TestimonialsCarousel from '../components/TestimonialsCarousel';
 import { RS_LOGO_BASE64 } from '../assets/logoBase64';
 import { 
   Droplets, 
@@ -24,8 +22,503 @@ import {
   UserCheck, 
   Coins, 
   LogIn,
-  Instagram
+  Instagram,
+  MoveHorizontal,
+  Star,
+  ChevronLeft,
+  ChevronRight,
+  Quote,
+  MapPin
 } from 'lucide-react';
+
+/* -------------------------------------------------------------------------- */
+/* Before & After Interactive Comparison Slider Component                     */
+/* -------------------------------------------------------------------------- */
+interface BeforeAfterProps {
+  whatsappUrl: string;
+}
+
+function BeforeAfterSlider({ whatsappUrl }: BeforeAfterProps) {
+  const [sliderPosition, setSliderPosition] = useState(50);
+  const [isDragging, setIsDragging] = useState(false);
+  const [activeTab, setActiveTab] = useState<'slider' | 'before' | 'after'>('slider');
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const beforeImage = 'https://raw.githubusercontent.com/mineiro1/fotos/main/WhatsApp%20Image%202026-10-04%20at%2018.13.35.jpeg';
+  const afterImage = 'https://raw.githubusercontent.com/mineiro1/fotos/main/WhatsApp%20Image%202026-10-04%20at%2018.09.21.jpeg';
+
+  const handleMove = useCallback((clientX: number) => {
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const position = (x / rect.width) * 100;
+    setSliderPosition(Math.max(0, Math.min(100, position)));
+  }, []);
+
+  const handleTouchMove = useCallback((e: TouchEvent) => {
+    if (!isDragging) return;
+    handleMove(e.touches[0].clientX);
+  }, [isDragging, handleMove]);
+
+  const handleMouseMove = useCallback((e: MouseEvent) => {
+    if (!isDragging) return;
+    handleMove(e.clientX);
+  }, [isDragging, handleMove]);
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false);
+  }, []);
+
+  useEffect(() => {
+    if (isDragging) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+      window.addEventListener('touchmove', handleTouchMove);
+      window.addEventListener('touchend', handleMouseUp);
+    }
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('touchmove', handleTouchMove);
+      window.removeEventListener('touchend', handleMouseUp);
+    };
+  }, [isDragging, handleMouseMove, handleMouseUp, handleTouchMove]);
+
+  const quoteUrl = `${whatsappUrl}&text=${encodeURIComponent('Olá RS Piscinas! Vi o Antes e Depois no site e quero deixar a minha piscina cristalina assim também!')}`;
+
+  return (
+    <section id="antes-depois" className="py-16 sm:py-24 bg-gradient-to-b from-slate-900 via-slate-950 to-slate-900 border-t border-slate-800/80 relative overflow-hidden">
+      <div className="absolute top-1/2 left-1/4 -translate-y-1/2 w-96 h-96 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none" />
+      <div className="absolute bottom-10 right-1/4 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
+
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
+        <div className="text-center max-w-3xl mx-auto mb-10 sm:mb-14 space-y-3 sm:space-y-4">
+          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-cyan-950/80 border border-cyan-500/40 text-cyan-300 text-xs sm:text-sm font-semibold uppercase tracking-wider shadow-sm">
+            <Sparkles className="w-4 h-4 text-cyan-400" />
+            <span>Transformação Real · Resultados RS Piscinas</span>
+          </div>
+
+          <h2 className="text-3xl sm:text-4xl lg:text-5xl font-black text-white tracking-tight leading-tight">
+            Veja a Diferença do Nosso <span className="text-transparent bg-clip-text bg-gradient-to-r from-sky-400 via-cyan-300 to-emerald-400">Tratamento</span>
+          </h2>
+
+          <p className="text-slate-300 text-sm sm:text-base lg:text-lg leading-relaxed">
+            Arraste a barra para comparar a piscina antes e depois do nosso trabalho especializado de decantação, aspiração e correção química.
+          </p>
+
+          <div className="inline-flex items-center p-1 bg-slate-900/90 border border-slate-800 rounded-2xl shadow-inner gap-1">
+            <button
+              type="button"
+              onClick={() => { setActiveTab('slider'); setSliderPosition(50); }}
+              className={`px-3.5 py-1.5 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+                activeTab === 'slider' 
+                  ? 'bg-sky-500 text-slate-950 shadow-md shadow-sky-500/20' 
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Interativo (Deslizar)
+            </button>
+            <button
+              type="button"
+              onClick={() => { setActiveTab('before'); setSliderPosition(100); }}
+              className={`px-3.5 py-1.5 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+                activeTab === 'before' 
+                  ? 'bg-red-500/90 text-white shadow-md' 
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Ver Antes
+            </button>
+            <button
+              type="button"
+              onClick={() => { setActiveTab('after'); setSliderPosition(0); }}
+              className={`px-3.5 py-1.5 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+                activeTab === 'after' 
+                  ? 'bg-emerald-500 text-slate-950 shadow-md' 
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Ver Depois
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+          <div className="lg:col-span-8">
+            <div 
+              ref={containerRef}
+              className="relative w-full aspect-[4/3] sm:aspect-[16/10] md:aspect-[16/9] rounded-3xl overflow-hidden border-2 border-slate-700/80 shadow-2xl bg-slate-950 select-none touch-none cursor-ew-resize group"
+              onMouseDown={() => { setIsDragging(true); setActiveTab('slider'); }}
+              onTouchStart={() => { setIsDragging(true); setActiveTab('slider'); }}
+            >
+              <img 
+                src={afterImage} 
+                alt="Piscina Depois do Tratamento RS Piscinas" 
+                className="absolute inset-0 w-full h-full object-cover select-none pointer-events-none"
+                loading="eager"
+              />
+
+              <div 
+                className="absolute inset-0 overflow-hidden select-none pointer-events-none"
+                style={{ width: `${sliderPosition}%` }}
+              >
+                <img 
+                  src={beforeImage} 
+                  alt="Piscina Antes do Tratamento RS Piscinas" 
+                  className="absolute inset-0 w-full h-full object-cover max-w-none select-none pointer-events-none"
+                  style={{ 
+                    width: containerRef.current ? `${containerRef.current.clientWidth}px` : '100%',
+                    height: '100%' 
+                  }}
+                />
+                <div className="absolute inset-0 bg-black/10 pointer-events-none" />
+              </div>
+
+              <div className="absolute top-4 left-4 z-20 pointer-events-none">
+                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-950/90 text-red-300 border border-red-500/50 font-bold text-xs sm:text-sm backdrop-blur-md shadow-lg">
+                  <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
+                  <span>ANTES</span>
+                </span>
+              </div>
+
+              <div className="absolute top-4 right-4 z-20 pointer-events-none">
+                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-950/90 text-emerald-300 border border-emerald-500/50 font-bold text-xs sm:text-sm backdrop-blur-md shadow-lg">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>DEPOIS (RS Piscinas)</span>
+                </span>
+              </div>
+
+              <div 
+                className="absolute top-0 bottom-0 z-30 pointer-events-none"
+                style={{ left: `${sliderPosition}%` }}
+              >
+                <div className="w-1 bg-white h-full shadow-[0_0_12px_rgba(255,255,255,0.8)] -ml-0.5" />
+                <div className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-sky-500 border-2 border-white shadow-2xl flex items-center justify-center text-slate-950 group-hover:scale-110 transition-transform">
+                  <MoveHorizontal className="w-5 h-5 sm:w-6 sm:h-6 stroke-[2.5]" />
+                </div>
+              </div>
+
+              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 pointer-events-none bg-slate-950/80 backdrop-blur-md px-3.5 py-1 rounded-full border border-slate-700/80 text-[11px] sm:text-xs text-slate-300 flex items-center gap-1.5 opacity-90 group-hover:opacity-100 transition-opacity">
+                <MoveHorizontal className="w-3.5 h-3.5 text-sky-400" />
+                <span>Arraste para os lados para comparar</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="lg:col-span-4 space-y-4">
+            <div className="p-4 sm:p-5 rounded-2xl bg-red-950/20 border border-red-900/40 space-y-2">
+              <div className="flex items-center gap-2 text-red-400 font-bold text-sm">
+                <AlertTriangle className="w-4 h-4" />
+                <span>Situação Inicial (Antes)</span>
+              </div>
+              <ul className="text-xs sm:text-sm text-slate-300 space-y-1.5 leading-relaxed">
+                <li className="flex items-start gap-2">
+                  <span className="text-red-400 font-bold">•</span>
+                  <span>Água turva e esverdeada com proliferação de algas.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-red-400 font-bold">•</span>
+                  <span>Parâmetros químicos desregulados e risco de bactérias.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-red-400 font-bold">•</span>
+                  <span>Fundo e paredes com acúmulo de impurezas e lodo.</span>
+                </li>
+              </ul>
+            </div>
+
+            <div className="p-4 sm:p-5 rounded-2xl bg-emerald-950/30 border border-emerald-800/40 space-y-2">
+              <div className="flex items-center gap-2 text-emerald-400 font-bold text-sm">
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Resultado Padrão RS Piscinas (Depois)</span>
+              </div>
+              <ul className="text-xs sm:text-sm text-slate-300 space-y-1.5 leading-relaxed">
+                <li className="flex items-start gap-2">
+                  <span className="text-emerald-400 font-bold">✓</span>
+                  <span>Água 100% cristalina, translúcida e sem cheiro forte.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-emerald-400 font-bold">✓</span>
+                  <span>pH e Cloro Livre ajustados com precisão cirúrgica.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-emerald-400 font-bold">✓</span>
+                  <span>Segurança total e saúde garantida para toda a família.</span>
+                </li>
+              </ul>
+            </div>
+
+            <div className="pt-2">
+              <a
+                href={quoteUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full inline-flex items-center justify-center gap-2.5 py-3.5 sm:py-4 px-6 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-sm sm:text-base transition-all shadow-xl shadow-emerald-600/25 hover:shadow-emerald-500/40 transform hover:-translate-y-0.5 cursor-pointer"
+              >
+                <MessageCircle className="w-5 h-5 fill-white shrink-0" />
+                <span>Quero Minha Piscina Assim!</span>
+              </a>
+              <p className="text-center text-[11px] sm:text-xs text-slate-400 mt-2">
+                Atendimento rápido para Campo Grande e região.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Testimonials Carousel Component                                            */
+/* -------------------------------------------------------------------------- */
+const testimonialsData = [
+  {
+    id: '1',
+    name: 'Simone Martins',
+    role: 'Residência Familiar',
+    location: 'Damha - Campo Grande, MS',
+    image: 'https://raw.githubusercontent.com/mineiro1/fotos/main/WhatsApp%20Image%202026-10-04%20at%2018.09.21.jpeg',
+    serviceType: 'Contrato Mensal de Tratamento',
+    rating: 5,
+    text: 'Minha piscina estava com a água totalmente verde e turva após um período de chuvas. A equipe da RS Piscinas veio no mesmo dia, fez a decantação e no dia seguinte a água parecia um espelho de tão cristalina. Já fechei o contrato semanal e nunca mais tive dor de cabeça.',
+    highlight: 'Água 100% cristalina em menos de 24h'
+  },
+  {
+    id: '2',
+    name: 'Isabella Zamboni',
+    role: '',
+    location: 'BR 262 - Campo Grande, MS',
+    image: 'https://raw.githubusercontent.com/mineiro1/fotos/main/WhatsApp%20Image%202026-10-04%20at%2019.19.29.jpeg',
+    serviceType: 'Correção Química & Limpeza',
+    rating: 5,
+    text: 'Tinha muita irritação nos olhos pois eu mesma fazia o tratamento da minha piscina e utilizava os produtos de maneira errada. Com o controle rigoroso de pH e cloro da RS Piscinas, utilizo a piscina o fim de semana todo sem qualquer ardência ou cheiro forte!',
+    highlight: 'Zero ardência nos olhos e sem cheiro forte'
+  },
+  {
+    id: '3',
+    name: 'Roberto Siqueira',
+    role: 'Proprietário Residencial',
+    location: 'Residencial Rita Vieira - Campo Grande, MS',
+    image: 'https://raw.githubusercontent.com/mineiro1/fotos/main/WhatsApp%20Image%202026-10-04%20at%2019.24.31.jpeg',
+    serviceType: 'Troca de Areia & Reparo de Bomba',
+    rating: 5,
+    text: 'A bomba da piscina estava fazendo um barulho horrível e a água não limpava direito. O técnico identificou de imediato que a areia do filtro estava saturada e o rolamento do motor desgastado. Fizeram a troca e manutenção preventiva na casa de máquinas com total agilidade e preço justo.',
+    highlight: 'Manutenção completa da casa de máquinas'
+  },
+  {
+    id: '4',
+    name: 'Patrícia Alencar',
+    role: 'Residência Familiar',
+    location: 'Carandá Bosque - Campo Grande, MS',
+    image: 'https://raw.githubusercontent.com/mineiro1/fotos/main/WhatsApp%20Image%202026-10-04%20at%2019.20.46.jpeg',
+    serviceType: 'Limpeza de Capa & Tratamento Semanal',
+    rating: 5,
+    text: 'Profissionalismo impecável. São pontuais, avisam sempre quando estão a caminho e enviam o relatório das medições. A capa térmica foi lavada e ficou como nova. Recomendo de olhos fechados para quem busca tranquilidade e piscina impecável.',
+    highlight: 'Pontualidade e relatório de cada visita'
+  }
+];
+
+interface TestimonialsCarouselProps {
+  whatsappUrl: string;
+}
+
+function TestimonialsCarousel({ whatsappUrl }: TestimonialsCarouselProps) {
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [isAutoPlaying, setIsAutoPlaying] = useState(true);
+  const touchStartX = useRef<number | null>(null);
+
+  const nextSlide = () => {
+    setCurrentIndex((prev) => (prev + 1) % testimonialsData.length);
+  };
+
+  const prevSlide = () => {
+    setCurrentIndex((prev) => (prev - 1 + testimonialsData.length) % testimonialsData.length);
+  };
+
+  useEffect(() => {
+    if (!isAutoPlaying) return;
+    const interval = setInterval(() => {
+      nextSlide();
+    }, 6000);
+    return () => clearInterval(interval);
+  }, [isAutoPlaying]);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    touchStartX.current = e.touches[0].clientX;
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (touchStartX.current === null) return;
+    const touchEndX = e.changedTouches[0].clientX;
+    const diff = touchStartX.current - touchEndX;
+
+    if (diff > 50) {
+      nextSlide();
+    } else if (diff < -50) {
+      prevSlide();
+    }
+    touchStartX.current = null;
+  };
+
+  const current = testimonialsData[currentIndex];
+
+  return (
+    <section id="depoimentos" className="py-16 sm:py-24 bg-slate-900 border-t border-slate-800/80 relative overflow-hidden">
+      <div className="absolute top-1/3 left-10 w-80 h-80 bg-sky-500/10 rounded-full blur-3xl pointer-events-none" />
+      <div className="absolute bottom-10 right-10 w-80 h-80 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
+
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
+        <div className="text-center max-w-3xl mx-auto mb-12 sm:mb-16 space-y-3 sm:space-y-4">
+          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 text-xs sm:text-sm font-semibold uppercase tracking-wider">
+            <Sparkles className="w-4 h-4 text-emerald-400" />
+            <span>Depoimentos & Casos Reais</span>
+          </div>
+
+          <h2 className="text-3xl sm:text-4xl font-extrabold text-white tracking-tight text-balance">
+            Quem Contrata a <span className="text-sky-400">RS Piscinas</span> Recomenda
+          </h2>
+
+          <p className="text-slate-300 text-sm sm:text-base lg:text-lg">
+            Confira a experiência de clientes em Campo Grande que confiam a saúde e a beleza de suas piscinas ao nosso time.
+          </p>
+        </div>
+
+        <div 
+          className="max-w-5xl mx-auto"
+          onMouseEnter={() => setIsAutoPlaying(false)}
+          onMouseLeave={() => setIsAutoPlaying(true)}
+          onTouchStart={handleTouchStart}
+          onTouchEnd={handleTouchEnd}
+        >
+          <div className="relative bg-slate-950/90 border border-slate-800 rounded-3xl p-6 sm:p-10 shadow-2xl overflow-hidden backdrop-blur-sm">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+              <div className="lg:col-span-5 relative">
+                <div className="relative aspect-[4/3] sm:aspect-square rounded-2xl overflow-hidden border border-slate-700/80 shadow-xl bg-slate-900 group">
+                  <img 
+                    src={current.image} 
+                    alt={`Piscina de ${current.name}`}
+                    className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-transparent to-transparent pointer-events-none" />
+                  
+                  <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between gap-2">
+                    <span className="px-2.5 py-1 rounded-lg bg-slate-900/90 border border-slate-700 text-sky-300 font-bold text-xs backdrop-blur-md shadow">
+                      {current.serviceType}
+                    </span>
+                    <span className="flex items-center gap-1 text-[11px] font-semibold text-emerald-400 bg-emerald-950/90 px-2 py-1 rounded-lg border border-emerald-800/60 backdrop-blur-md">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      Verificado
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="lg:col-span-7 flex flex-col justify-between space-y-6">
+                <div>
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-1">
+                      {[...Array(current.rating)].map((_, i) => (
+                        <Star key={i} className="w-5 h-5 fill-amber-400 text-amber-400" />
+                      ))}
+                      <span className="ml-2 text-xs font-bold text-amber-300">5.0 / 5.0</span>
+                    </div>
+                    <Quote className="w-8 h-8 text-sky-500/30" />
+                  </div>
+
+                  <div className="inline-block px-3 py-1 rounded-lg bg-sky-950/70 border border-sky-500/30 text-sky-300 text-xs sm:text-sm font-semibold mb-4">
+                    "{current.highlight}"
+                  </div>
+
+                  <p className="text-slate-200 text-sm sm:text-base leading-relaxed italic">
+                    "{current.text}"
+                  </p>
+                </div>
+
+                <div className="pt-4 border-t border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h4 className="font-bold text-white text-base sm:text-lg">{current.name}</h4>
+                    {current.role ? <p className="text-xs text-slate-400">{current.role}</p> : null}
+                    <div className="flex items-center gap-1 text-xs text-emerald-400 mt-1">
+                      <MapPin className="w-3.5 h-3.5 shrink-0" />
+                      <span>{current.location}</span>
+                    </div>
+                  </div>
+
+                  <a
+                    href={`${whatsappUrl}&text=${encodeURIComponent(`Olá! Vi o depoimento de ${current.name} no site e gostaria de um orçamento para a minha piscina também.`)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-800 hover:bg-emerald-600 text-slate-200 hover:text-white font-bold text-xs transition-all border border-slate-700 hover:border-emerald-500 self-start sm:self-auto"
+                  >
+                    <MessageCircle className="w-3.5 h-3.5 fill-current" />
+                    <span>Quero um resultado assim</span>
+                  </a>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-8 pt-6 border-t border-slate-800/60 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                {testimonialsData.map((_, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setCurrentIndex(idx)}
+                    aria-label={`Ir para depoimento ${idx + 1}`}
+                    className={`h-2.5 rounded-full transition-all duration-300 cursor-pointer ${
+                      currentIndex === idx 
+                        ? 'w-8 bg-sky-400 shadow-md shadow-sky-400/30' 
+                        : 'w-2.5 bg-slate-700 hover:bg-slate-500'
+                    }`}
+                  />
+                ))}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={prevSlide}
+                  aria-label="Depoimento anterior"
+                  className="p-2.5 rounded-xl bg-slate-900 border border-slate-700 hover:bg-slate-800 text-slate-200 hover:text-white transition-all cursor-pointer"
+                >
+                  <ChevronLeft className="w-5 h-5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={nextSlide}
+                  aria-label="Próximo depoimento"
+                  className="p-2.5 rounded-xl bg-slate-900 border border-slate-700 hover:bg-slate-800 text-slate-200 hover:text-white transition-all cursor-pointer"
+                >
+                  <ChevronRight className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-10 grid grid-cols-2 md:grid-cols-4 gap-4 max-w-4xl mx-auto text-center">
+          <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800">
+            <div className="text-2xl font-black text-sky-400">+1.500</div>
+            <div className="text-xs text-slate-400 mt-0.5">Atendimentos Realizados</div>
+          </div>
+          <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800">
+            <div className="text-2xl font-black text-emerald-400">100%</div>
+            <div className="text-xs text-slate-400 mt-0.5">Água Limpa Garantida</div>
+          </div>
+          <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800">
+            <div className="text-2xl font-black text-amber-400">5.0 ★</div>
+            <div className="text-xs text-slate-400 mt-0.5">Avaliação Média dos Clientes</div>
+          </div>
+          <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800">
+            <div className="text-2xl font-black text-purple-400">Campo Grande</div>
+            <div className="text-xs text-slate-400 mt-0.5">Atendimento Rápido Local</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
 
 export default function Landing() {
   const whatsappNumber = '5567992499469';
