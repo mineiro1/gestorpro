@@ -166,11 +166,21 @@ export default function Login() {
         <div className="text-center mb-8 flex flex-col items-center">
           <Link to="/" className="inline-block transition-transform hover:scale-105">
             <img 
-              src="/logo.png" 
+              src="https://iili.io/CpIeN6P.png" 
               alt="RS Piscinas Logo" 
-              className="w-20 h-20 mb-3 object-contain drop-shadow-md" 
+              className="w-24 h-24 mb-2 object-contain drop-shadow-lg" 
               onError={(e) => { 
-                e.currentTarget.src = '/rs-piscinas-logo.png'; 
+                const target = e.currentTarget;
+                if (!target.dataset.fallbackTried) {
+                  target.dataset.fallbackTried = 'true';
+                  target.src = '/logo.png';
+                } else if (target.dataset.fallbackTried === 'true') {
+                  target.dataset.fallbackTried = 'done';
+                  target.src = '/rs-piscinas-logo.png';
+                } else {
+                  target.onerror = null;
+                  target.style.display = 'none';
+                }
               }} 
             />
           </Link>

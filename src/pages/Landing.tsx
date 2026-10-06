@@ -148,10 +148,18 @@ export default function Landing() {
           {/* Zone 1: Company Logo + Name (Locked, never compressed or covered) */}
           <a href="#" className="flex items-center gap-2 sm:gap-3 group focus:outline-none shrink-0 min-w-0">
             <img 
-              src="/logo.png" 
+              src="https://iili.io/CpIeN6P.png" 
               alt="RS Piscinas Logo" 
               className="h-9 w-9 sm:h-12 sm:w-12 object-contain transition-transform group-hover:scale-105 drop-shadow shrink-0" 
-              onError={(e) => { e.currentTarget.src = '/rs-piscinas-logo.png'; }}
+              onError={(e) => { 
+                const target = e.currentTarget;
+                if (!target.dataset.fallback) {
+                  target.dataset.fallback = 'true';
+                  target.src = '/logo.png';
+                } else {
+                  target.onerror = null;
+                }
+              }}
             />
             <span className="text-lg sm:text-2xl font-black text-white tracking-tight whitespace-nowrap">
               RS <span className="text-sky-400">Piscinas</span>
