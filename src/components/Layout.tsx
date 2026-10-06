@@ -12,6 +12,7 @@ import { initCapacitorPushNotifications, requestPushPermissions } from '../lib/p
 import EmployeeLocationTracker from './EmployeeLocationTracker';
 import SmsGatewayListener from './SmsGatewayListener';
 import { evaluateSessionExpiry } from '../lib/chatSessionUtils';
+import logoImg from '../assets/logo.png';
 
 
 const NotificationBanner = () => {
@@ -403,17 +404,20 @@ export default function Layout() {
               <X size={24} />
             </button>
           </div>
-          {userProfile?.whatsappSettings?.companyLogo && (
-            <div className="w-full aspect-video bg-slate-950 overflow-hidden border-b border-slate-800 p-2 flex items-center justify-center">
-              <img 
-                key={userProfile.whatsappSettings.companyLogo} 
-                src={userProfile.whatsappSettings.companyLogo} 
-                alt="Logo" 
-                className="max-h-full max-w-full object-contain" 
-                onError={(e) => { e.currentTarget.style.display = "none"; }} 
-              />
-            </div>
-          )}
+          <div className="w-full aspect-video bg-slate-950 overflow-hidden border-b border-slate-800 p-2 flex items-center justify-center">
+            <img 
+              src={userProfile?.whatsappSettings?.companyLogo || logoImg} 
+              alt="Logo" 
+              className="max-h-full max-w-full object-contain" 
+              onError={(e) => { 
+                if (e.currentTarget.src !== logoImg) {
+                  e.currentTarget.src = logoImg;
+                } else {
+                  e.currentTarget.style.display = "none";
+                }
+              }} 
+            />
+          </div>
         </div>
 
         {/* User Profile Section */}

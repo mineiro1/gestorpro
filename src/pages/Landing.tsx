@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import BeforeAfterSlider from '../components/BeforeAfterSlider';
 import TestimonialsCarousel from '../components/TestimonialsCarousel';
+import logoImg from '../assets/logo.png';
 import { 
   Droplets, 
   ShieldCheck, 
@@ -148,18 +149,9 @@ export default function Landing() {
           {/* Zone 1: Company Logo + Name (Locked, never compressed or covered) */}
           <a href="#" className="flex items-center gap-2 sm:gap-3 group focus:outline-none shrink-0 min-w-0">
             <img 
-              src="https://iili.io/CpIeN6P.png" 
+              src={logoImg} 
               alt="RS Piscinas Logo" 
               className="h-9 w-9 sm:h-12 sm:w-12 object-contain transition-transform group-hover:scale-105 drop-shadow shrink-0" 
-              onError={(e) => { 
-                const target = e.currentTarget;
-                if (!target.dataset.fallback) {
-                  target.dataset.fallback = 'true';
-                  target.src = '/logo.png';
-                } else {
-                  target.onerror = null;
-                }
-              }}
             />
             <span className="text-lg sm:text-2xl font-black text-white tracking-tight whitespace-nowrap">
               RS <span className="text-sky-400">Piscinas</span>
@@ -290,10 +282,9 @@ export default function Landing() {
                 <div className="flex items-center justify-between pb-4 sm:pb-5 border-b border-slate-700/60">
                   <div className="flex items-center gap-3">
                     <img 
-                      src="/logo.png" 
+                      src={logoImg} 
                       alt="RS Piscinas" 
                       className="w-10 h-10 object-contain" 
-                      onError={(e) => { e.currentTarget.src = '/rs-piscinas-logo.png'; }}
                     />
                     <div>
                       <h3 className="font-bold text-white text-sm sm:text-base">Padrão RS Piscinas</h3>
@@ -774,10 +765,9 @@ export default function Landing() {
             <div className="space-y-3 md:col-span-2">
               <div className="flex items-center gap-3">
                 <img 
-                  src="/logo.png" 
+                  src={logoImg} 
                   alt="RS Piscinas" 
                   className="h-10 w-auto object-contain" 
-                  onError={(e) => { e.currentTarget.src = '/rs-piscinas-logo.png'; }}
                 />
                 <span className="text-xl font-bold text-white">RS Piscinas</span>
               </div>

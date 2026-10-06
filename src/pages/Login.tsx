@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import logoImg from '../assets/logo.png';
 
 export default function Login() {
   const location = useLocation();
@@ -166,22 +167,9 @@ export default function Login() {
         <div className="text-center mb-8 flex flex-col items-center">
           <Link to="/" className="inline-block transition-transform hover:scale-105">
             <img 
-              src="https://iili.io/CpIeN6P.png" 
+              src={logoImg} 
               alt="RS Piscinas Logo" 
               className="w-24 h-24 mb-2 object-contain drop-shadow-lg" 
-              onError={(e) => { 
-                const target = e.currentTarget;
-                if (!target.dataset.fallbackTried) {
-                  target.dataset.fallbackTried = 'true';
-                  target.src = '/logo.png';
-                } else if (target.dataset.fallbackTried === 'true') {
-                  target.dataset.fallbackTried = 'done';
-                  target.src = '/rs-piscinas-logo.png';
-                } else {
-                  target.onerror = null;
-                  target.style.display = 'none';
-                }
-              }} 
             />
           </Link>
           <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight">
