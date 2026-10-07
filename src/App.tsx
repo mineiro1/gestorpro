@@ -44,7 +44,7 @@ const ProtectedRoute = ({ children, allowedRoles }: { children: React.ReactNode,
             </div>
           </div>
           <div className="flex flex-col items-center space-y-2 text-center animate-pulse">
-            <h3 className="text-xl font-bold text-gray-900 tracking-tight">GestãoPro</h3>
+            <h3 className="text-xl font-bold text-gray-900 tracking-tight">RS PISCINA</h3>
             <p className="text-sm font-medium text-gray-500">Preparando painel...</p>
           </div>
         </div>

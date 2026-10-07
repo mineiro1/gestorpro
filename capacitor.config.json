@@ -1,6 +1,6 @@
 {
   "appId": "br.com.gestorpro.app",
-  "appName": "GestãoPro",
+  "appName": "RS PISCINA",
   "webDir": "dist",
   "plugins": {
     "PushNotifications": {
