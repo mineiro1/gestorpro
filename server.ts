@@ -2848,31 +2848,46 @@ app.all("/api/sync-payment", async (req, res) => {
     return true;
   }
 
-  // Helper to send push notification to all devices registered for an admin
+  // Helper to send push notification to all devices registered for an admin or user
   async function sendPushToAdmin(adminId: string, title: string, body: string, data: Record<string, string> = {}) {
     try {
       if (!adminId) return false;
-      const { data: users, error } = await supabaseAdmin
+
+      // 1. Coleta todos os tokens ativos (fcm_token + lista de múltiplos dispositivos em whatsapp_settings.devices)
+      const { data: users } = await supabaseAdmin
         .from('users')
-        .select('id, name, fcm_token')
+        .select('id, name, fcm_token, whatsapp_settings')
         .eq('id', adminId);
 
-      let rawTokens = (users || []).map(u => u.fcm_token).filter(Boolean);
+      let rawTokens: string[] = [];
+      (users || []).forEach(u => {
+        if (u.fcm_token) rawTokens.push(u.fcm_token);
+        if (Array.isArray(u.whatsapp_settings?.devices)) {
+          u.whatsapp_settings.devices.forEach((d: any) => {
+            if (d?.token) rawTokens.push(d.token);
+          });
+        }
+      });
 
-      // Fallback: se o adminId não possuir tokens, buscar administradores do sistema com token ativo
+      // 2. Fallback: se o adminId específico não possuir tokens, buscar administradores do sistema com tokens ativos
       if (rawTokens.length === 0) {
         const { data: fallbackAdmins } = await supabaseAdmin
           .from('users')
-          .select('id, name, fcm_token')
-          .eq('role', 'admin')
-          .not('fcm_token', 'is', null);
-        if (fallbackAdmins && fallbackAdmins.length > 0) {
-          rawTokens = fallbackAdmins.map(u => u.fcm_token).filter(Boolean);
-        }
+          .select('id, name, fcm_token, whatsapp_settings')
+          .eq('role', 'admin');
+
+        (fallbackAdmins || []).forEach(u => {
+          if (u.fcm_token) rawTokens.push(u.fcm_token);
+          if (Array.isArray(u.whatsapp_settings?.devices)) {
+            u.whatsapp_settings.devices.forEach((d: any) => {
+              if (d?.token) rawTokens.push(d.token);
+            });
+          }
+        });
       }
 
       // Deduplica tokens garantindo que nenhum dispositivo receba 2x
-      const tokens = Array.from(new Set(rawTokens));
+      const tokens = Array.from(new Set(rawTokens.filter(Boolean)));
 
       if (tokens.length === 0) {
         console.log(`[Push Server] Nenhum token FCM registrado no momento para admin ${adminId}.`);
@@ -2947,7 +2962,7 @@ app.all("/api/sync-payment", async (req, res) => {
           } catch (fcmErr: any) {
             console.error(`[Push Server] Erro ao enviar token ${token.substring(0, 10)}...:`, fcmErr?.message || fcmErr);
             if (fcmErr?.code === 'messaging/registration-token-not-registered' || fcmErr?.code === 'messaging/invalid-registration-token') {
-              // Limpar token inválido
+              // Limpar apenas o token expirado na coluna principal se for igual
               await supabaseAdmin.from('users').update({ fcm_token: null }).eq('fcm_token', token);
             }
           }
@@ -2961,6 +2976,50 @@ app.all("/api/sync-payment", async (req, res) => {
       return false;
     }
   }
+
+  // Endpoint to register/update device in the multi-device registry
+  app.post("/api/notifications/register-device", async (req, res) => {
+    try {
+      const { userId, token, platform, deviceId, deviceName } = req.body || {};
+      if (!userId || !token) {
+        return res.status(400).json({ error: "Missing userId or token" });
+      }
+
+      // 1. Atualiza users.fcm_token como token principal
+      await supabaseAdmin.from('users').update({ fcm_token: token }).eq('id', userId);
+
+      // 2. Atualiza a lista de múltiplos dispositivos em whatsapp_settings.devices
+      const { data: userRow } = await supabaseAdmin.from('users').select('id, whatsapp_settings').eq('id', userId).single();
+      const currentSettings = userRow?.whatsapp_settings || {};
+      let devices: any[] = Array.isArray(currentSettings.devices) ? currentSettings.devices : [];
+
+      const cleanDevId = deviceId || `dev_${token.slice(0, 16)}`;
+      devices = devices.filter((d: any) => d && d.token && d.token !== token && d.deviceId !== cleanDevId);
+
+      devices.unshift({
+        token,
+        deviceId: cleanDevId,
+        platform: platform || 'android',
+        deviceName: deviceName || 'Celular Android',
+        lastSeen: new Date().toISOString()
+      });
+
+      devices = devices.slice(0, 10);
+
+      await supabaseAdmin.from('users').update({
+        whatsapp_settings: {
+          ...currentSettings,
+          devices
+        }
+      }).eq('id', userId);
+
+      console.log(`[Push Server] Dispositivo registrado com sucesso para o usuário ${userId}. Total: ${devices.length}`);
+      return res.json({ success: true, deviceCount: devices.length });
+    } catch (err: any) {
+      console.error('[Push Server] Erro ao registrar dispositivo:', err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
 
   // Endpoint to immediately trigger attendance completion push notification
   app.post("/api/notifications/notify-visit-completion", async (req, res) => {

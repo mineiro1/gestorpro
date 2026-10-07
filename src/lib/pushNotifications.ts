@@ -87,7 +87,7 @@ export async function setupPushNotificationChannels(): Promise<void> {
 }
 
 /**
- * Synchronizes the cached FCM token with Supabase users table
+ * Synchronizes the cached FCM token with Supabase users table and multi-device registry
  */
 export async function syncStoredFcmToken(userId?: string | null): Promise<boolean> {
   if (!userId) return false;
@@ -95,6 +95,20 @@ export async function syncStoredFcmToken(userId?: string | null): Promise<boolea
   if (!token) return false;
 
   try {
+    // 1. Enviar para a API /api/notifications/register-device para salvar na lista de múltiplos dispositivos
+    fetch(getApiUrl('/api/notifications/register-device'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId,
+        token,
+        platform: Capacitor.getPlatform() || 'android',
+        deviceId: `dev_${token.slice(0, 12)}`,
+        deviceName: 'Celular Android'
+      })
+    }).catch(() => {});
+
+    // 2. Atualizar users.fcm_token no Supabase
     const { error } = await supabase.from('users').update({ fcm_token: token }).eq('id', userId);
     if (error) {
       console.warn('[Capacitor Push] Erro ao gravar token FCM:', error.message);
@@ -193,6 +207,20 @@ export async function initCapacitorPushNotifications(
 
       if (userProfile?.uid) {
         try {
+          // 1. Enviar para a API de registro de múltiplos dispositivos
+          fetch(getApiUrl('/api/notifications/register-device'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              userId: userProfile.uid,
+              token: token.value,
+              platform: Capacitor.getPlatform() || 'android',
+              deviceId: `dev_${token.value.slice(0, 12)}`,
+              deviceName: 'Celular Android'
+            })
+          }).catch(() => {});
+
+          // 2. Atualizar tabela users
           await supabase.from('users').update({
             fcm_token: token.value,
           }).eq('id', userProfile.uid);
