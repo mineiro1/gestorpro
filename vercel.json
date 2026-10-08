@@ -1,4 +1,10 @@
 {
+  "crons": [
+    {
+      "path": "/api/cron/billing-reminders",
+      "schedule": "0 10 * * *"
+    }
+  ],
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/index.js" },
     { "source": "/webhook/(.*)", "destination": "/api/index.js" },

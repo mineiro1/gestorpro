@@ -1199,23 +1199,34 @@ async function sendPushToAdmin(adminId, title, body, data = {}) {
     if (adminId) {
       const { data: users } = await supabaseAdmin
         .from('users')
-        .select('id, name, fcm_token')
+        .select('id, name, fcm_token, whatsapp_settings')
         .eq('id', adminId);
-      rawTokens = (users || []).map(u => u.fcm_token).filter(Boolean);
+      (users || []).forEach(u => {
+        if (u.fcm_token) rawTokens.push(u.fcm_token);
+        if (Array.isArray(u.whatsapp_settings?.devices)) {
+          u.whatsapp_settings.devices.forEach(d => {
+            if (d?.token) rawTokens.push(d.token);
+          });
+        }
+      });
     }
 
     if (rawTokens.length === 0) {
       const { data: fallbackAdmins } = await supabaseAdmin
         .from('users')
-        .select('id, name, fcm_token')
-        .eq('role', 'admin')
-        .not('fcm_token', 'is', null);
-      if (fallbackAdmins && fallbackAdmins.length > 0) {
-        rawTokens = fallbackAdmins.map(u => u.fcm_token).filter(Boolean);
-      }
+        .select('id, name, fcm_token, whatsapp_settings')
+        .eq('role', 'admin');
+      (fallbackAdmins || []).forEach(u => {
+        if (u.fcm_token) rawTokens.push(u.fcm_token);
+        if (Array.isArray(u.whatsapp_settings?.devices)) {
+          u.whatsapp_settings.devices.forEach(d => {
+            if (d?.token) rawTokens.push(d.token);
+          });
+        }
+      });
     }
 
-    const tokens = Array.from(new Set(rawTokens));
+    const tokens = Array.from(new Set(rawTokens.filter(Boolean)));
     if (tokens.length === 0) {
       return { sent: false, count: 0, reason: 'Nenhum token FCM registrado' };
     }
@@ -1226,9 +1237,11 @@ async function sendPushToAdmin(adminId, title, body, data = {}) {
     }
 
     const isChat = data?.channelId === 'chat_messages' || data?.type === 'chat_message';
+    const isBilling = data?.channelId === 'cobrancas' || (typeof data?.type === 'string' && data.type.startsWith('billing'));
     const soundName = isChat ? 'chat_notification' : 'notificacao';
     const soundFile = isChat ? 'chat_notification.mp3' : 'notificacao.mp3';
-    const channelTarget = data?.channelId || (isChat ? 'chat_messages' : 'atendimentos_v2');
+    const channelTarget = data?.channelId || (isChat ? 'chat_messages' : (isBilling ? 'cobrancas' : 'atendimentos_v2'));
+    const defaultUrl = isChat ? '/messages' : (isBilling ? '/billing' : '/routes');
 
     let sentCount = 0;
     for (const token of tokens) {
@@ -1244,7 +1257,7 @@ async function sendPushToAdmin(adminId, title, body, data = {}) {
             body,
             ...data,
             click_action: 'FCM_PLUGIN_ACTIVITY',
-            url: data.url || (isChat ? '/messages' : '/routes'),
+            url: data.url || defaultUrl,
             channelId: channelTarget,
             channel_id: channelTarget,
             sound: soundName
@@ -1264,7 +1277,7 @@ async function sendPushToAdmin(adminId, title, body, data = {}) {
               defaultVibrateTimings: true,
               localOnly: false,
               notificationCount: 1,
-              tag: data.tag || (data.visitId ? `visit_${data.visitId}` : (data.jobId ? `job_${data.jobId}` : undefined))
+              tag: data.tag || (data.visitId ? `visit_${data.visitId}` : (data.jobId ? `job_${data.jobId}` : (data.clientId ? `billing_${data.clientId}` : undefined)))
             }
           },
           apns: {
@@ -1300,6 +1313,172 @@ async function sendPushToAdmin(adminId, title, body, data = {}) {
     return { sent: false, error: err.message };
   }
 }
+
+// Endpoint to register/update device in the multi-device registry
+app.post(['/api/notifications/register-device', '/notifications/register-device'], async (req, res) => {
+  try {
+    const { userId, token, platform, deviceId, deviceName } = req.body || {};
+    if (!userId || !token) {
+      return res.status(400).json({ error: "Missing userId or token" });
+    }
+
+    const supabaseAdmin = getSupabaseAdmin();
+
+    // 1. Atualiza users.fcm_token como token principal
+    await supabaseAdmin.from('users').update({ fcm_token: token }).eq('id', userId);
+
+    // 2. Atualiza a lista de múltiplos dispositivos em whatsapp_settings.devices
+    const { data: userRow } = await supabaseAdmin.from('users').select('id, whatsapp_settings').eq('id', userId).maybeSingle();
+    const currentSettings = userRow?.whatsapp_settings || {};
+    let devices = Array.isArray(currentSettings.devices) ? currentSettings.devices : [];
+
+    const cleanDevId = deviceId || `dev_${token.slice(0, 16)}`;
+    devices = devices.filter(d => d && d.token && d.token !== token && d.deviceId !== cleanDevId);
+
+    devices.unshift({
+      token,
+      deviceId: cleanDevId,
+      platform: platform || 'android',
+      deviceName: deviceName || 'Celular Android',
+      lastSeen: new Date().toISOString()
+    });
+
+    devices = devices.slice(0, 10);
+
+    await supabaseAdmin.from('users').update({
+      whatsapp_settings: {
+        ...currentSettings,
+        devices
+      }
+    }).eq('id', userId);
+
+    console.log(`[Push API] Dispositivo registrado com sucesso para o usuário ${userId}. Total: ${devices.length}`);
+    return res.json({ success: true, deviceCount: devices.length });
+  } catch (err) {
+    console.error('[Push API] Erro ao registrar dispositivo:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Rotina Diária das 07:00 da manhã (Horário de Brasília):
+// Envia notificações push para o administrador informando clientes com cobranças
+async function sendDailyBillingReminders() {
+  const summary = { dueTodayCount: 0, overdueCount: 0, errors: [] };
+  try {
+    const supabaseAdmin = getSupabaseAdmin();
+
+    // Obter data atual no fuso de Brasília (YYYY-MM-DD)
+    const now = new Date();
+    const brParts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Sao_Paulo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).formatToParts(now);
+
+    const year = brParts.find(p => p.type === 'year')?.value || `${now.getFullYear()}`;
+    const month = brParts.find(p => p.type === 'month')?.value || `${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const day = brParts.find(p => p.type === 'day')?.value || `${String(now.getDate()).padStart(2, '0')}`;
+    const todayStr = `${year}-${month}-${day}`;
+
+    console.log(`[7AM Billing Reminder] Iniciando verificação de vencimentos para a data: ${todayStr}...`);
+
+    const { data: clients, error: clientErr } = await supabaseAdmin
+      .from('clients')
+      .select('id, name, due_date, monthly_price, admin_id, active')
+      .not('due_date', 'is', null);
+
+    if (clientErr) {
+      console.error('[7AM Billing Reminder] Erro ao buscar clientes:', clientErr.message);
+      summary.errors.push(clientErr.message);
+      return summary;
+    }
+
+    if (!clients || clients.length === 0) {
+      console.log('[7AM Billing Reminder] Nenhum cliente encontrado com data de vencimento.');
+      return summary;
+    }
+
+    // Buscar admin padrão caso client.admin_id seja nulo
+    const { data: defaultAdmins } = await supabaseAdmin
+      .from('users')
+      .select('id')
+      .eq('role', 'admin');
+    const defaultAdminId = defaultAdmins && defaultAdmins.length > 0 ? defaultAdmins[0].id : null;
+
+    for (const client of clients) {
+      if (!client.due_date) continue;
+      if (client.active === false) continue;
+
+      const targetAdminId = client.admin_id || defaultAdminId;
+      if (!targetAdminId) continue;
+
+      const clientName = client.name || 'Cliente';
+      const clientDueDate = client.due_date;
+
+      if (clientDueDate === todayStr) {
+        summary.dueTodayCount++;
+        const title = `💰 Vencimento Hoje: ${clientName}`;
+        const body = `Hoje vence a mensalidade de ${clientName}. Realize a cobrança!`;
+        
+        await sendPushToAdmin(
+          targetAdminId,
+          title,
+          body,
+          {
+            url: '/billing',
+            channelId: 'cobrancas',
+            type: 'billing_due_today',
+            clientId: String(client.id)
+          }
+        );
+      } else if (clientDueDate < todayStr) {
+        summary.overdueCount++;
+        const [dYear, dMonth, dDay] = clientDueDate.split('-');
+        const formattedDueDate = dDay && dMonth ? `${dDay}/${dMonth}/${dYear}` : clientDueDate;
+        const title = `⚠️ Cobrança Atrasada: ${clientName}`;
+        const body = `O cliente ${clientName} está com mensalidade em atraso (venceu em ${formattedDueDate}). Realize a cobrança!`;
+
+        await sendPushToAdmin(
+          targetAdminId,
+          title,
+          body,
+          {
+            url: '/billing',
+            channelId: 'cobrancas',
+            type: 'billing_overdue',
+            clientId: String(client.id)
+          }
+        );
+      }
+    }
+
+    console.log(`[7AM Billing Reminder] Notificações concluídas: ${summary.dueTodayCount} vencendo hoje, ${summary.overdueCount} atrasados.`);
+  } catch (err) {
+    console.error('[7AM Billing Reminder] Erro inesperado na rotina de cobrança:', err);
+    summary.errors.push(err?.message || String(err));
+  }
+  return summary;
+}
+
+// Endpoint para Cron Job da Vercel e chamadas manuais (suporta GET e POST)
+app.all([
+  '/api/cron/billing-reminders',
+  '/cron/billing-reminders',
+  '/api/notifications/trigger-due-reminders',
+  '/notifications/trigger-due-reminders'
+], async (req, res) => {
+  try {
+    const summary = await sendDailyBillingReminders();
+    return res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      summary
+    });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
 
 app.post(['/api/notifications/notify-visit-completion', '/notifications/notify-visit-completion'], async (req, res) => {
   try {
@@ -1346,22 +1525,35 @@ app.post(['/api/notifications/notify-visit-completion', '/notifications/notify-v
   }
 });
 
-app.post(['/api/notifications/test-push', '/notifications/test-push'], async (req, res) => {
+app.all(['/api/notifications/test-push', '/notifications/test-push'], async (req, res) => {
   try {
-    const { adminId, userId, title, body } = req.body || {};
-    const targetId = adminId || userId;
+    const { adminId, userId, title, body } = req.body || req.query || {};
+    let targetId = adminId || userId;
     const supabaseAdmin = getSupabaseAdmin();
 
     let user = null;
     if (targetId) {
-      const { data: u } = await supabaseAdmin.from('users').select('fcm_token, name').eq('id', targetId).maybeSingle();
+      const { data: u } = await supabaseAdmin.from('users').select('id, fcm_token, name').eq('id', targetId).maybeSingle();
       user = u;
+    }
+
+    if (!user || !user.fcm_token) {
+      const { data: fallbackUsers } = await supabaseAdmin
+        .from('users')
+        .select('id, fcm_token, name')
+        .eq('role', 'admin')
+        .not('fcm_token', 'is', null)
+        .limit(1);
+      if (fallbackUsers && fallbackUsers.length > 0) {
+        user = fallbackUsers[0];
+        targetId = user.id;
+      }
     }
 
     const result = await sendPushToAdmin(
       targetId,
       title || '🏊 Teste de Notificação Push',
-      body || 'Seu dispositivo está conectado e configurado para receber alertas em tempo real das rotas!',
+      body || 'Seu dispositivo está conectado e configurado para receber alertas em tempo real das rotas e cobranças!',
       {
         url: '/routes',
         channelId: 'atendimentos_v2',
@@ -1373,6 +1565,7 @@ app.post(['/api/notifications/test-push', '/notifications/test-push'], async (re
       success: result.sent,
       sent: result.sent,
       count: result.count,
+      targetUserId: targetId,
       hasToken: !!user?.fcm_token,
       tokenPreview: user?.fcm_token ? `${user.fcm_token.substring(0, 10)}...` : null,
       reason: result.reason

@@ -3076,18 +3076,36 @@ app.all("/api/sync-payment", async (req, res) => {
   });
 
   // Endpoint to send a test push notification to verify Capacitor setup
-  app.post("/api/notifications/test-push", async (req, res) => {
+  app.all("/api/notifications/test-push", async (req, res) => {
     try {
-      const { adminId } = req.body || {};
-      if (!adminId) return res.status(400).json({ error: "Missing adminId" });
+      const { adminId, userId } = req.body || req.query || {};
+      let targetId = adminId || userId;
 
-      const { data: user } = await supabaseAdmin.from('users').select('fcm_token, name').eq('id', adminId).single();
+      let user = null;
+      if (targetId) {
+        const { data: u } = await supabaseAdmin.from('users').select('id, fcm_token, name').eq('id', targetId).maybeSingle();
+        user = u;
+      }
+
+      if (!user || !user.fcm_token) {
+        const { data: fallbackUsers } = await supabaseAdmin
+          .from('users')
+          .select('id, fcm_token, name')
+          .eq('role', 'admin')
+          .not('fcm_token', 'is', null)
+          .limit(1);
+        if (fallbackUsers && fallbackUsers.length > 0) {
+          user = fallbackUsers[0];
+          targetId = user.id;
+        }
+      }
+
       const hasToken = !!user?.fcm_token;
 
       const sent = await sendPushToAdmin(
-        adminId,
+        targetId || '',
         '🏊 Teste de Notificação Push',
-        'Seu dispositivo está conectado e configurado para receber alertas em tempo real das rotas!',
+        'Seu dispositivo está conectado e configurado para receber alertas em tempo real das rotas e cobranças!',
         {
           url: '/routes',
           channelId: 'atendimentos_v2',
@@ -3098,6 +3116,7 @@ app.all("/api/sync-payment", async (req, res) => {
       return res.json({
         success: true,
         sent,
+        targetUserId: targetId,
         hasToken,
         fcmInitialized,
         tokenPreview: user?.fcm_token ? `${user.fcm_token.substring(0, 10)}...` : null
@@ -3125,11 +3144,11 @@ app.all("/api/sync-payment", async (req, res) => {
     }
   });
 
-  // Endpoint to manually trigger or test daily 7:00 AM billing reminders
-  app.post("/api/notifications/trigger-due-reminders", async (req, res) => {
+  // Endpoint to manually trigger or test daily 7:00 AM billing reminders (supports both cron and manual calls)
+  app.all(["/api/notifications/trigger-due-reminders", "/api/cron/billing-reminders"], async (req, res) => {
     try {
       const summary = await sendDailyBillingReminders();
-      return res.json({ success: true, summary });
+      return res.json({ success: true, timestamp: new Date().toISOString(), summary });
     } catch (e: any) {
       return res.status(500).json({ error: e.message });
     }

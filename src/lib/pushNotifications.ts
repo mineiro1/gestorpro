@@ -245,10 +245,11 @@ export async function initCapacitorPushNotifications(
         console.log('[Capacitor Push] Notificação recebida em primeiro plano:', notification);
 
         const isChat = notification.data?.channelId === 'chat_messages' || notification.data?.type === 'chat_message';
-        const notifTitle = notification.title || notification.data?.title || (isChat ? '💬 Nova Mensagem' : '✅ Atendimento Finalizado');
+        const isBilling = notification.data?.channelId === 'cobrancas' || (typeof notification.data?.type === 'string' && notification.data.type.startsWith('billing'));
+        const notifTitle = notification.title || notification.data?.title || (isChat ? '💬 Nova Mensagem' : (isBilling ? '💰 Aviso de Cobrança' : '✅ Atendimento Finalizado'));
         const notifBody = notification.body || notification.data?.body || '';
-        const targetChannel = isChat ? 'chat_messages' : 'atendimentos_v2';
-        const targetUrl = notification.data?.url || (isChat ? '/messages' : '/routes');
+        const targetChannel = notification.data?.channelId || (isChat ? 'chat_messages' : (isBilling ? 'cobrancas' : 'atendimentos_v2'));
+        const targetUrl = notification.data?.url || (isChat ? '/messages' : (isBilling ? '/billing' : '/routes'));
 
         // Play audio alert (differentiates chat messages from visit completions)
         try {
@@ -271,6 +272,7 @@ export async function initCapacitorPushNotifications(
                   sound: isChat ? 'chat_notification' : 'notificacao',
                   extra: {
                     url: targetUrl,
+                    channelId: targetChannel,
                     ...notification.data,
                   },
                 },
@@ -294,7 +296,7 @@ export async function initCapacitorPushNotifications(
       'pushNotificationActionPerformed',
       (notification: ActionPerformed) => {
         console.log('[Capacitor Push] Notificação clicada pelo usuário:', notification);
-        const targetUrl = notification.notification?.data?.url || '/routes';
+        const targetUrl = notification.notification?.data?.url || (notification.notification?.data?.channelId === 'cobrancas' ? '/billing' : '/routes');
         if (handlers?.onNavigate) {
           handlers.onNavigate(targetUrl);
         } else {
@@ -309,7 +311,7 @@ export async function initCapacitorPushNotifications(
       'localNotificationActionPerformed',
       (action) => {
         console.log('[Capacitor Push] Notificação local clicada:', action);
-        const targetUrl = action.notification?.extra?.url || '/routes';
+        const targetUrl = action.notification?.extra?.url || (action.notification?.extra?.channelId === 'cobrancas' ? '/billing' : '/routes');
         if (handlers?.onNavigate) {
           handlers.onNavigate(targetUrl);
         } else {

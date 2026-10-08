@@ -461,9 +461,9 @@ export default function Billing() {
           : processMessageTemplate(waSettings.reminderMessage, client);
           
         try {
-          if (isAstracalls) {
+          if (effectiveProvider === 'astracalls') {
             await sendAstraCallsMessage(client.phone, message, currentSettings);
-          } else if (currentSettings.useMetaApi) {
+          } else if (effectiveProvider === 'meta') {
             await sendMetaMessage(client.phone, message, currentSettings);
           } else {
             await sendEvolutionMessage(client.phone, message, currentSettings);
