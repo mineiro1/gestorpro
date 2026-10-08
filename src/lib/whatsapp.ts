@@ -94,6 +94,85 @@ export const formatWhatsAppNumber = (phone: string): string => {
 
 export type WhatsAppProvider = 'astracalls' | 'evolution' | 'meta' | 'manual';
 
+/**
+ * Recupera e resolve com precisão as configurações de WhatsApp do Administrador da empresa.
+ * Se o usuário atual for um colaborador (employee), busca o admin responsável para
+ * herdar as credenciais de API (AstraCalls, Meta ou Evolution) e evitar a abertura indevida do WhatsApp pessoal.
+ */
+export async function resolveAdminWhatsAppSettings(
+  targetAdminId?: string | null,
+  fallbackUserProfile?: any
+): Promise<any> {
+  let settings = (fallbackUserProfile?.whatsappSettings as any) || {};
+
+  try {
+    // 1. Determina o adminId prioritário
+    const adminIdToQuery = targetAdminId || 
+      (fallbackUserProfile?.role === 'admin' ? fallbackUserProfile?.uid : (fallbackUserProfile?.adminId || null));
+
+    if (adminIdToQuery) {
+      const { data: adminRow } = await supabase
+        .from('users')
+        .select('whatsapp_settings')
+        .eq('id', adminIdToQuery)
+        .maybeSingle();
+
+      if (adminRow?.whatsapp_settings && Object.keys(adminRow.whatsapp_settings).length > 0) {
+        return adminRow.whatsapp_settings;
+      }
+    }
+
+    // 2. Se o usuário logado for colaborador e não tiver adminId no perfil, busca o admin_id na tabela users
+    if (fallbackUserProfile?.uid && fallbackUserProfile?.role !== 'admin') {
+      const { data: userRow } = await supabase
+        .from('users')
+        .select('admin_id')
+        .eq('id', fallbackUserProfile.uid)
+        .maybeSingle();
+
+      if (userRow?.admin_id) {
+        const { data: adminRow } = await supabase
+          .from('users')
+          .select('whatsapp_settings')
+          .eq('id', userRow.admin_id)
+          .maybeSingle();
+
+        if (adminRow?.whatsapp_settings && Object.keys(adminRow.whatsapp_settings).length > 0) {
+          return adminRow.whatsapp_settings;
+        }
+      }
+    }
+
+    // 3. Fallback: se settings já tiver chaves completas no fallbackUserProfile, retorna ele
+    if (settings && Object.keys(settings).length > 0) {
+      return settings;
+    }
+
+    // 4. Fallback final: busca qualquer admin ativo no sistema com credenciais configuradas
+    const { data: activeAdmins } = await supabase
+      .from('users')
+      .select('whatsapp_settings')
+      .eq('role', 'admin')
+      .not('whatsapp_settings', 'is', null)
+      .limit(3);
+
+    const configured = activeAdmins?.find((u: any) => 
+      u.whatsapp_settings?.astracallsUrl || 
+      u.whatsapp_settings?.useAstracalls || 
+      u.whatsapp_settings?.metaToken || 
+      u.whatsapp_settings?.evolutionApiKey
+    );
+
+    if (configured?.whatsapp_settings) {
+      return configured.whatsapp_settings;
+    }
+  } catch (err) {
+    console.warn('[resolveAdminWhatsAppSettings] Erro ao resolver configurações do WhatsApp:', err);
+  }
+
+  return settings || {};
+}
+
 export const getEffectiveWhatsAppProvider = (settings?: any): WhatsAppProvider => {
   if (!settings) return 'manual';
 
@@ -112,9 +191,9 @@ export const getEffectiveWhatsAppProvider = (settings?: any): WhatsAppProvider =
     if (settings.evolutionApiKey && settings.evolutionInstanceName) return 'evolution';
   }
 
-  // 4. Se explicitamente definido AstraCalls
-  if (settings.provider === 'astracalls' || settings.useAstraCalls === true || settings.useAstracalls === true) {
-    if (settings.astracallsUrl && settings.astracallsApiKey) return 'astracalls';
+  // 4. Se explicitamente definido AstraCalls (com suporte aos defaults da plataforma)
+  if (settings.provider === 'astracalls' || settings.useAstraCalls === true || settings.useAstracalls === true || settings.astracallsUrl) {
+    return 'astracalls';
   }
 
   // 5. Se nenhuma API estiver ativa e validada, o padrão absoluto é 'manual' (WhatsApp Web / App)

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { Package, Send, Settings, Plus, Trash2, X, Save, Search, CheckCircle, RefreshCw } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { openWhatsApp, sendEvolutionMessage, sendMetaMessage, sendAstraCallsMessage, getEffectiveWhatsAppProvider } from '../lib/whatsapp';
+import { openWhatsApp, sendEvolutionMessage, sendMetaMessage, sendAstraCallsMessage, getEffectiveWhatsAppProvider, resolveAdminWhatsAppSettings } from '../lib/whatsapp';
 
 const PREDEFINED_PRODUCTS = [
   'Balde de Cloro 10kg',
@@ -77,15 +77,13 @@ export default function ProductsPage() {
 
   useEffect(() => {
     const fetchSettings = async () => {
-      const adminId = isAdmin ? userProfile?.uid : userProfile?.adminId;
-      if (!adminId) return;
-      const { data } = await supabase.from('users').select('whatsapp_settings').eq('id', adminId).single();
-      if (data) {
-        setWaSettings(data.whatsapp_settings || {});
+      const resolved = await resolveAdminWhatsAppSettings(selectedClient?.admin_id, userProfile);
+      if (resolved && Object.keys(resolved).length > 0) {
+        setWaSettings(resolved);
       }
     };
-    if (userProfile) fetchSettings();
-  }, [userProfile, isAdmin]);
+    if (userProfile || selectedClient) fetchSettings();
+  }, [userProfile, selectedClient]);
 
   useEffect(() => {
     if (userProfile?.customProducts && userProfile.customProducts.length > 0) {
@@ -180,33 +178,36 @@ export default function ProductsPage() {
     
     if (!lastSentData) return;
     
-    const settings = waSettings || userProfile?.whatsappSettings || {};
-    const companyName = settings.companyName || 'nossa empresa';
-    const partnerStores = settings.partnerStores || [];
+    // Resolve configurações mais recentes do admin dono do cliente
+    const settings = (waSettings && Object.keys(waSettings).length > 0)
+      ? waSettings
+      : await resolveAdminWhatsAppSettings(lastSentData?.client?.admin_id, userProfile);
+
+    const effectiveProvider = getEffectiveWhatsAppProvider(settings);
+    const companyName = settings?.companyName || 'nossa empresa';
+    const partnerStores = settings?.partnerStores || [];
     
     const storesToSend = partnerStores.filter((p: any) => selectedPartners.includes(p.phone));
     
     const message = `Olá, aqui é a empresa ${companyName}, enviei para você uma lista de produtos que solicitei ao meu cliente, caso deseje enviar um orçamento para ele(a) estou deixando a lista e o contato dele logo abaixo.\n\n` +
       lastSentData.products.map(s => `• ${s.name}: ${s.quantity} ${s.unit}`).join('\n') +
       `\n\nCliente: ${lastSentData.client.name.split(' ')[0]}\nContato: ${lastSentData.client.phone}`;
-      
-    const isAstracalls = settings.useAstracalls !== false || settings.provider === 'astracalls' || !!settings.astracallsUrl;
 
     // Send to each selected partner
     for (const store of storesToSend) {
-      if (isAstracalls) {
+      if (effectiveProvider === 'astracalls') {
         try {
           await sendAstraCallsMessage(store.phone, message, settings);
         } catch (err) {
           console.error('Erro ao enviar para loja parceira:', err);
         }
-      } else if (settings.useMetaApi) {
+      } else if (effectiveProvider === 'meta') {
         try {
           await sendMetaMessage(store.phone, message, settings);
         } catch (err) {
           console.error('Erro ao enviar para loja parceira:', err);
         }
-      } else if (settings.useEvolutionApi) {
+      } else if (effectiveProvider === 'evolution') {
         try {
           await sendEvolutionMessage(store.phone, message, settings);
         } catch (err) {
@@ -223,8 +224,8 @@ export default function ProductsPage() {
     setSelectedPartners([]);
     setLastSentData(null);
     
-    if (isAstracalls || settings.useMetaApi || settings.useEvolutionApi) {
-      alert('Lista enviada para as lojas parceiras com sucesso!');
+    if (effectiveProvider !== 'manual') {
+      alert('Lista enviada para as lojas parceiras com sucesso via API!');
     }
   };
 
@@ -255,9 +256,13 @@ export default function ProductsPage() {
       selected.map(s => `• ${s.name}: ${s.quantity} ${s.unit}`).join('\n') + 
       `\n\nPor favor, providencie assim que possível para não interrompermos o tratamento.`;
       
-    const settings = waSettings || userProfile?.whatsappSettings || {};
+    // Garante as credenciais atualizadas do admin dono do cliente selecionado
+    const settings = (waSettings && Object.keys(waSettings).length > 0)
+      ? waSettings
+      : await resolveAdminWhatsAppSettings(selectedClient?.admin_id, userProfile);
+
     const effectiveProvider = getEffectiveWhatsAppProvider(settings);
-    const partnerStores = settings.partnerStores || [];
+    const partnerStores = settings?.partnerStores || [];
     
     setLastSentData({ client: selectedClient, products: selected });
     

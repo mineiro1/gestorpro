@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { Package, Send, ArrowLeft, Settings, Plus, Trash2, X, Save } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { openWhatsApp, sendEvolutionMessage, sendMetaMessage, sendAstraCallsMessage, getEffectiveWhatsAppProvider } from '../lib/whatsapp';
+import { openWhatsApp, sendEvolutionMessage, sendMetaMessage, sendAstraCallsMessage, getEffectiveWhatsAppProvider, resolveAdminWhatsAppSettings } from '../lib/whatsapp';
 
 const PREDEFINED_PRODUCTS = [
   'Balde de Cloro 10kg',
@@ -46,15 +46,13 @@ export default function SuppliesForm() {
   
   useEffect(() => {
     const fetchSettings = async () => {
-      const adminId = userProfile?.role === 'admin' ? userProfile?.uid : userProfile?.adminId;
-      if (!adminId) return;
-      const { data } = await supabase.from('users').select('whatsapp_settings').eq('id', adminId).single();
-      if (data) {
-        setWaSettings(data.whatsapp_settings || {});
+      const resolved = await resolveAdminWhatsAppSettings(client?.admin_id, userProfile);
+      if (resolved && Object.keys(resolved).length > 0) {
+        setWaSettings(resolved);
       }
     };
-    if (userProfile) fetchSettings();
-  }, [userProfile]);
+    if (userProfile || client) fetchSettings();
+  }, [userProfile, client]);
 
   useEffect(() => {
     if (userProfile?.customProducts && userProfile.customProducts.length > 0) {
@@ -96,6 +94,11 @@ export default function SuppliesForm() {
         
         if (data) {
           setClient(data);
+          // Resolve imediatamente as credenciais do admin dono deste cliente
+          const resolved = await resolveAdminWhatsAppSettings(data.admin_id, userProfile);
+          if (resolved && Object.keys(resolved).length > 0) {
+            setWaSettings(resolved);
+          }
         } else {
           alert('Cliente não encontrado.');
           navigate('/clients');
@@ -108,7 +111,7 @@ export default function SuppliesForm() {
     };
 
     fetchClient();
-  }, [id, navigate]);
+  }, [id, navigate, userProfile]);
 
   const handleUpdateSupply = (index: number, field: keyof SupplyItem, value: string) => {
     const updated = [...supplies];
@@ -153,9 +156,14 @@ export default function SuppliesForm() {
     
     if (!lastSentData || !client) return;
     
-    const settings = waSettings || userProfile?.whatsappSettings || {};
-    const companyName = settings.companyName || 'nossa empresa';
-    const partnerStores = settings.partnerStores || [];
+    // Resolve configurações mais recentes do admin dono do cliente
+    const settings = (waSettings && Object.keys(waSettings).length > 0)
+      ? waSettings
+      : await resolveAdminWhatsAppSettings(client?.admin_id, userProfile);
+
+    const effectiveProvider = getEffectiveWhatsAppProvider(settings);
+    const companyName = settings?.companyName || 'nossa empresa';
+    const partnerStores = settings?.partnerStores || [];
     
     const storesToSend = partnerStores.filter((p: any) => selectedPartners.includes(p.phone));
     
@@ -163,20 +171,28 @@ export default function SuppliesForm() {
       lastSentData.products.map(s => `• ${s.name}: ${s.quantity} ${s.unit}`).join('\n') +
       `\n\nCliente: ${client.name.split(' ')[0]}\nContato: ${client.phone}`;
       
-    // Send to each selected partner
+    // Envia para cada loja parceira selecionada respeitando o provedor configurado pelo admin
     for (const store of storesToSend) {
-      if (!settings.useMetaApi && !settings.useEvolutionApi) {
-        openWhatsApp(store.phone, message);
-      } else {
+      if (effectiveProvider === 'astracalls') {
         try {
-          if (settings.useMetaApi) {
-            await sendMetaMessage(store.phone, message, settings);
-          } else if (settings.useEvolutionApi) {
-            await sendEvolutionMessage(store.phone, message, settings);
-          }
+          await sendAstraCallsMessage(store.phone, message, settings);
         } catch (err) {
-          console.error('Erro ao enviar para loja parceira:', err);
+          console.error('Erro ao enviar para loja parceira via AstraCalls:', err);
         }
+      } else if (effectiveProvider === 'meta') {
+        try {
+          await sendMetaMessage(store.phone, message, settings);
+        } catch (err) {
+          console.error('Erro ao enviar para loja parceira via Meta API:', err);
+        }
+      } else if (effectiveProvider === 'evolution') {
+        try {
+          await sendEvolutionMessage(store.phone, message, settings);
+        } catch (err) {
+          console.error('Erro ao enviar para loja parceira via Evolution API:', err);
+        }
+      } else {
+        openWhatsApp(store.phone, message);
       }
     }
     
@@ -185,8 +201,8 @@ export default function SuppliesForm() {
     setLastSentData(null);
     navigate('/clients');
     
-    if (settings.useMetaApi || settings.useEvolutionApi) {
-      alert('Lista enviada para as lojas parceiras com sucesso!');
+    if (effectiveProvider !== 'manual') {
+      alert('Lista enviada para as lojas parceiras com sucesso via API!');
     }
   };
 
@@ -216,9 +232,13 @@ export default function SuppliesForm() {
       selected.map(s => `• ${s.name}: ${s.quantity} ${s.unit}`).join('\n') + 
       `\n\nPor favor, providencie assim que possível para não interrompermos o tratamento.`;
       
-    const settings = waSettings || userProfile?.whatsappSettings || {};
+    // Garante as credenciais do admin da empresa vinculada a este cliente
+    const settings = (waSettings && Object.keys(waSettings).length > 0)
+      ? waSettings
+      : await resolveAdminWhatsAppSettings(client?.admin_id, userProfile);
+
     const effectiveProvider = getEffectiveWhatsAppProvider(settings);
-    const partnerStores = settings.partnerStores || [];
+    const partnerStores = settings?.partnerStores || [];
     
     setLastSentData({ products: selected });
     
@@ -236,7 +256,7 @@ export default function SuppliesForm() {
     try {
       if (effectiveProvider === 'astracalls') {
         await sendAstraCallsMessage(number, message, settings);
-        alert('Mensagem de insumos enviada com sucesso via AstraCalls!');
+        alert('Mensagem de insumos enviada com sucesso via WhatsApp!');
       } else if (effectiveProvider === 'meta') {
         await sendMetaMessage(number, message, settings);
         alert('Mensagem de insumos enviada com sucesso via Meta API!');
