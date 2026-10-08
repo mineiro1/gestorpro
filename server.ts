@@ -2851,9 +2851,12 @@ app.all("/api/sync-payment", async (req, res) => {
   // Helper to send push notification to all devices registered for an admin or user
   async function sendPushToAdmin(adminId: string, title: string, body: string, data: Record<string, string> = {}) {
     try {
-      if (!adminId) return false;
+      if (!adminId) {
+        console.warn('[Push Server] adminId não fornecido. Envio abortado por segurança.');
+        return false;
+      }
 
-      // 1. Coleta todos os tokens ativos (fcm_token + lista de múltiplos dispositivos em whatsapp_settings.devices)
+      // 1. Coleta todos os tokens ativos pertencentes EXCLUSIVAMENTE ao adminId informado
       const { data: users } = await supabaseAdmin
         .from('users')
         .select('id, name, fcm_token, whatsapp_settings')
@@ -2869,28 +2872,11 @@ app.all("/api/sync-payment", async (req, res) => {
         }
       });
 
-      // 2. Fallback: se o adminId específico não possuir tokens, buscar administradores do sistema com tokens ativos
-      if (rawTokens.length === 0) {
-        const { data: fallbackAdmins } = await supabaseAdmin
-          .from('users')
-          .select('id, name, fcm_token, whatsapp_settings')
-          .eq('role', 'admin');
-
-        (fallbackAdmins || []).forEach(u => {
-          if (u.fcm_token) rawTokens.push(u.fcm_token);
-          if (Array.isArray(u.whatsapp_settings?.devices)) {
-            u.whatsapp_settings.devices.forEach((d: any) => {
-              if (d?.token) rawTokens.push(d.token);
-            });
-          }
-        });
-      }
-
-      // Deduplica tokens garantindo que nenhum dispositivo receba 2x
+      // Deduplica tokens garantindo que nenhum dispositivo receba 2x (sem fallback para outros admins)
       const tokens = Array.from(new Set(rawTokens.filter(Boolean)));
 
       if (tokens.length === 0) {
-        console.log(`[Push Server] Nenhum token FCM registrado no momento para admin ${adminId}.`);
+        console.log(`[Push Server] Nenhum token FCM registrado no momento para o admin ${adminId}. Envio cancelado.`);
         return false;
       }
 
@@ -3085,9 +3071,17 @@ app.all("/api/sync-payment", async (req, res) => {
       if (targetId) {
         const { data: u } = await supabaseAdmin.from('users').select('id, fcm_token, name').eq('id', targetId).maybeSingle();
         user = u;
-      }
-
-      if (!user || !user.fcm_token) {
+        if (!user) {
+          return res.status(404).json({ success: false, error: `Usuário ${targetId} não foi encontrado.` });
+        }
+        if (!user.fcm_token) {
+          return res.status(400).json({
+            success: false,
+            targetUserId: targetId,
+            error: `O administrador "${user.name || targetId}" ainda não possui dispositivo/token FCM registrado no aplicativo.`
+          });
+        }
+      } else {
         const { data: fallbackUsers } = await supabaseAdmin
           .from('users')
           .select('id, fcm_token, name')
@@ -3097,6 +3091,8 @@ app.all("/api/sync-payment", async (req, res) => {
         if (fallbackUsers && fallbackUsers.length > 0) {
           user = fallbackUsers[0];
           targetId = user.id;
+        } else {
+          return res.status(400).json({ success: false, error: 'Nenhum administrador com token FCM encontrado no sistema.' });
         }
       }
 
@@ -3114,7 +3110,7 @@ app.all("/api/sync-payment", async (req, res) => {
       );
 
       return res.json({
-        success: true,
+        success: sent,
         sent,
         targetUserId: targetId,
         hasToken,
@@ -3147,8 +3143,14 @@ app.all("/api/sync-payment", async (req, res) => {
   // Endpoint to manually trigger or test daily 7:00 AM billing reminders (supports both cron and manual calls)
   app.all(["/api/notifications/trigger-due-reminders", "/api/cron/billing-reminders"], async (req, res) => {
     try {
-      const summary = await sendDailyBillingReminders();
-      return res.json({ success: true, timestamp: new Date().toISOString(), summary });
+      const filterAdminId = req.query?.adminId || req.body?.adminId || req.query?.userId || req.body?.userId || null;
+      const summary = await sendDailyBillingReminders(typeof filterAdminId === 'string' ? filterAdminId : null);
+      return res.json({
+        success: true,
+        timestamp: new Date().toISOString(),
+        filterAdminId: filterAdminId || 'all_admins_strictly_isolated',
+        summary
+      });
     } catch (e: any) {
       return res.status(500).json({ error: e.message });
     }
@@ -3331,7 +3333,7 @@ app.all("/api/sync-payment", async (req, res) => {
    * 1. Clientes com mensalidade vencendo HOJE para realizar a cobrança
    * 2. Clientes com mensalidades já ATRASADAS para realizar a cobrança
    */
-  async function sendDailyBillingReminders(): Promise<{ dueTodayCount: number; overdueCount: number; errors: any[] }> {
+  async function sendDailyBillingReminders(filterAdminId: string | null = null): Promise<{ dueTodayCount: number; overdueCount: number; errors: any[] }> {
     const summary = { dueTodayCount: 0, overdueCount: 0, errors: [] as any[] };
     try {
       // Obter data atual no fuso de Brasília (YYYY-MM-DD)
@@ -3348,13 +3350,20 @@ app.all("/api/sync-payment", async (req, res) => {
       const day = brParts.find(p => p.type === 'day')?.value || `${String(now.getDate()).padStart(2, '0')}`;
       const todayStr = `${year}-${month}-${day}`;
 
-      console.log(`[7AM Billing Reminder] Iniciando verificação de vencimentos para a data: ${todayStr}...`);
+      console.log(`[7AM Billing Reminder] Verificando vencimentos (Data: ${todayStr}, Filtro Admin: ${filterAdminId || 'TODOS'})...`);
 
-      // Buscar todos os clientes cadastrados que possuam data de vencimento
-      const { data: clients, error: clientErr } = await supabaseAdmin
+      // Buscar todos os clientes ativos com data de vencimento e admin_id definido
+      let query = supabaseAdmin
         .from('clients')
         .select('id, name, due_date, monthly_price, admin_id, active')
-        .not('due_date', 'is', null);
+        .not('due_date', 'is', null)
+        .not('admin_id', 'is', null);
+
+      if (filterAdminId) {
+        query = query.eq('admin_id', filterAdminId);
+      }
+
+      const { data: clients, error: clientErr } = await query;
 
       if (clientErr) {
         console.error('[7AM Billing Reminder] Erro ao buscar clientes:', clientErr.message);
@@ -3363,26 +3372,19 @@ app.all("/api/sync-payment", async (req, res) => {
       }
 
       if (!clients || clients.length === 0) {
-        console.log('[7AM Billing Reminder] Nenhum cliente encontrado com data de vencimento.');
+        console.log('[7AM Billing Reminder] Nenhum cliente encontrado.');
         return summary;
       }
 
-      // Buscar admin padrão caso o client.admin_id esteja vazio
-      const { data: defaultAdmins } = await supabaseAdmin
-        .from('users')
-        .select('id')
-        .eq('role', 'admin');
-      const defaultAdminId = defaultAdmins && defaultAdmins.length > 0 ? defaultAdmins[0].id : null;
-
       for (const client of clients) {
         if (!client.due_date) continue;
-
-        // Pular clientes inativos se houver flag
         if (client.active === false) continue;
+        if (!client.admin_id) continue;
 
-        const targetAdminId = client.admin_id || defaultAdminId;
-        if (!targetAdminId) continue;
+        // Se um filtro de admin específico foi solicitado, ignora clientes de outros admins
+        if (filterAdminId && client.admin_id !== filterAdminId) continue;
 
+        const targetAdminId = client.admin_id;
         const clientName = client.name || 'Cliente';
         const clientDueDate = client.due_date;
 
@@ -3425,7 +3427,7 @@ app.all("/api/sync-payment", async (req, res) => {
         }
       }
 
-      console.log(`[7AM Billing Reminder] Notificações concluídas: ${summary.dueTodayCount} vencendo hoje, ${summary.overdueCount} atrasados.`);
+      console.log(`[7AM Billing Reminder] Concluído para ${filterAdminId || 'todos admins'}: ${summary.dueTodayCount} vencendo hoje, ${summary.overdueCount} atrasados.`);
     } catch (err: any) {
       console.error('[7AM Billing Reminder] Erro inesperado na rotina de cobrança:', err);
       summary.errors.push(err?.message || String(err));

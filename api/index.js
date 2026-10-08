@@ -1194,41 +1194,33 @@ function shouldSendPush(key) {
 
 async function sendPushToAdmin(adminId, title, body, data = {}) {
   try {
-    const supabaseAdmin = getSupabaseAdmin();
-    let rawTokens = [];
-    if (adminId) {
-      const { data: users } = await supabaseAdmin
-        .from('users')
-        .select('id, name, fcm_token, whatsapp_settings')
-        .eq('id', adminId);
-      (users || []).forEach(u => {
-        if (u.fcm_token) rawTokens.push(u.fcm_token);
-        if (Array.isArray(u.whatsapp_settings?.devices)) {
-          u.whatsapp_settings.devices.forEach(d => {
-            if (d?.token) rawTokens.push(d.token);
-          });
-        }
-      });
+    if (!adminId) {
+      console.warn('[Push API] adminId não fornecido. Envio cancelado para segurança.');
+      return { sent: false, count: 0, reason: 'adminId não fornecido' };
     }
 
-    if (rawTokens.length === 0) {
-      const { data: fallbackAdmins } = await supabaseAdmin
-        .from('users')
-        .select('id, name, fcm_token, whatsapp_settings')
-        .eq('role', 'admin');
-      (fallbackAdmins || []).forEach(u => {
-        if (u.fcm_token) rawTokens.push(u.fcm_token);
-        if (Array.isArray(u.whatsapp_settings?.devices)) {
-          u.whatsapp_settings.devices.forEach(d => {
-            if (d?.token) rawTokens.push(d.token);
-          });
-        }
-      });
-    }
+    const supabaseAdmin = getSupabaseAdmin();
+    let rawTokens = [];
+    
+    // Busca tokens EXCLUSIVAMENTE para o administrador especificado (isolamento estrito)
+    const { data: users } = await supabaseAdmin
+      .from('users')
+      .select('id, name, fcm_token, whatsapp_settings')
+      .eq('id', adminId);
+
+    (users || []).forEach(u => {
+      if (u.fcm_token) rawTokens.push(u.fcm_token);
+      if (Array.isArray(u.whatsapp_settings?.devices)) {
+        u.whatsapp_settings.devices.forEach(d => {
+          if (d?.token) rawTokens.push(d.token);
+        });
+      }
+    });
 
     const tokens = Array.from(new Set(rawTokens.filter(Boolean)));
     if (tokens.length === 0) {
-      return { sent: false, count: 0, reason: 'Nenhum token FCM registrado' };
+      console.log(`[Push API] Nenhum token FCM registrado para o admin ${adminId}. Envio cancelado.`);
+      return { sent: false, count: 0, reason: `Nenhum token FCM registrado para o admin ${adminId}` };
     }
 
     const { initialized, messaging } = initFirebase();
@@ -1361,9 +1353,9 @@ app.post(['/api/notifications/register-device', '/notifications/register-device'
 });
 
 // Rotina Diária das 07:00 da manhã (Horário de Brasília):
-// Envia notificações push para o administrador informando clientes com cobranças
-async function sendDailyBillingReminders() {
-  const summary = { dueTodayCount: 0, overdueCount: 0, errors: [] };
+// Envia notificações push exclusivamente para o administrador proprietário de cada cliente
+async function sendDailyBillingReminders(filterAdminId = null) {
+  const summary = { dueTodayCount: 0, overdueCount: 0, skippedCount: 0, errors: [] };
   try {
     const supabaseAdmin = getSupabaseAdmin();
 
@@ -1381,12 +1373,20 @@ async function sendDailyBillingReminders() {
     const day = brParts.find(p => p.type === 'day')?.value || `${String(now.getDate()).padStart(2, '0')}`;
     const todayStr = `${year}-${month}-${day}`;
 
-    console.log(`[7AM Billing Reminder] Iniciando verificação de vencimentos para a data: ${todayStr}...`);
+    console.log(`[7AM Billing Reminder] Verificando vencimentos (Data: ${todayStr}, Filtro Admin: ${filterAdminId || 'TODOS'})...`);
 
-    const { data: clients, error: clientErr } = await supabaseAdmin
+    // Busca clientes ativos com data de vencimento e que possuam admin_id definido
+    let query = supabaseAdmin
       .from('clients')
       .select('id, name, due_date, monthly_price, admin_id, active')
-      .not('due_date', 'is', null);
+      .not('due_date', 'is', null)
+      .not('admin_id', 'is', null);
+
+    if (filterAdminId) {
+      query = query.eq('admin_id', filterAdminId);
+    }
+
+    const { data: clients, error: clientErr } = await query;
 
     if (clientErr) {
       console.error('[7AM Billing Reminder] Erro ao buscar clientes:', clientErr.message);
@@ -1395,24 +1395,19 @@ async function sendDailyBillingReminders() {
     }
 
     if (!clients || clients.length === 0) {
-      console.log('[7AM Billing Reminder] Nenhum cliente encontrado com data de vencimento.');
+      console.log('[7AM Billing Reminder] Nenhum cliente encontrado.');
       return summary;
     }
-
-    // Buscar admin padrão caso client.admin_id seja nulo
-    const { data: defaultAdmins } = await supabaseAdmin
-      .from('users')
-      .select('id')
-      .eq('role', 'admin');
-    const defaultAdminId = defaultAdmins && defaultAdmins.length > 0 ? defaultAdmins[0].id : null;
 
     for (const client of clients) {
       if (!client.due_date) continue;
       if (client.active === false) continue;
+      if (!client.admin_id) continue;
 
-      const targetAdminId = client.admin_id || defaultAdminId;
-      if (!targetAdminId) continue;
+      // Se um filtro de admin específico foi solicitado, ignora clientes de outros admins
+      if (filterAdminId && client.admin_id !== filterAdminId) continue;
 
+      const targetAdminId = client.admin_id;
       const clientName = client.name || 'Cliente';
       const clientDueDate = client.due_date;
 
@@ -1453,7 +1448,7 @@ async function sendDailyBillingReminders() {
       }
     }
 
-    console.log(`[7AM Billing Reminder] Notificações concluídas: ${summary.dueTodayCount} vencendo hoje, ${summary.overdueCount} atrasados.`);
+    console.log(`[7AM Billing Reminder] Concluído para ${filterAdminId || 'todos admins'}: ${summary.dueTodayCount} hoje, ${summary.overdueCount} atrasados.`);
   } catch (err) {
     console.error('[7AM Billing Reminder] Erro inesperado na rotina de cobrança:', err);
     summary.errors.push(err?.message || String(err));
@@ -1469,10 +1464,12 @@ app.all([
   '/notifications/trigger-due-reminders'
 ], async (req, res) => {
   try {
-    const summary = await sendDailyBillingReminders();
+    const filterAdminId = req.query?.adminId || req.body?.adminId || req.query?.userId || req.body?.userId || null;
+    const summary = await sendDailyBillingReminders(filterAdminId);
     return res.json({
       success: true,
       timestamp: new Date().toISOString(),
+      filterAdminId: filterAdminId || 'all_admins_strictly_isolated',
       summary
     });
   } catch (e) {
@@ -1535,9 +1532,17 @@ app.all(['/api/notifications/test-push', '/notifications/test-push'], async (req
     if (targetId) {
       const { data: u } = await supabaseAdmin.from('users').select('id, fcm_token, name').eq('id', targetId).maybeSingle();
       user = u;
-    }
-
-    if (!user || !user.fcm_token) {
+      if (!user) {
+        return res.status(404).json({ success: false, error: `Usuário ${targetId} não foi encontrado.` });
+      }
+      if (!user.fcm_token) {
+        return res.status(400).json({
+          success: false,
+          targetUserId: targetId,
+          error: `O administrador "${user.name || targetId}" ainda não possui dispositivo/token FCM registrado no aplicativo.`
+        });
+      }
+    } else {
       const { data: fallbackUsers } = await supabaseAdmin
         .from('users')
         .select('id, fcm_token, name')

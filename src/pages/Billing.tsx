@@ -3,7 +3,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { openWhatsApp, sendMetaMessage, sendEvolutionMessage, sendAstraCallsMessage, getEffectiveWhatsAppProvider } from '../lib/whatsapp';
 import { formatClientMessageTemplate } from '../lib/messageTemplates';
-import { MessageCircle, AlertCircle, Clock, History, Settings, X, Play, MessageSquare, Calendar, CheckCircle, XCircle, DollarSign, RefreshCw } from 'lucide-react';
+import { MessageCircle, AlertCircle, Clock, History, Settings, X, Play, MessageSquare, Calendar, CheckCircle, XCircle, DollarSign, RefreshCw, Bell } from 'lucide-react';
 
 interface ClientBilling {
   id: string;
@@ -74,6 +74,40 @@ export default function Billing() {
     metaPhoneNumberId: '',
     metaServerUrl: ''
   });
+
+  const [testingPush, setTestingPush] = useState(false);
+  const [pushStatusMessage, setPushStatusMessage] = useState<{ text: string; isError?: boolean } | null>(null);
+
+  const handleTriggerPushBilling = async () => {
+    const currentAdminId = userProfile?.role === 'admin' ? userProfile.uid : (userProfile?.adminId || userProfile?.uid);
+    if (!currentAdminId) return;
+    setTestingPush(true);
+    setPushStatusMessage(null);
+    try {
+      const res = await fetch(`/api/notifications/trigger-due-reminders?adminId=${currentAdminId}`);
+      const data = await res.json();
+      if (data.success) {
+        const { dueTodayCount, overdueCount } = data.summary || {};
+        setPushStatusMessage({
+          text: `🔔 Lembretes disparados para o seu celular: ${dueTodayCount || 0} vencendo hoje, ${overdueCount || 0} em atraso (somente seus clientes).`,
+          isError: false
+        });
+      } else {
+        setPushStatusMessage({
+          text: `Erro ao disparar: ${data.error || 'Falha ao processar'}`,
+          isError: true
+        });
+      }
+    } catch (err: any) {
+      setPushStatusMessage({
+        text: `Falha na requisição: ${err.message}`,
+        isError: true
+      });
+    } finally {
+      setTestingPush(false);
+      setTimeout(() => setPushStatusMessage(null), 9000);
+    }
+  };
 
   useEffect(() => {
     if (userProfile?.whatsappSettings) {
@@ -658,16 +692,42 @@ export default function Billing() {
             <span>{isRefreshing ? 'Atualizando...' : 'Atualizar'}</span>
           </button>
           {isAdmin && (
-            <button
-              onClick={() => setSettingsModalOpen(true)}
-              className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-200 transition-colors flex items-center font-medium text-sm"
-            >
-              <Settings size={18} className="mr-1.5" />
-              Configurar Mensagens
-            </button>
+            <>
+              <button
+                onClick={handleTriggerPushBilling}
+                disabled={testingPush}
+                className="bg-amber-50 border border-amber-200 text-amber-900 px-3.5 py-2 rounded-lg hover:bg-amber-100 active:bg-amber-200 transition-all shadow-sm flex items-center font-medium text-sm disabled:opacity-60 shrink-0"
+                title="Disparar no seu celular as notificações de cobrança exclusivas dos seus clientes"
+              >
+                <Bell size={17} className={`mr-1.5 text-amber-600 ${testingPush ? 'animate-bounce' : ''}`} />
+                <span>{testingPush ? 'Disparando...' : 'Testar Push no Celular'}</span>
+              </button>
+              <button
+                onClick={() => setSettingsModalOpen(true)}
+                className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-200 transition-colors flex items-center font-medium text-sm"
+              >
+                <Settings size={18} className="mr-1.5" />
+                Configurar Mensagens
+              </button>
+            </>
           )}
         </div>
       </div>
+
+      {pushStatusMessage && (
+        <div className={`mb-6 p-4 rounded-xl border flex items-center justify-between transition-all ${pushStatusMessage.isError ? 'bg-red-50 border-red-200 text-red-800' : 'bg-emerald-50 border-emerald-200 text-emerald-800'}`}>
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <Bell size={18} className={pushStatusMessage.isError ? 'text-red-600' : 'text-emerald-600'} />
+            <span>{pushStatusMessage.text}</span>
+          </div>
+          <button
+            onClick={() => setPushStatusMessage(null)}
+            className="text-gray-400 hover:text-gray-600 p-1"
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
 
       {/* Tabs Menu */}
       <div className="flex overflow-x-auto space-x-2 mb-6 pb-2 hide-scrollbar">
