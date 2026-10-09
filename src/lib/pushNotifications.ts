@@ -89,7 +89,7 @@ export async function setupPushNotificationChannels(): Promise<void> {
 /**
  * Synchronizes the cached FCM token with Supabase users table and multi-device registry
  */
-export async function syncStoredFcmToken(userId?: string | null): Promise<boolean> {
+export async function syncStoredFcmToken(userId?: string | null, adminId?: string | null): Promise<boolean> {
   if (!userId) return false;
   const token = localStorage.getItem('fcm_token');
   if (!token) return false;
@@ -101,11 +101,13 @@ export async function syncStoredFcmToken(userId?: string | null): Promise<boolea
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         userId,
+        adminId: adminId || null,
         token,
         platform: Capacitor.getPlatform() || 'android',
         deviceId: `dev_${token.slice(0, 12)}`,
         deviceName: 'Celular Android'
-      })
+      }),
+      keepalive: true
     }).catch(() => {});
 
     // 2. Atualizar users.fcm_token no Supabase
@@ -159,7 +161,7 @@ export async function requestPushPermissions(): Promise<'granted' | 'denied' | '
  * Initialize Capacitor Push Notifications for the current user session
  */
 export async function initCapacitorPushNotifications(
-  userProfile: { uid: string; role?: string; name?: string } | null,
+  userProfile: { uid: string; role?: string; name?: string; adminId?: string; admin_id?: string } | null,
   handlers?: PushNotificationHandlers
 ): Promise<() => void> {
   if (!Capacitor.isNativePlatform()) {
@@ -213,11 +215,13 @@ export async function initCapacitorPushNotifications(
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               userId: userProfile.uid,
+              adminId: userProfile.adminId || userProfile.admin_id || null,
               token: token.value,
               platform: Capacitor.getPlatform() || 'android',
               deviceId: `dev_${token.value.slice(0, 12)}`,
               deviceName: 'Celular Android'
-            })
+            }),
+            keepalive: true
           }).catch(() => {});
 
           // 2. Atualizar tabela users
@@ -323,7 +327,7 @@ export async function initCapacitorPushNotifications(
 
     // 6. Guarantee token is always fresh on resume/focus
     const handleReSync = () => {
-      syncStoredFcmToken(userProfile?.uid);
+      syncStoredFcmToken(userProfile?.uid, userProfile?.adminId || userProfile?.admin_id);
       if (Capacitor.isNativePlatform()) {
         PushNotifications.register().catch(() => {});
       }
@@ -361,11 +365,17 @@ export async function notifyAdminAttendanceFinished(params: {
   notes?: string;
 }): Promise<boolean> {
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
     const res = await fetch(getApiUrl('/api/notifications/notify-visit-completion'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
+      keepalive: true,
+      signal: controller.signal
     });
+    clearTimeout(timeoutId);
     const json = await res.json();
     return json.success || false;
   } catch (e) {

@@ -2918,11 +2918,11 @@ app.all("/api/sync-payment", async (req, res) => {
                   sound: soundName,
                   priority: 'max',
                   visibility: 'public',
-                  defaultSound: false,
+                  defaultSound: true,
                   defaultVibrateTimings: true,
                   localOnly: false,
                   notificationCount: 1,
-                  tag: data.tag || (data.visitId ? `visit_${data.visitId}` : (data.jobId ? `job_${data.jobId}` : undefined))
+                  tag: data.tag || (data.visitId ? `visit_${data.visitId}` : (data.jobId ? `job_${data.jobId}` : (data.clientId ? `billing_${data.clientId}` : undefined)))
                 }
               },
               apns: {
@@ -2966,41 +2966,58 @@ app.all("/api/sync-payment", async (req, res) => {
   // Endpoint to register/update device in the multi-device registry
   app.post("/api/notifications/register-device", async (req, res) => {
     try {
-      const { userId, token, platform, deviceId, deviceName } = req.body || {};
+      const { userId, adminId, token, platform, deviceId, deviceName } = req.body || {};
       if (!userId || !token) {
         return res.status(400).json({ error: "Missing userId or token" });
       }
 
-      // 1. Atualiza users.fcm_token como token principal
+      // 1. Atualiza users.fcm_token como token principal do usuário
       await supabaseAdmin.from('users').update({ fcm_token: token }).eq('id', userId);
 
-      // 2. Atualiza a lista de múltiplos dispositivos em whatsapp_settings.devices
-      const { data: userRow } = await supabaseAdmin.from('users').select('id, whatsapp_settings').eq('id', userId).single();
-      const currentSettings = userRow?.whatsapp_settings || {};
-      let devices: any[] = Array.isArray(currentSettings.devices) ? currentSettings.devices : [];
+      // 2. Busca informações do usuário para verificar se é colaborador ou possui admin_id
+      let targetAdminId = adminId;
+      const { data: userRow } = await supabaseAdmin.from('users').select('id, role, admin_id, whatsapp_settings').eq('id', userId).maybeSingle();
+      if (!targetAdminId && userRow?.admin_id) {
+        targetAdminId = userRow.admin_id;
+      }
 
-      const cleanDevId = deviceId || `dev_${token.slice(0, 16)}`;
-      devices = devices.filter((d: any) => d && d.token && d.token !== token && d.deviceId !== cleanDevId);
-
-      devices.unshift({
-        token,
-        deviceId: cleanDevId,
-        platform: platform || 'android',
-        deviceName: deviceName || 'Celular Android',
-        lastSeen: new Date().toISOString()
-      });
-
-      devices = devices.slice(0, 10);
-
-      await supabaseAdmin.from('users').update({
-        whatsapp_settings: {
-          ...currentSettings,
-          devices
+      const updateDevicesList = async (targetUserId: string, existingSettings?: any) => {
+        let currentSettings = existingSettings;
+        if (!currentSettings) {
+          const { data: row } = await supabaseAdmin.from('users').select('whatsapp_settings').eq('id', targetUserId).maybeSingle();
+          currentSettings = row?.whatsapp_settings || {};
         }
-      }).eq('id', userId);
+        let devices: any[] = Array.isArray(currentSettings.devices) ? currentSettings.devices : [];
 
-      console.log(`[Push Server] Dispositivo registrado com sucesso para o usuário ${userId}. Total: ${devices.length}`);
-      return res.json({ success: true, deviceCount: devices.length });
+        const cleanDevId = deviceId || `dev_${token.slice(0, 16)}`;
+        devices = devices.filter((d: any) => d && d.token && d.token !== token && d.deviceId !== cleanDevId);
+
+        devices.unshift({
+          token,
+          deviceId: cleanDevId,
+          platform: platform || 'android',
+          deviceName: deviceName || 'Celular Android',
+          lastSeen: new Date().toISOString()
+        });
+
+        devices = devices.slice(0, 10);
+
+        await supabaseAdmin.from('users').update({
+          whatsapp_settings: {
+            ...currentSettings,
+            devices
+          }
+        }).eq('id', targetUserId);
+      };
+
+      await updateDevicesList(userId, userRow?.whatsapp_settings);
+
+      if (targetAdminId && targetAdminId !== userId) {
+        await updateDevicesList(targetAdminId, null);
+      }
+
+      console.log(`[Push Server] Dispositivo registrado com sucesso para o usuário ${userId}.`);
+      return res.json({ success: true });
     } catch (err: any) {
       console.error('[Push Server] Erro ao registrar dispositivo:', err);
       return res.status(500).json({ error: err.message });
@@ -3010,24 +3027,24 @@ app.all("/api/sync-payment", async (req, res) => {
   // Endpoint to immediately trigger attendance completion push notification
   app.post("/api/notifications/notify-visit-completion", async (req, res) => {
     try {
-      const { adminId, employeeId, clientId, clientName, techName, type } = req.body || {};
+      const { visitId, adminId, employeeId, clientId, clientName, techName, type } = req.body || {};
 
-      // Deduplicação unificada por cliente/tipo
-      const dedupeKey = `${type || 'visit'}_${clientId || clientName || 'unknown'}`;
+      // Deduplicação unificada por cliente/tipo ou visitId
+      const dedupeKey = visitId ? `visit_${visitId}` : `${type || 'visit'}_${clientId || clientName || 'unknown'}`;
       if (!shouldSendPush(dedupeKey)) {
         return res.json({ success: true, deduped: true });
       }
 
       let empName = techName || "Colaborador";
       if (!techName && employeeId) {
-        const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', employeeId).single();
+        const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', employeeId).maybeSingle();
         if (empData?.name) empName = empData.name;
       }
 
       let resolvedClientName = clientName;
       let clientAdminId = null;
       if (clientId) {
-        const { data: cliData } = await supabaseAdmin.from('clients').select('name, admin_id').eq('id', clientId).single();
+        const { data: cliData } = await supabaseAdmin.from('clients').select('name, admin_id').eq('id', clientId).maybeSingle();
         if (cliData?.name) resolvedClientName = cliData.name;
         if (cliData?.admin_id) clientAdminId = cliData.admin_id;
       }
@@ -3035,8 +3052,7 @@ app.all("/api/sync-payment", async (req, res) => {
 
       const targetAdminId = clientAdminId || adminId;
       if (!targetAdminId) {
-        // Fallback: se adminId não for passado, busca o primeiro admin ativo no sistema
-        const { data: defaultAdmin } = await supabaseAdmin.from('users').select('id').eq('role', 'admin').limit(1).single();
+        const { data: defaultAdmin } = await supabaseAdmin.from('users').select('id').eq('role', 'admin').limit(1).maybeSingle();
         if (!defaultAdmin) {
           return res.status(400).json({ error: "Missing adminId and clientId" });
         }
@@ -3046,18 +3062,68 @@ app.all("/api/sync-payment", async (req, res) => {
       const title = isJob ? '🏊 Serviço Avulso Finalizado' : '🏊 Visita Finalizada!';
       const body = `O colaborador ${empName} finalizou o atendimento no cliente ${resolvedClientName}.`;
 
+      console.log(`[Push Server] Disparando alerta de atendimento para admin ${targetAdminId}: ${title}`);
+
       const sent = await sendPushToAdmin(targetAdminId || '', title, body, {
         url: '/routes',
         channelId: 'atendimentos_v2',
         type: isJob ? 'job_completed' : 'visit_completed',
+        visitId: String(visitId || ''),
         clientId: String(clientId || ''),
-        employeeId: String(employeeId || '')
+        employeeId: String(employeeId || ''),
+        tag: visitId ? `visit_${visitId}` : `visit_${Date.now()}`
       });
 
       return res.json({ success: true, sent });
     } catch (err: any) {
       console.error('[Push Server] Erro no endpoint notify-visit-completion:', err);
       return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Webhook universal para eventos do banco de dados Supabase
+  app.post(["/api/webhooks/database", "/api/webhooks/visit-completed"], async (req, res) => {
+    try {
+      const { type, table, record, old_record } = req.body || {};
+      console.log(`[Server Database Webhook] Recebido evento: Tabela ${table}, Tipo ${type}`);
+
+      if (table === 'visits' && record && record.status === 'finalizada' && (!old_record || old_record.status !== 'finalizada')) {
+        const visitId = record.id;
+        const dedupeKey = `visit_${visitId}`;
+        if (shouldSendPush(dedupeKey)) {
+          let targetAdminId = record.admin_id;
+          if (!targetAdminId && record.client_id) {
+            const { data: cli } = await supabaseAdmin.from('clients').select('admin_id, name').eq('id', record.client_id).maybeSingle();
+            if (cli?.admin_id) targetAdminId = cli.admin_id;
+          }
+
+          if (targetAdminId) {
+            const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', record.employee_id).maybeSingle();
+            const { data: cliData } = await supabaseAdmin.from('clients').select('name').eq('id', record.client_id).maybeSingle();
+            const empName = empData?.name || 'Colaborador';
+            const cliName = cliData?.name || 'Cliente';
+
+            await sendPushToAdmin(
+              targetAdminId,
+              '🏊 Visita Finalizada!',
+              `O colaborador ${empName} finalizou o atendimento no cliente ${cliName}.`,
+              {
+                url: '/routes',
+                channelId: 'atendimentos_v2',
+                type: 'visit_completed',
+                visitId: String(visitId),
+                clientId: String(record.client_id || ''),
+                tag: `visit_${visitId}`
+              }
+            );
+          }
+        }
+      }
+
+      return res.json({ success: true, processed: true });
+    } catch (e: any) {
+      console.error('[Server Webhook Error]:', e);
+      return res.status(500).json({ error: e.message });
     }
   });
 

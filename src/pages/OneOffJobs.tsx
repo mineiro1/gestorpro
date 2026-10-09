@@ -177,10 +177,12 @@ export default function OneOffJobs() {
       fetchJobs();
 
       const job = jobs.find(j => j.id === id);
-      if (job && job.adminId) {
+      const targetAdminId = job?.adminId || (job as any)?.admin_id || userProfile?.adminId || userProfile?.uid;
+      if (job && targetAdminId) {
         notifyAdminAttendanceFinished({
-          adminId: job.adminId,
+          adminId: targetAdminId,
           employeeId: job.employeeId || userProfile?.uid,
+          clientId: job.id,
           clientName: job.clientName,
           type: 'job'
         }).catch(e => console.warn('[Push] Error notifying job completion:', e));

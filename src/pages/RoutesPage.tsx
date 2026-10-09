@@ -1267,16 +1267,13 @@ export default function RoutesPage() {
       }
     };
 
-    // Dispara em segundo plano para não travar a UI de finalização da visita
-    handleWhatsApp();
-    
     let locationData = cachedLocationRef.current || null;
     try {
       if (navigator.geolocation) {
         const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
           navigator.geolocation.getCurrentPosition(resolve, reject, { 
             enableHighAccuracy: true, 
-            timeout: 10000, 
+            timeout: 2500, 
             maximumAge: 300000 // aceita localização recente de até 5 minutos
           });
         });
@@ -1496,7 +1493,7 @@ export default function RoutesPage() {
           }
 
           // Trigger Push Notification alert to administrator
-          if (adminId) {
+          if (adminId && savedToDb) {
             notifyAdminAttendanceFinished({
               adminId,
               employeeId: payload.employeeId || userProfile?.uid,
@@ -1508,6 +1505,9 @@ export default function RoutesPage() {
               notes: reportNotes
             }).catch(e => console.warn('[Push] Error triggering admin push notification:', e));
           }
+
+          // Dispara envio do WhatsApp em segundo plano APÓS a visita estar salva e o push ter sido despachado
+          handleWhatsApp();
         } catch (dbError) {
           console.error("Database error in processReportSubmission:", dbError);
           if (!savedToDb) {
