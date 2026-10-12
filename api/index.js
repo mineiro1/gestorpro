@@ -1356,13 +1356,8 @@ app.post(['/api/notifications/register-device', '/notifications/register-device'
       }).eq('id', targetUserId);
     };
 
-    // Atualiza a lista de dispositivos para o próprio usuário
+    // Atualiza a lista de dispositivos para o próprio usuário (isolamento estrito por usuário)
     await updateDevicesList(userId, userRow?.whatsapp_settings);
-
-    // Se o usuário logado pertencer a um administrador, registra o aparelho também no perfil do admin
-    if (targetAdminId && targetAdminId !== userId) {
-      await updateDevicesList(targetAdminId, null);
-    }
 
     return res.json({ success: true });
   } catch (err) {
@@ -1521,7 +1516,15 @@ app.post(['/api/notifications/notify-visit-completion', '/notifications/notify-v
     }
     if (!resolvedClientName) resolvedClientName = "Cliente";
 
-    const targetAdminId = clientAdminId || adminId;
+    let targetAdminId = clientAdminId || adminId;
+    if (!targetAdminId && employeeId) {
+      const { data: empUser } = await supabaseAdmin.from('users').select('admin_id').eq('id', employeeId).maybeSingle();
+      if (empUser?.admin_id) targetAdminId = empUser.admin_id;
+    }
+    if (!targetAdminId) {
+      const { data: fallbackAdmin } = await supabaseAdmin.from('users').select('id').eq('role', 'admin').limit(1).maybeSingle();
+      if (fallbackAdmin?.id) targetAdminId = fallbackAdmin.id;
+    }
     const isJob = type === 'job';
     const title = isJob ? '🏊 Serviço Avulso Finalizado' : '🏊 Visita Finalizada!';
     const body = `O colaborador ${empName} finalizou o atendimento no cliente ${resolvedClientName}.`;

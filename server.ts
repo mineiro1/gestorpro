@@ -64,9 +64,18 @@ const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
   }
 });
 
+process.on('uncaughtException', (err) => {
+  console.error('[Process] Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[Process] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const portArgIndex = process.argv.indexOf("--port");
+  const parsedPort = portArgIndex !== -1 && process.argv[portArgIndex + 1] ? parseInt(process.argv[portArgIndex + 1], 10) : undefined;
+  const PORT = Number(process.env.PORT) || parsedPort || 3000;
 
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
@@ -2848,19 +2857,19 @@ app.all("/api/sync-payment", async (req, res) => {
     return true;
   }
 
-  // Helper to send push notification to all devices registered for an admin or user
-  async function sendPushToAdmin(adminId: string, title: string, body: string, data: Record<string, string> = {}) {
+  // Helper to send push notification to all devices registered for a specific user (admin or employee)
+  async function sendPushToUser(userId: string, title: string, body: string, data: Record<string, string> = {}) {
     try {
-      if (!adminId) {
-        console.warn('[Push Server] adminId não fornecido. Envio abortado por segurança.');
+      if (!userId) {
+        console.warn('[Push Server] userId não fornecido. Envio abortado por segurança.');
         return false;
       }
 
-      // 1. Coleta todos os tokens ativos pertencentes EXCLUSIVAMENTE ao adminId informado
+      // 1. Coleta todos os tokens ativos pertencentes EXCLUSIVAMENTE ao userId informado
       const { data: users } = await supabaseAdmin
         .from('users')
         .select('id, name, fcm_token, whatsapp_settings')
-        .eq('id', adminId);
+        .eq('id', userId);
 
       let rawTokens: string[] = [];
       (users || []).forEach(u => {
@@ -2872,15 +2881,15 @@ app.all("/api/sync-payment", async (req, res) => {
         }
       });
 
-      // Deduplica tokens garantindo que nenhum dispositivo receba 2x (sem fallback para outros admins)
+      // Deduplica tokens garantindo que nenhum dispositivo receba 2x (sem misturar contas)
       const tokens = Array.from(new Set(rawTokens.filter(Boolean)));
 
       if (tokens.length === 0) {
-        console.log(`[Push Server] Nenhum token FCM registrado no momento para o admin ${adminId}. Envio cancelado.`);
+        console.log(`[Push Server] Nenhum token FCM registrado no momento para o usuário ${userId}. Envio cancelado.`);
         return false;
       }
 
-      console.log(`[Push Server] Disparando push notification para ${tokens.length} dispositivo(s) único(s): "${title}"`);
+      console.log(`[Push Server] Disparando push notification para ${tokens.length} dispositivo(s) do usuário ${userId}: "${title}"`);
 
       let sentCount = 0;
       for (const token of tokens) {
@@ -2953,7 +2962,7 @@ app.all("/api/sync-payment", async (req, res) => {
             }
           }
         } else {
-          console.log(`[Push Server] Firebase Admin não inicializado no servidor. Token do admin registrado: ${token.substring(0, 12)}...`);
+          console.log(`[Push Server] Firebase Admin não inicializado no servidor. Token do usuário registrado: ${token.substring(0, 12)}...`);
         }
       }
       return sentCount > 0;
@@ -2963,10 +2972,74 @@ app.all("/api/sync-payment", async (req, res) => {
     }
   }
 
-  // Endpoint to register/update device in the multi-device registry
+  // Helper específico para envio de push ao Administrador
+  async function sendPushToAdmin(adminId: string, title: string, body: string, data: Record<string, string> = {}) {
+    return sendPushToUser(adminId, title, body, data);
+  }
+
+  // Helper específico para envio de push ao Colaborador
+  async function sendPushToEmployee(employeeId: string, title: string, body: string, data: Record<string, string> = {}) {
+    return sendPushToUser(employeeId, title, body, data);
+  }
+
+  // Sanitizador de registros: remove tokens de colaboradores que foram parar indevidamente no admin
+  async function sanitizeDeviceRegistries() {
+    try {
+      const { data: employees } = await supabaseAdmin
+        .from('users')
+        .select('id, fcm_token, whatsapp_settings')
+        .eq('role', 'employee');
+
+      const employeeTokens = new Set<string>();
+      (employees || []).forEach(emp => {
+        if (emp.fcm_token) employeeTokens.add(emp.fcm_token);
+        if (Array.isArray(emp.whatsapp_settings?.devices)) {
+          emp.whatsapp_settings.devices.forEach((d: any) => {
+            if (d?.token) employeeTokens.add(d.token);
+          });
+        }
+      });
+
+      const { data: admins } = await supabaseAdmin
+        .from('users')
+        .select('id, name, fcm_token, whatsapp_settings')
+        .eq('role', 'admin');
+
+      for (const adm of (admins || [])) {
+        let currentDevices = Array.isArray(adm.whatsapp_settings?.devices) ? adm.whatsapp_settings.devices : [];
+        const originalCount = currentDevices.length;
+        let cleanedDevices = currentDevices.filter((d: any) => !employeeTokens.has(d?.token));
+
+        // Se a lista de dispositivos do admin ficou vazia mas ele possui fcm_token válido e não pertence ao colaborador
+        if (cleanedDevices.length === 0 && adm.fcm_token && !employeeTokens.has(adm.fcm_token)) {
+          cleanedDevices.push({
+            token: adm.fcm_token,
+            deviceId: `dev_${adm.fcm_token.slice(0, 12)}`,
+            platform: 'android',
+            deviceName: 'Celular Administrador',
+            lastSeen: new Date().toISOString()
+          });
+        }
+
+        if (cleanedDevices.length !== originalCount || (currentDevices.length === 0 && cleanedDevices.length > 0)) {
+          console.log(`[Push Sanitizer] Atualizando dispositivos do admin ${adm.name} (${adm.id}) para ${cleanedDevices.length} aparelho(s).`);
+          await supabaseAdmin.from('users').update({
+            whatsapp_settings: {
+              ...adm.whatsapp_settings,
+              devices: cleanedDevices
+            }
+          }).eq('id', adm.id);
+        }
+      }
+    } catch (err: any) {
+      console.warn('[Push Sanitizer] Aviso na rotina de sanitização:', err?.message || err);
+    }
+  }
+
+  // Endpoint to register/update device in the multi-device registry (100% isolado por usuário)
   app.post("/api/notifications/register-device", async (req, res) => {
     try {
-      const { userId, adminId, token, platform, deviceId, deviceName } = req.body || {};
+      const { userId, token, platform, deviceId, deviceName } = req.body || {};
       if (!userId || !token) {
         return res.status(400).json({ error: "Missing userId or token" });
       }
@@ -2974,49 +3047,34 @@ app.all("/api/sync-payment", async (req, res) => {
       // 1. Atualiza users.fcm_token como token principal do usuário
       await supabaseAdmin.from('users').update({ fcm_token: token }).eq('id', userId);
 
-      // 2. Busca informações do usuário para verificar se é colaborador ou possui admin_id
-      let targetAdminId = adminId;
-      const { data: userRow } = await supabaseAdmin.from('users').select('id, role, admin_id, whatsapp_settings').eq('id', userId).maybeSingle();
-      if (!targetAdminId && userRow?.admin_id) {
-        targetAdminId = userRow.admin_id;
-      }
+      // 2. Busca informações do usuário
+      const { data: userRow } = await supabaseAdmin.from('users').select('id, role, whatsapp_settings').eq('id', userId).maybeSingle();
 
-      const updateDevicesList = async (targetUserId: string, existingSettings?: any) => {
-        let currentSettings = existingSettings;
-        if (!currentSettings) {
-          const { data: row } = await supabaseAdmin.from('users').select('whatsapp_settings').eq('id', targetUserId).maybeSingle();
-          currentSettings = row?.whatsapp_settings || {};
+      const currentSettings = userRow?.whatsapp_settings || {};
+      let devices: any[] = Array.isArray(currentSettings.devices) ? currentSettings.devices : [];
+
+      const cleanDevId = deviceId || `dev_${token.slice(0, 16)}`;
+      devices = devices.filter((d: any) => d && d.token && d.token !== token && d.deviceId !== cleanDevId);
+
+      devices.unshift({
+        token,
+        deviceId: cleanDevId,
+        platform: platform || 'android',
+        deviceName: deviceName || 'Celular Android',
+        lastSeen: new Date().toISOString()
+      });
+
+      devices = devices.slice(0, 10);
+
+      // Atualiza EXCLUSIVAMENTE o usuário proprietário do aparelho (sem misturar com admin)
+      await supabaseAdmin.from('users').update({
+        whatsapp_settings: {
+          ...currentSettings,
+          devices
         }
-        let devices: any[] = Array.isArray(currentSettings.devices) ? currentSettings.devices : [];
+      }).eq('id', userId);
 
-        const cleanDevId = deviceId || `dev_${token.slice(0, 16)}`;
-        devices = devices.filter((d: any) => d && d.token && d.token !== token && d.deviceId !== cleanDevId);
-
-        devices.unshift({
-          token,
-          deviceId: cleanDevId,
-          platform: platform || 'android',
-          deviceName: deviceName || 'Celular Android',
-          lastSeen: new Date().toISOString()
-        });
-
-        devices = devices.slice(0, 10);
-
-        await supabaseAdmin.from('users').update({
-          whatsapp_settings: {
-            ...currentSettings,
-            devices
-          }
-        }).eq('id', targetUserId);
-      };
-
-      await updateDevicesList(userId, userRow?.whatsapp_settings);
-
-      if (targetAdminId && targetAdminId !== userId) {
-        await updateDevicesList(targetAdminId, null);
-      }
-
-      console.log(`[Push Server] Dispositivo registrado com sucesso para o usuário ${userId}.`);
+      console.log(`[Push Server] Dispositivo registrado com sucesso e isolado para o usuário ${userId}.`);
       return res.json({ success: true });
     } catch (err: any) {
       console.error('[Push Server] Erro ao registrar dispositivo:', err);
@@ -3024,56 +3082,122 @@ app.all("/api/sync-payment", async (req, res) => {
     }
   });
 
-  // Endpoint to immediately trigger attendance completion push notification
-  app.post("/api/notifications/notify-visit-completion", async (req, res) => {
+  // Conjunto em memória de atendimentos já notificados pelo sistema online
+  const notifiedVisitKeys = new Set<string>();
+
+  // Processador central de finalização de visita / serviço: disparado pelo sistema online de forma autônoma
+  async function handleVisitCompleted(visitRecord: any, isOneOffJob = false): Promise<boolean> {
     try {
-      const { visitId, adminId, employeeId, clientId, clientName, techName, type } = req.body || {};
+      if (!visitRecord || !visitRecord.id) return false;
+      const visitId = String(visitRecord.id);
+      const dedupeKey = isOneOffJob ? `job_${visitId}` : `visit_${visitId}`;
 
-      // Deduplicação unificada por cliente/tipo ou visitId
-      const dedupeKey = visitId ? `visit_${visitId}` : `${type || 'visit'}_${clientId || clientName || 'unknown'}`;
+      if (notifiedVisitKeys.has(dedupeKey)) {
+        return false;
+      }
       if (!shouldSendPush(dedupeKey)) {
-        return res.json({ success: true, deduped: true });
+        notifiedVisitKeys.add(dedupeKey);
+        return false;
       }
 
-      let empName = techName || "Colaborador";
-      if (!techName && employeeId) {
-        const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', employeeId).maybeSingle();
-        if (empData?.name) empName = empData.name;
+      // 1. Identificar o colaborador
+      let empName = 'Colaborador';
+      let employeeAdminId: string | null = null;
+      if (visitRecord.employee_id) {
+        const { data: empUser } = await supabaseAdmin
+          .from('users')
+          .select('id, name, admin_id')
+          .eq('id', visitRecord.employee_id)
+          .maybeSingle();
+        if (empUser?.name) empName = empUser.name;
+        if (empUser?.admin_id) employeeAdminId = empUser.admin_id;
       }
 
-      let resolvedClientName = clientName;
-      let clientAdminId = null;
-      if (clientId) {
-        const { data: cliData } = await supabaseAdmin.from('clients').select('name, admin_id').eq('id', clientId).maybeSingle();
-        if (cliData?.name) resolvedClientName = cliData.name;
+      // 2. Identificar o cliente
+      let clientName = isOneOffJob ? (visitRecord.client_name || 'Cliente') : 'Cliente';
+      let clientAdminId: string | null = null;
+      if (!isOneOffJob && visitRecord.client_id) {
+        const { data: cliData } = await supabaseAdmin
+          .from('clients')
+          .select('id, name, admin_id')
+          .eq('id', visitRecord.client_id)
+          .maybeSingle();
+        if (cliData?.name) clientName = cliData.name;
         if (cliData?.admin_id) clientAdminId = cliData.admin_id;
       }
-      if (!resolvedClientName) resolvedClientName = "Cliente";
 
-      const targetAdminId = clientAdminId || adminId;
+      // 3. Determinar o Admin Responsável pelo Colaborador
+      // Ordem de resolução:
+      // a) visitRecord.admin_id
+      // b) employeeAdminId (o admin_id vinculado ao cadastro do colaborador no banco)
+      // c) clientAdminId (o admin_id do cliente atendido)
+      // d) primeiro admin geral do sistema
+      let targetAdminId = visitRecord.admin_id || employeeAdminId || clientAdminId;
       if (!targetAdminId) {
-        const { data: defaultAdmin } = await supabaseAdmin.from('users').select('id').eq('role', 'admin').limit(1).maybeSingle();
-        if (!defaultAdmin) {
-          return res.status(400).json({ error: "Missing adminId and clientId" });
+        const { data: fallbackAdmin } = await supabaseAdmin
+          .from('users')
+          .select('id')
+          .eq('role', 'admin')
+          .limit(1)
+          .maybeSingle();
+        if (fallbackAdmin?.id) {
+          targetAdminId = fallbackAdmin.id;
         }
       }
 
+      if (!targetAdminId) {
+        console.warn(`[Online Push Engine] Não foi possível determinar admin responsável para o atendimento ${visitId}`);
+        return false;
+      }
+
+      const title = isOneOffJob ? '🏊 Serviço Avulso Finalizado' : '🏊 Visita Finalizada!';
+      const body = `O colaborador ${empName} finalizou o atendimento no cliente ${clientName}.`;
+
+      console.log(`[Online Push Engine - SISTEMA ONLINE] Disparando notificação de atendimento finalizado para o admin responsável (${targetAdminId}): "${title}" - "${body}"`);
+
+      const sent = await sendPushToAdmin(
+        targetAdminId,
+        title,
+        body,
+        {
+          url: '/routes',
+          channelId: 'atendimentos_v2',
+          type: isOneOffJob ? 'job_completed' : 'visit_completed',
+          visitId: String(visitId),
+          clientId: String(visitRecord.client_id || ''),
+          employeeId: String(visitRecord.employee_id || ''),
+          tag: `visit_${visitId}`
+        }
+      );
+
+      notifiedVisitKeys.add(dedupeKey);
+      if (notifiedVisitKeys.size > 2000) {
+        const firstKeys = Array.from(notifiedVisitKeys).slice(0, 500);
+        firstKeys.forEach(k => notifiedVisitKeys.delete(k));
+      }
+
+      return sent;
+    } catch (err: any) {
+      console.error('[Online Push Engine] Erro ao processar finalização de visita:', err);
+      return false;
+    }
+  }
+
+  // Endpoint to immediately trigger attendance completion push notification (mantido como redundância segura)
+  app.post("/api/notifications/notify-visit-completion", async (req, res) => {
+    try {
+      const { visitId, adminId, employeeId, clientId, clientName, techName, type } = req.body || {};
       const isJob = type === 'job';
-      const title = isJob ? '🏊 Serviço Avulso Finalizado' : '🏊 Visita Finalizada!';
-      const body = `O colaborador ${empName} finalizou o atendimento no cliente ${resolvedClientName}.`;
+      const visitRecord = {
+        id: visitId,
+        admin_id: adminId,
+        employee_id: employeeId,
+        client_id: clientId,
+        client_name: clientName,
+        status: isJob ? 'concluido' : 'finalizada'
+      };
 
-      console.log(`[Push Server] Disparando alerta de atendimento para admin ${targetAdminId}: ${title}`);
-
-      const sent = await sendPushToAdmin(targetAdminId || '', title, body, {
-        url: '/routes',
-        channelId: 'atendimentos_v2',
-        type: isJob ? 'job_completed' : 'visit_completed',
-        visitId: String(visitId || ''),
-        clientId: String(clientId || ''),
-        employeeId: String(employeeId || ''),
-        tag: visitId ? `visit_${visitId}` : `visit_${Date.now()}`
-      });
-
+      const sent = await handleVisitCompleted(visitRecord, isJob);
       return res.json({ success: true, sent });
     } catch (err: any) {
       console.error('[Push Server] Erro no endpoint notify-visit-completion:', err);
@@ -3088,36 +3212,9 @@ app.all("/api/sync-payment", async (req, res) => {
       console.log(`[Server Database Webhook] Recebido evento: Tabela ${table}, Tipo ${type}`);
 
       if (table === 'visits' && record && record.status === 'finalizada' && (!old_record || old_record.status !== 'finalizada')) {
-        const visitId = record.id;
-        const dedupeKey = `visit_${visitId}`;
-        if (shouldSendPush(dedupeKey)) {
-          let targetAdminId = record.admin_id;
-          if (!targetAdminId && record.client_id) {
-            const { data: cli } = await supabaseAdmin.from('clients').select('admin_id, name').eq('id', record.client_id).maybeSingle();
-            if (cli?.admin_id) targetAdminId = cli.admin_id;
-          }
-
-          if (targetAdminId) {
-            const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', record.employee_id).maybeSingle();
-            const { data: cliData } = await supabaseAdmin.from('clients').select('name').eq('id', record.client_id).maybeSingle();
-            const empName = empData?.name || 'Colaborador';
-            const cliName = cliData?.name || 'Cliente';
-
-            await sendPushToAdmin(
-              targetAdminId,
-              '🏊 Visita Finalizada!',
-              `O colaborador ${empName} finalizou o atendimento no cliente ${cliName}.`,
-              {
-                url: '/routes',
-                channelId: 'atendimentos_v2',
-                type: 'visit_completed',
-                visitId: String(visitId),
-                clientId: String(record.client_id || ''),
-                tag: `visit_${visitId}`
-              }
-            );
-          }
-        }
+        await handleVisitCompleted(record, false);
+      } else if (table === 'oneoffjobs' && record && record.status === 'concluido' && (!old_record || old_record.status !== 'concluido')) {
+        await handleVisitCompleted(record, true);
       }
 
       return res.json({ success: true, processed: true });
@@ -3227,63 +3324,14 @@ app.all("/api/sync-payment", async (req, res) => {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'visits' }, async (payload) => {
        const newVisit = payload.new as any;
        if (!newVisit || newVisit.status !== 'finalizada') return;
-
-       const dedupeKey = `visit_${newVisit.id}`;
-       if (!shouldSendPush(dedupeKey)) return;
-
-       let targetAdminId = newVisit.admin_id;
-       if (!targetAdminId && newVisit.client_id) {
-          const { data: cli } = await supabaseAdmin.from('clients').select('admin_id').eq('id', newVisit.client_id).single();
-          if (cli?.admin_id) targetAdminId = cli.admin_id;
-       }
-
-       if (targetAdminId) {
-           const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', newVisit.employee_id).single();
-           const { data: cliData } = await supabaseAdmin.from('clients').select('name').eq('id', newVisit.client_id).single();
-
-           const empName = empData?.name || 'Colaborador';
-           const cliName = cliData?.name || 'Cliente';
-
-           await sendPushToAdmin(
-             targetAdminId,
-             '🏊 Visita Finalizada!',
-             `O colaborador ${empName} finalizou o atendimento no cliente ${cliName}.`,
-             {
-               url: '/routes',
-               channelId: 'atendimentos_v2',
-               type: 'visit_completed',
-               visitId: String(newVisit.id || ''),
-               clientId: String(newVisit.client_id || ''),
-               tag: `visit_${newVisit.id}`
-             }
-           );
-       }
+       console.log(`[Realtime DB Event] Visita finalizada detectada via WebSocket: ${newVisit.id}`);
+       await handleVisitCompleted(newVisit, false);
     })
-    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'oneoffjobs' }, async (payload) => {
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'oneoffjobs' }, async (payload) => {
        const newJob = payload.new as any;
        if (!newJob || newJob.status !== 'concluido') return;
-
-       const dedupeKey = `job_${newJob.id}`;
-       if (!shouldSendPush(dedupeKey)) return;
-
-       if (newJob.admin_id) {
-           const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', newJob.employee_id).single();
-           const empName = empData?.name || 'Colaborador';
-           const cliName = newJob.client_name || 'Cliente';
-
-           await sendPushToAdmin(
-             newJob.admin_id,
-             '🏊 Serviço Avulso Finalizado',
-             `O colaborador ${empName} finalizou o serviço avulso para ${cliName}.`,
-             {
-               url: '/routes',
-               channelId: 'atendimentos_v2',
-               type: 'job_completed',
-               jobId: String(newJob.id || ''),
-               tag: `job_${newJob.id}`
-             }
-           );
-       }
+       console.log(`[Realtime DB Event] Serviço avulso concluído detectado via WebSocket: ${newJob.id}`);
+       await handleVisitCompleted(newJob, true);
     })
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, async (payload) => {
        const newMsg = payload.new as any;
@@ -3421,7 +3469,7 @@ app.all("/api/sync-payment", async (req, res) => {
       // Buscar todos os clientes ativos com data de vencimento e admin_id definido
       let query = supabaseAdmin
         .from('clients')
-        .select('id, name, due_date, monthly_price, admin_id, active')
+        .select('id, name, due_date, monthly_price, admin_id, employee_id, active')
         .not('due_date', 'is', null)
         .not('admin_id', 'is', null);
 
@@ -3454,12 +3502,15 @@ app.all("/api/sync-payment", async (req, res) => {
         const clientName = client.name || 'Cliente';
         const clientDueDate = client.due_date;
 
-        if (clientDueDate === todayStr) {
+        const isDueToday = clientDueDate === todayStr;
+        const isOverdue = clientDueDate < todayStr;
+
+        if (isDueToday) {
           // Vence HOJE
           summary.dueTodayCount++;
           const title = `💰 Vencimento Hoje: ${clientName}`;
           const body = `Hoje vence a mensalidade de ${clientName}. Realize a cobrança!`;
-          
+
           await sendPushToAdmin(
             targetAdminId,
             title,
@@ -3471,7 +3522,7 @@ app.all("/api/sync-payment", async (req, res) => {
               clientId: String(client.id)
             }
           );
-        } else if (clientDueDate < todayStr) {
+        } else if (isOverdue) {
           // Já está ATRASADO
           summary.overdueCount++;
           const [dYear, dMonth, dDay] = clientDueDate.split('-');
@@ -3493,7 +3544,7 @@ app.all("/api/sync-payment", async (req, res) => {
         }
       }
 
-      console.log(`[7AM Billing Reminder] Concluído para ${filterAdminId || 'todos admins'}: ${summary.dueTodayCount} vencendo hoje, ${summary.overdueCount} atrasados.`);
+      console.log(`[7AM Billing Reminder] Concluído exclusivamente para administradores: ${summary.dueTodayCount} vencendo hoje, ${summary.overdueCount} atrasados.`);
     } catch (err: any) {
       console.error('[7AM Billing Reminder] Erro inesperado na rotina de cobrança:', err);
       summary.errors.push(err?.message || String(err));
@@ -3530,12 +3581,108 @@ app.all("/api/sync-payment", async (req, res) => {
     }, msUntil7AM);
   }
 
+  /**
+   * Inicialização e carregamento histórico de atendimentos finalizados.
+   * Evita disparar notificações em massa para visitas antigas já salvas no banco,
+   * preservando visitas dos últimos 10 minutos caso o servidor reinicie.
+   */
+  async function primeHistoricalVisits() {
+    try {
+      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      const { data: existingVisits } = await supabaseAdmin
+        .from('visits')
+        .select('id, date, created_at')
+        .eq('status', 'finalizada')
+        .lt('created_at', tenMinutesAgo)
+        .order('created_at', { ascending: false })
+        .limit(100);
+      (existingVisits || []).forEach(v => notifiedVisitKeys.add(`visit_${v.id}`));
+
+      const { data: existingJobs } = await supabaseAdmin
+        .from('oneoffjobs')
+        .select('id, updated_at')
+        .eq('status', 'concluido')
+        .lt('updated_at', tenMinutesAgo)
+        .order('updated_at', { ascending: false })
+        .limit(100);
+      (existingJobs || []).forEach(j => notifiedVisitKeys.add(`job_${j.id}`));
+
+      console.log(`[Online Push Engine] Inicializado com ${notifiedVisitKeys.size} atendimentos históricos registrados.`);
+    } catch (e: any) {
+      console.warn('[Online Push Engine] Aviso ao carregar histórico:', e?.message || e);
+    }
+  }
+
+  /**
+   * Monitor online autônomo do banco de dados:
+   * Consulta periodicamente novas visitas com status='finalizada' e serviços avulsos status='concluido'.
+   * Se o banco de dados receber a visita como concluída, o servidor dispara a notificação para o admin
+   * responsável pelo colaborador de forma 100% autônoma e independente do celular do colaborador.
+   */
+  let isWatcherRunning = false;
+  async function runOnlineDatabaseWatcher() {
+    if (isWatcherRunning) return;
+    isWatcherRunning = true;
+    try {
+      // 1. Visitas normais finalizadas nos últimos 60 minutos
+      // Busca tanto por created_at (visitas novas) quanto por date (visitas pré-agendadas atualizadas para finalizada)
+      const sinceDate = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      const { data: recentVisits, error: vErr } = await supabaseAdmin
+        .from('visits')
+        .select('id, admin_id, client_id, employee_id, status, created_at, date')
+        .eq('status', 'finalizada')
+        .or(`created_at.gte.${sinceDate},date.gte.${sinceDate}`)
+        .order('date', { ascending: false })
+        .limit(30);
+
+      if (!vErr && recentVisits && recentVisits.length > 0) {
+        for (const v of recentVisits) {
+          const dedupeKey = `visit_${v.id}`;
+          if (!notifiedVisitKeys.has(dedupeKey)) {
+            console.log(`[Online Database Watcher] Nova visita finalizada detectada no banco: ${v.id}. Disparando notificação para o admin responsável...`);
+            await handleVisitCompleted(v, false);
+          }
+        }
+      }
+
+      // 2. Serviços avulsos concluídos nos últimos 60 minutos
+      const { data: recentJobs, error: jErr } = await supabaseAdmin
+        .from('oneoffjobs')
+        .select('id, admin_id, employee_id, status, client_name, updated_at')
+        .eq('status', 'concluido')
+        .gte('updated_at', sinceDate)
+        .order('updated_at', { ascending: false })
+        .limit(30);
+
+      if (!jErr && recentJobs && recentJobs.length > 0) {
+        for (const j of recentJobs) {
+          const dedupeKey = `job_${j.id}`;
+          if (!notifiedVisitKeys.has(dedupeKey)) {
+            console.log(`[Online Database Watcher] Novo serviço avulso concluído detectado no banco: ${j.id}. Disparando notificação para o admin responsável...`);
+            await handleVisitCompleted(j, true);
+          }
+        }
+      }
+    } catch (err: any) {
+      console.error('[Online Database Watcher] Erro no ciclo de monitoramento:', err?.message || err);
+    } finally {
+      isWatcherRunning = false;
+    }
+  }
+
+  // Inicialização dos serviços em segundo plano
+  primeHistoricalVisits();
+  sanitizeDeviceRegistries();
   schedule7AMBillingReminders();
+  setInterval(runOnlineDatabaseWatcher, 5000);
 
   // Vite middleware for development (must be mounted AFTER all API routes)
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);
@@ -3553,7 +3700,7 @@ app.all("/api/sync-payment", async (req, res) => {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
 
     // Auto-registro do Webhook no AstraCalls
@@ -3579,6 +3726,10 @@ app.all("/api/sync-payment", async (req, res) => {
         }
       } catch (err) {}
     }, 3000);
+  });
+
+  server.on('error', (err: any) => {
+    console.error(`[Server Error]:`, err);
   });
 }
 

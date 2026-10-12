@@ -89,8 +89,8 @@ export async function setupPushNotificationChannels(): Promise<void> {
 /**
  * Synchronizes the cached FCM token with Supabase users table and multi-device registry
  */
-export async function syncStoredFcmToken(userId?: string | null, adminId?: string | null): Promise<boolean> {
-  if (!userId) return false;
+export async function syncStoredFcmToken(userId?: string | null, adminId?: string | null, role?: string | null): Promise<boolean> {
+  if (!userId || role === 'client') return false;
   const token = localStorage.getItem('fcm_token');
   if (!token) return false;
 
@@ -190,9 +190,9 @@ export async function initCapacitorPushNotifications(
       await PushNotifications.register();
     }
 
-    // Sincroniza token em cache imediatamente se já disponível
+    // Sincroniza token em cache imediatamente se já disponível (apenas administradores e colaboradores)
     const cachedToken = localStorage.getItem('fcm_token');
-    if (cachedToken && userProfile?.uid) {
+    if (cachedToken && userProfile?.uid && userProfile.role !== 'client') {
       try {
         await supabase.from('users').update({ fcm_token: cachedToken }).eq('id', userProfile.uid);
         console.log('[Capacitor Push] Token FCM em cache sincronizado com sucesso');
@@ -207,7 +207,7 @@ export async function initCapacitorPushNotifications(
       localStorage.setItem('fcm_token', token.value);
       localStorage.setItem('fcm_token_time', new Date().toISOString());
 
-      if (userProfile?.uid) {
+      if (userProfile?.uid && userProfile.role !== 'client') {
         try {
           // 1. Enviar para a API de registro de múltiplos dispositivos
           fetch(getApiUrl('/api/notifications/register-device'), {

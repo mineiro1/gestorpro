@@ -89,7 +89,7 @@ export default function Billing() {
       if (data.success) {
         const { dueTodayCount, overdueCount } = data.summary || {};
         setPushStatusMessage({
-          text: `🔔 Lembretes disparados para o seu celular: ${dueTodayCount || 0} vencendo hoje, ${overdueCount || 0} em atraso (somente seus clientes).`,
+          text: `🔔 Lembretes disparados exclusivamente para o seu celular (administrador): ${dueTodayCount || 0} vencendo hoje, ${overdueCount || 0} em atraso.`,
           isError: false
         });
       } else {

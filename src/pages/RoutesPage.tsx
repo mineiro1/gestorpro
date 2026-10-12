@@ -226,6 +226,20 @@ export default function RoutesPage() {
           } catch (e) {}
         }
         
+        // Dispara notificação push para o administrador ao sincronizar
+        if (payload.adminId) {
+          notifyAdminAttendanceFinished({
+            adminId: payload.adminId,
+            employeeId: payload.employeeId || userProfile?.uid,
+            clientId: payload.clientId,
+            clientName: payload.clientName || 'Cliente',
+            techName: payload.techName || userProfile?.name || 'Colaborador',
+            visitId: payload.clientId,
+            type: payload.isOneOffJob ? 'job' : 'visit',
+            notes: payload.notes
+          }).catch(() => {});
+        }
+
         remainingVisits = remainingVisits.filter((v: any) => v !== payload);
         syncedCount++;
       } catch (err) {
@@ -1343,6 +1357,8 @@ export default function RoutesPage() {
       const payload = {
         adminId,
         clientId: targetClient.id,
+        clientName: targetClient.name,
+        techName: userProfile?.name || 'Colaborador',
         employeeId: (isAdmin || isManager) && selectedEmployee ? selectedEmployee : userProfile.uid,
         date: finalVisitDate,
         time: activeRouteDate,
