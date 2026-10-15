@@ -1525,6 +1525,9 @@ app.post(['/api/notifications/notify-visit-completion', '/notifications/notify-v
       const { data: fallbackAdmin } = await supabaseAdmin.from('users').select('id').eq('role', 'admin').limit(1).maybeSingle();
       if (fallbackAdmin?.id) targetAdminId = fallbackAdmin.id;
     }
+    if (!targetAdminId) {
+      targetAdminId = '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
+    }
     const isJob = type === 'job';
     const title = isJob ? '🏊 Serviço Avulso Finalizado' : '🏊 Visita Finalizada!';
     const body = `O colaborador ${empName} finalizou o atendimento no cliente ${resolvedClientName}.`;
@@ -1559,78 +1562,181 @@ app.post([
   try {
     const payload = req.body || {};
     const { type, table, record, old_record } = payload;
+    const row = record || payload;
+    const targetTable = table || (row.client_id !== undefined ? 'visits' : (row.price !== undefined ? 'oneoffjobs' : 'visits'));
     const supabaseAdmin = getSupabaseAdmin();
 
-    console.log(`[Database Webhook] Evento recebido: Tabela: ${table}, Tipo: ${type}`);
+    console.log(`[Database Webhook] Evento recebido: Tabela: ${targetTable}, Tipo: ${type || 'manual/direct'}, Status: ${row?.status}`);
 
     // 1. Visita Finalizada
-    if (table === 'visits' && record) {
-      if (record.status === 'finalizada' && (!old_record || old_record.status !== 'finalizada')) {
-        const visitId = record.id;
-        const dedupeKey = `visit_${visitId}`;
-        if (shouldSendPush(dedupeKey)) {
-          let targetAdminId = record.admin_id;
-          if (!targetAdminId && record.client_id) {
-            const { data: cli } = await supabaseAdmin.from('clients').select('admin_id, name').eq('id', record.client_id).maybeSingle();
-            if (cli?.admin_id) targetAdminId = cli.admin_id;
-          }
-
-          if (targetAdminId) {
-            const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', record.employee_id).maybeSingle();
-            const { data: cliData } = await supabaseAdmin.from('clients').select('name').eq('id', record.client_id).maybeSingle();
-            const empName = empData?.name || 'Colaborador';
-            const cliName = cliData?.name || 'Cliente';
-
-            await sendPushToAdmin(
-              targetAdminId,
-              '🏊 Visita Finalizada!',
-              `O colaborador ${empName} finalizou o atendimento no cliente ${cliName}.`,
-              {
-                url: '/routes',
-                channelId: 'atendimentos_v2',
-                type: 'visit_completed',
-                visitId: String(visitId),
-                clientId: String(record.client_id || ''),
-                tag: `visit_${visitId}`
-              }
-            );
-          }
+    if (targetTable === 'visits' && row && row.status === 'finalizada') {
+      const visitId = String(row.id || '');
+      const dedupeKey = `visit_${visitId}`;
+      if (shouldSendPush(dedupeKey)) {
+        // Resolução ultra-resiliente de 5 níveis do Admin Responsável
+        let targetAdminId = row.admin_id;
+        if (!targetAdminId && row.client_id) {
+          const { data: cli } = await supabaseAdmin.from('clients').select('admin_id, name').eq('id', row.client_id).maybeSingle();
+          if (cli?.admin_id) targetAdminId = cli.admin_id;
         }
+        if (!targetAdminId && row.employee_id) {
+          const { data: empUser } = await supabaseAdmin.from('users').select('admin_id').eq('id', row.employee_id).maybeSingle();
+          if (empUser?.admin_id) targetAdminId = empUser.admin_id;
+        }
+        if (!targetAdminId) {
+          const { data: fallbackAdmin } = await supabaseAdmin.from('users').select('id').eq('role', 'admin').limit(1).maybeSingle();
+          if (fallbackAdmin?.id) targetAdminId = fallbackAdmin.id;
+        }
+        if (!targetAdminId) {
+          targetAdminId = '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
+        }
+
+        let empName = 'Colaborador';
+        if (row.employee_id) {
+          const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', row.employee_id).maybeSingle();
+          if (empData?.name) empName = empData.name;
+        }
+
+        let cliName = row.client_name;
+        if (!cliName && row.client_id) {
+          const { data: cliData } = await supabaseAdmin.from('clients').select('name').eq('id', row.client_id).maybeSingle();
+          if (cliData?.name) cliName = cliData.name;
+        }
+        if (!cliName) cliName = 'Cliente';
+
+        console.log(`[Database Webhook] Disparando push de visita ${visitId} para o admin ${targetAdminId}`);
+
+        await sendPushToAdmin(
+          targetAdminId,
+          '🏊 Visita Finalizada!',
+          `O colaborador ${empName} finalizou o atendimento no cliente ${cliName}.`,
+          {
+            url: '/routes',
+            channelId: 'atendimentos_v2',
+            type: 'visit_completed',
+            visitId: String(visitId),
+            clientId: String(row.client_id || ''),
+            employeeId: String(row.employee_id || ''),
+            tag: `visit_${visitId}`
+          }
+        );
       }
     }
 
     // 2. Serviço Avulso Concluído
-    if (table === 'oneoffjobs' && record) {
-      if (record.status === 'concluido' && (!old_record || old_record.status !== 'concluido')) {
-        const jobId = record.id;
-        const dedupeKey = `job_${jobId}`;
-        if (shouldSendPush(dedupeKey)) {
-          const targetAdminId = record.admin_id;
-          if (targetAdminId) {
-            const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', record.employee_id).maybeSingle();
-            const empName = empData?.name || 'Colaborador';
-            const cliName = record.client_name || 'Cliente';
-
-            await sendPushToAdmin(
-              targetAdminId,
-              '🏊 Serviço Avulso Finalizado',
-              `O colaborador ${empName} finalizou o serviço avulso para ${cliName}.`,
-              {
-                url: '/routes',
-                channelId: 'atendimentos_v2',
-                type: 'job_completed',
-                jobId: String(jobId),
-                tag: `job_${jobId}`
-              }
-            );
-          }
+    if (targetTable === 'oneoffjobs' && row && row.status === 'concluido') {
+      const jobId = String(row.id || '');
+      const dedupeKey = `job_${jobId}`;
+      if (shouldSendPush(dedupeKey)) {
+        let targetAdminId = row.admin_id;
+        if (!targetAdminId && row.employee_id) {
+          const { data: empUser } = await supabaseAdmin.from('users').select('admin_id').eq('id', row.employee_id).maybeSingle();
+          if (empUser?.admin_id) targetAdminId = empUser.admin_id;
         }
+        if (!targetAdminId) {
+          const { data: fallbackAdmin } = await supabaseAdmin.from('users').select('id').eq('role', 'admin').limit(1).maybeSingle();
+          if (fallbackAdmin?.id) targetAdminId = fallbackAdmin.id;
+        }
+        if (!targetAdminId) {
+          targetAdminId = '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
+        }
+
+        let empName = 'Colaborador';
+        if (row.employee_id) {
+          const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', row.employee_id).maybeSingle();
+          if (empData?.name) empName = empData.name;
+        }
+        const cliName = row.client_name || 'Cliente';
+
+        console.log(`[Database Webhook] Disparando push de avulso ${jobId} para o admin ${targetAdminId}`);
+
+        await sendPushToAdmin(
+          targetAdminId,
+          '🏊 Serviço Avulso Finalizado',
+          `O colaborador ${empName} finalizou o serviço avulso para ${cliName}.`,
+          {
+            url: '/routes',
+            channelId: 'atendimentos_v2',
+            type: 'job_completed',
+            jobId: String(jobId),
+            tag: `job_${jobId}`
+          }
+        );
       }
     }
 
     return res.json({ success: true, processed: true });
   } catch (err) {
     console.error('[Database Webhook Error]:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Endpoint autônomo de varredura (Sweep) para checar e notificar visitas recentes pendentes
+app.all(['/api/cron/sync-visits', '/api/notifications/sweep-recent-visits'], async (req, res) => {
+  try {
+    const supabaseAdmin = getSupabaseAdmin();
+    const sinceDate = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const { data: recentVisits, error: vErr } = await supabaseAdmin
+      .from('visits')
+      .select('id, admin_id, client_id, employee_id, status, created_at, date, client_name')
+      .eq('status', 'finalizada')
+      .or(`created_at.gte.${sinceDate},date.gte.${sinceDate}`)
+      .order('created_at', { ascending: false })
+      .limit(20);
+
+    let sentCount = 0;
+    if (!vErr && recentVisits) {
+      for (const v of recentVisits) {
+        const dedupeKey = `visit_${v.id}`;
+        if (shouldSendPush(dedupeKey)) {
+          let targetAdminId = v.admin_id;
+          if (!targetAdminId && v.client_id) {
+            const { data: cli } = await supabaseAdmin.from('clients').select('admin_id, name').eq('id', v.client_id).maybeSingle();
+            if (cli?.admin_id) targetAdminId = cli.admin_id;
+          }
+          if (!targetAdminId && v.employee_id) {
+            const { data: empUser } = await supabaseAdmin.from('users').select('admin_id').eq('id', v.employee_id).maybeSingle();
+            if (empUser?.admin_id) targetAdminId = empUser.admin_id;
+          }
+          if (!targetAdminId) {
+            targetAdminId = '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
+          }
+
+          let empName = 'Colaborador';
+          if (v.employee_id) {
+            const { data: empData } = await supabaseAdmin.from('users').select('name').eq('id', v.employee_id).maybeSingle();
+            if (empData?.name) empName = empData.name;
+          }
+
+          let cliName = v.client_name;
+          if (!cliName && v.client_id) {
+            const { data: cliData } = await supabaseAdmin.from('clients').select('name').eq('id', v.client_id).maybeSingle();
+            if (cliData?.name) cliName = cliData.name;
+          }
+          if (!cliName) cliName = 'Cliente';
+
+          await sendPushToAdmin(
+            targetAdminId,
+            '🏊 Visita Finalizada!',
+            `O colaborador ${empName} finalizou o atendimento no cliente ${cliName}.`,
+            {
+              url: '/routes',
+              channelId: 'atendimentos_v2',
+              type: 'visit_completed',
+              visitId: String(v.id),
+              clientId: String(v.client_id || ''),
+              employeeId: String(v.employee_id || ''),
+              tag: `visit_${v.id}`
+            }
+          );
+          sentCount++;
+        }
+      }
+    }
+
+    return res.json({ success: true, sweeped: recentVisits?.length || 0, sentCount });
+  } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });

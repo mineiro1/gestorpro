@@ -206,8 +206,9 @@ export default function RoutesPage() {
 
           if (!alreadyExists || alreadyExists.length === 0) {
             const { error: insertError } = await supabase.from('visits').insert({
-              admin_id: payload.adminId,
+              admin_id: payload.adminId || '698dfcdd-7c91-4df5-aaee-eae9e67f15ae',
               client_id: payload.clientId,
+              client_name: payload.clientName || 'Cliente',
               employee_id: payload.employeeId,
               date: payload.date,
               time: payload.time,
@@ -1149,7 +1150,9 @@ export default function RoutesPage() {
       if (!cleanPhone) return;
 
       try {
-        const adminId = targetClient.admin_id || (isAdmin ? userProfile.uid : (userProfile.adminId || userProfile.uid));
+        const adminId = (isAdmin ? userProfile?.uid : userProfile?.adminId) 
+          || targetClient.admin_id 
+          || (userProfile?.role === 'admin' ? userProfile?.uid : '698dfcdd-7c91-4df5-aaee-eae9e67f15ae');
         
         // 1. Obter configurações de WhatsApp mais recentes do admin
         let currentSettings = (userProfile?.whatsappSettings as any) || {};
@@ -1300,7 +1303,9 @@ export default function RoutesPage() {
     }
 
     try {
-      const adminId = targetClient.admin_id || (isAdmin ? userProfile.uid : (userProfile.adminId || userProfile.uid));
+      const adminId = (isAdmin ? userProfile?.uid : userProfile?.adminId) 
+        || targetClient.admin_id 
+        || (userProfile?.role === 'admin' ? userProfile?.uid : '698dfcdd-7c91-4df5-aaee-eae9e67f15ae');
       const finalVisitDate = photoDate ? photoDate.toISOString() : new Date().toISOString();
       const activeRouteDate = routeDate || getLocalISODate();
       
@@ -1417,6 +1422,8 @@ export default function RoutesPage() {
             if (existingAgendada && existingAgendada.length > 0) {
               const { error: updateErr } = await supabase.from('visits').update({
                 admin_id: adminId,
+                client_id: targetClient.id,
+                client_name: targetClient.name || 'Cliente',
                 employee_id: payload.employeeId,
                 date: finalVisitDate,
                 time: activeRouteDate,
@@ -1431,6 +1438,7 @@ export default function RoutesPage() {
               const { data: insertedList, error: insertErr } = await supabase.from('visits').insert({
                 admin_id: adminId,
                 client_id: targetClient.id,
+                client_name: targetClient.name || 'Cliente',
                 employee_id: payload.employeeId,
                 date: finalVisitDate,
                 time: activeRouteDate,

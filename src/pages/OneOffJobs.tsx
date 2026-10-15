@@ -177,7 +177,7 @@ export default function OneOffJobs() {
       fetchJobs();
 
       const job = jobs.find(j => j.id === id);
-      const targetAdminId = job?.adminId || (job as any)?.admin_id || userProfile?.adminId || userProfile?.uid;
+      const targetAdminId = (job?.adminId || (job as any)?.admin_id) || (userProfile?.role === 'admin' ? userProfile?.uid : userProfile?.adminId) || '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
       if (job && targetAdminId) {
         notifyAdminAttendanceFinished({
           adminId: targetAdminId,

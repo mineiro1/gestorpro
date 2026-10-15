@@ -3146,8 +3146,7 @@ app.all("/api/sync-payment", async (req, res) => {
       }
 
       if (!targetAdminId) {
-        console.warn(`[Online Push Engine] Não foi possível determinar admin responsável para o atendimento ${visitId}`);
-        return false;
+        targetAdminId = '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
       }
 
       const title = isOneOffJob ? '🏊 Serviço Avulso Finalizado' : '🏊 Visita Finalizada!';
@@ -3208,13 +3207,16 @@ app.all("/api/sync-payment", async (req, res) => {
   // Webhook universal para eventos do banco de dados Supabase
   app.post(["/api/webhooks/database", "/api/webhooks/visit-completed"], async (req, res) => {
     try {
-      const { type, table, record, old_record } = req.body || {};
-      console.log(`[Server Database Webhook] Recebido evento: Tabela ${table}, Tipo ${type}`);
+      const payload = req.body || {};
+      const { type, table, record, old_record } = payload;
+      const row = record || payload;
+      const targetTable = table || (row.client_id !== undefined ? 'visits' : (row.price !== undefined ? 'oneoffjobs' : 'visits'));
+      console.log(`[Server Database Webhook] Recebido evento: Tabela ${targetTable}, Tipo ${type || 'direct'}, Status ${row?.status}`);
 
-      if (table === 'visits' && record && record.status === 'finalizada' && (!old_record || old_record.status !== 'finalizada')) {
-        await handleVisitCompleted(record, false);
-      } else if (table === 'oneoffjobs' && record && record.status === 'concluido' && (!old_record || old_record.status !== 'concluido')) {
-        await handleVisitCompleted(record, true);
+      if (targetTable === 'visits' && row && row.status === 'finalizada') {
+        await handleVisitCompleted(row, false);
+      } else if (targetTable === 'oneoffjobs' && row && row.status === 'concluido') {
+        await handleVisitCompleted(row, true);
       }
 
       return res.json({ success: true, processed: true });
@@ -3314,6 +3316,16 @@ app.all("/api/sync-payment", async (req, res) => {
         filterAdminId: filterAdminId || 'all_admins_strictly_isolated',
         summary
       });
+    } catch (e: any) {
+      return res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Endpoint autônomo de varredura (Sweep) para checar e notificar visitas recentes pendentes
+  app.all(['/api/cron/sync-visits', '/api/notifications/sweep-recent-visits'], async (req, res) => {
+    try {
+      await runOnlineDatabaseWatcher();
+      return res.json({ success: true, processed: true });
     } catch (e: any) {
       return res.status(500).json({ error: e.message });
     }
