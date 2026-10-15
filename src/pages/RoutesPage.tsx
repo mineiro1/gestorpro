@@ -1203,11 +1203,39 @@ export default function RoutesPage() {
         const msg1 = currentSettings.reportMessage1 || defaultReportMsg;
         const msg2 = currentSettings.reportMessage2 || defaultReportMsg;
 
+        // Busca o número real cadastrado na tabela 'users' para o login/senha do portal
+        let userLoginPhone: string = targetClient.user_phone || targetClient.local_phone || '';
+        try {
+          if (targetClient.id) {
+            const { data: userRow } = await supabase
+              .from('users')
+              .select('phone')
+              .eq('client_id', targetClient.id)
+              .maybeSingle();
+            if (userRow?.phone) {
+              userLoginPhone = userRow.phone;
+            } else {
+              const { data: userById } = await supabase
+                .from('users')
+                .select('phone')
+                .eq('id', targetClient.id)
+                .maybeSingle();
+              if (userById?.phone) {
+                userLoginPhone = userById.phone;
+              }
+            }
+          }
+        } catch (uErr) {
+          console.warn('[WhatsApp Relatório] Erro ao buscar telefone em users:', uErr);
+        }
+
         const rawTemplate = useMessage2 ? msg2 : msg1;
         const message = formatClientMessageTemplate(rawTemplate, {
           name: targetClient.name || 'Cliente',
           phone: cleanPhone || targetClient.phone || targetClient.local_phone || '',
-          local_phone: targetClient.local_phone || ''
+          local_phone: targetClient.local_phone || '',
+          user_phone: userLoginPhone,
+          login_phone: userLoginPhone
         }, {
           techName: userProfile?.name || 'Técnico',
           companyName: currentSettings.companyName || userProfile?.whatsappSettings?.companyName || 'GestãoPro',

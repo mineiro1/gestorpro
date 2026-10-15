@@ -48,6 +48,33 @@ export function formatClientMessageTemplate(
     ? `(${cleanPhone.slice(0, 2)}) ${cleanPhone.slice(2, 6)}-${cleanPhone.slice(6)}`
     : cleanPhone;
 
+  // Determina o telefone real de login do usuário salvo na tabela users (sem 55 e com 9º dígito)
+  let rawUserPhone = client.user_phone || client.login_phone || client.userPhone || client.portal_phone || '';
+  let portalLoginPhone = String(rawUserPhone).replace(/\D/g, '');
+
+  if (!portalLoginPhone) {
+    // Fallback inteligente: se o telefone do cliente estiver no formato Astracalls (55 + DDD + 8 dígitos)
+    // remove o 55 e insere o nono dígito (ex: 556791843875 -> 67991843875 ou 556781629494 -> 67981629494)
+    if (cleanPhone.startsWith('55') && cleanPhone.length === 12) {
+      portalLoginPhone = `${cleanPhone.slice(2, 4)}9${cleanPhone.slice(4)}`;
+    } else if (cleanPhone.startsWith('55') && cleanPhone.length === 13) {
+      portalLoginPhone = cleanPhone.slice(2);
+    } else if (cleanPhone.length === 10) {
+      portalLoginPhone = `${cleanPhone.slice(0, 2)}9${cleanPhone.slice(2)}`;
+    } else {
+      portalLoginPhone = cleanPhone;
+    }
+  } else {
+    // Se o telefone veio da tabela users, garante que não tenha 55 na frente se for número nacional
+    if (portalLoginPhone.startsWith('55') && portalLoginPhone.length === 12) {
+      portalLoginPhone = `${portalLoginPhone.slice(2, 4)}9${portalLoginPhone.slice(4)}`;
+    } else if (portalLoginPhone.startsWith('55') && portalLoginPhone.length === 13) {
+      portalLoginPhone = portalLoginPhone.slice(2);
+    } else if (portalLoginPhone.length === 10) {
+      portalLoginPhone = `${portalLoginPhone.slice(0, 2)}9${portalLoginPhone.slice(2)}`;
+    }
+  }
+
   const portalUrl = options?.portalUrl || 'www.rspiscinas.app.br/client-panel';
   const companyName = options?.companyName || 'GestãoPro';
   const techName = options?.techName || 'Técnico';
@@ -75,18 +102,18 @@ export function formatClientMessageTemplate(
     .replace(/\{\s*cliente\s*\}/gi, firstName)
     .replace(/\[\s*cliente\s*\]/gi, firstName);
 
-  // 3. Phone / Login / Password replacements
+  // 3. Phone / Login / Password replacements (usa portalLoginPhone conforme cadastrado em users)
   msg = msg
-    .replace(/\{\s*telefone(\s*de\s*cadastro)?(\s*do\s*cliente)?\s*\}/gi, cleanPhone)
-    .replace(/\[\s*telefone(\s*de\s*cadastro)?(\s*do\s*cliente)?\s*\]/gi, cleanPhone)
-    .replace(/\{\s*telefone[\s_-]*cadastrado\s*\}/gi, cleanPhone)
-    .replace(/\[\s*telefone[\s_-]*cadastrado\s*\]/gi, cleanPhone)
-    .replace(/\{\s*celular(\s*do\s*cliente)?\s*\}/gi, cleanPhone)
-    .replace(/\[\s*celular(\s*do\s*cliente)?\s*\]/gi, cleanPhone)
-    .replace(/\{\s*login(\s*do\s*cliente)?\s*\}/gi, cleanPhone)
-    .replace(/\[\s*login(\s*do\s*cliente)?\s*\]/gi, cleanPhone)
-    .replace(/\{\s*senha(\s*do\s*cliente)?\s*\}/gi, cleanPhone)
-    .replace(/\[\s*senha(\s*do\s*cliente)?\s*\]/gi, cleanPhone);
+    .replace(/\{\s*telefone(\s*de\s*cadastro)?(\s*do\s*cliente)?\s*\}/gi, portalLoginPhone)
+    .replace(/\[\s*telefone(\s*de\s*cadastro)?(\s*do\s*cliente)?\s*\]/gi, portalLoginPhone)
+    .replace(/\{\s*telefone[\s_-]*cadastrado\s*\}/gi, portalLoginPhone)
+    .replace(/\[\s*telefone[\s_-]*cadastrado\s*\]/gi, portalLoginPhone)
+    .replace(/\{\s*celular(\s*do\s*cliente)?\s*\}/gi, portalLoginPhone)
+    .replace(/\[\s*celular(\s*do\s*cliente)?\s*\]/gi, portalLoginPhone)
+    .replace(/\{\s*login(\s*do\s*cliente)?\s*\}/gi, portalLoginPhone)
+    .replace(/\[\s*login(\s*do\s*cliente)?\s*\]/gi, portalLoginPhone)
+    .replace(/\{\s*senha(\s*do\s*cliente)?\s*\}/gi, portalLoginPhone)
+    .replace(/\[\s*senha(\s*do\s*cliente)?\s*\]/gi, portalLoginPhone);
 
   // 4. Tech / Company / Portal replacements
   msg = msg
@@ -125,24 +152,26 @@ export function formatClientMessageTemplate(
   // 7. Critical fallback for RAW phrases typed without braces by users
   // (e.g., "Olá, Primeiro nome do cliente!", "Login: telefone do cliente", "Senha: telefone de cadastro do cliente")
   msg = msg
-    .replace(/Login:\s*\{?telefone(\s*de\s*cadastro)?(\s*do\s*cliente)?\}?/gi, `Login: ${cleanPhone}`)
-    .replace(/Senha:\s*\{?telefone(\s*de\s*cadastro)?(\s*do\s*cliente)?\}?/gi, `Senha: ${cleanPhone}`)
-    .replace(/Login:\s*\{?celular(\s*do\s*cliente)?\}?/gi, `Login: ${cleanPhone}`)
-    .replace(/Senha:\s*\{?celular(\s*do\s*cliente)?\}?/gi, `Senha: ${cleanPhone}`)
+    .replace(/Login:\s*\{?telefone(\s*de\s*cadastro)?(\s*do\s*cliente)?\}?/gi, `Login: ${portalLoginPhone}`)
+    .replace(/Senha:\s*\{?telefone(\s*de\s*cadastro)?(\s*do\s*cliente)?\}?/gi, `Senha: ${portalLoginPhone}`)
+    .replace(/Login:\s*\{?celular(\s*do\s*cliente)?\}?/gi, `Login: ${portalLoginPhone}`)
+    .replace(/Senha:\s*\{?celular(\s*do\s*cliente)?\}?/gi, `Senha: ${portalLoginPhone}`)
+    .replace(/Login:\s*\{?login(\s*do\s*cliente)?\}?/gi, `Login: ${portalLoginPhone}`)
+    .replace(/Senha:\s*\{?senha(\s*do\s*cliente)?\}?/gi, `Senha: ${portalLoginPhone}`)
     .replace(/Olá,\s*\{?Primeiro\s*nome\s*do\s*cliente\}?/gi, `Olá, ${firstName}`)
     .replace(/Olá\s*\{?Primeiro\s*nome\s*do\s*cliente\}?/gi, `Olá ${firstName}`)
     .replace(/Olá,\s*\{?Primeiro\s*nome\}?/gi, `Olá, ${firstName}`)
     .replace(/Olá\s*\{?Primeiro\s*nome\}?/gi, `Olá ${firstName}`)
     .replace(/\{?Primeiro\s*nome\s*do\s*cliente\}?/gi, firstName)
-    .replace(/\{?telefone\s*de\s*cadastro\s*do\s*cliente\}?/gi, cleanPhone)
-    .replace(/\{?telefone\s*de\s*cadastro\}?/gi, cleanPhone)
-    .replace(/\{?telefone\s*do\s*cliente\}?/gi, cleanPhone);
+    .replace(/\{?telefone\s*de\s*cadastro\s*do\s*cliente\}?/gi, portalLoginPhone)
+    .replace(/\{?telefone\s*de\s*cadastro\}?/gi, portalLoginPhone)
+    .replace(/\{?telefone\s*do\s*cliente\}?/gi, portalLoginPhone);
 
   // 8. Final cleanup: remove any leftover unmatched single template tags
   msg = msg.replace(/\{[a-zA-Z0-9_\s]{2,40}\}/g, (match) => {
     const lower = match.toLowerCase();
     if (lower.includes('nome')) return firstName;
-    if (lower.includes('telefone') || lower.includes('login') || lower.includes('senha') || lower.includes('celular')) return cleanPhone;
+    if (lower.includes('telefone') || lower.includes('login') || lower.includes('senha') || lower.includes('celular')) return portalLoginPhone;
     if (lower.includes('empresa')) return companyName;
     if (lower.includes('portal')) return portalUrl;
     return '';
