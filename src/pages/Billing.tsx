@@ -3,7 +3,11 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { openWhatsApp, sendMetaMessage, sendEvolutionMessage, sendAstraCallsMessage, getEffectiveWhatsAppProvider } from '../lib/whatsapp';
 import { formatClientMessageTemplate } from '../lib/messageTemplates';
-import { MessageCircle, AlertCircle, Clock, History, Settings, X, Play, MessageSquare, Calendar, CheckCircle, XCircle, DollarSign, RefreshCw, Bell } from 'lucide-react';
+import { 
+  MessageCircle, AlertCircle, Clock, History, Settings, X, Play, MessageSquare, 
+  Calendar, CheckCircle, XCircle, DollarSign, RefreshCw, Bell, QrCode, Copy, 
+  Check, Send, FileText, Share2 
+} from 'lucide-react';
 
 interface ClientBilling {
   id: string;
@@ -32,10 +36,20 @@ export default function Billing() {
   const [loadingPayments, setLoadingPayments] = useState(false);
   const [activeTab, setActiveTab] = useState<'all' | 'delayed' | 'today' | 'upcoming'>('all');
 
-  // Payment Settings
+  // Payment Settings & Receipt States
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
   const [clientToPay, setClientToPay] = useState<any>(null);
   const [isSubmittingPayment, setIsSubmittingPayment] = useState(false);
+  const [sendReceiptOnConfirm, setSendReceiptOnConfirm] = useState(true);
+  const [customReceiptMessage, setCustomReceiptMessage] = useState('');
+  
+  // Historical payment receipt modal
+  const [historyReceiptModalOpen, setHistoryReceiptModalOpen] = useState(false);
+  const [selectedPaymentForReceipt, setSelectedPaymentForReceipt] = useState<any>(null);
+  const [isSendingHistoryReceipt, setIsSendingHistoryReceipt] = useState(false);
+  const [pixCopiedFeedback, setPixCopiedFeedback] = useState(false);
+  const [receiptToast, setReceiptToast] = useState<{ text: string; isError?: boolean } | null>(null);
+
   const [fetchTrigger, setRefreshTrigger] = useState(0);
 
   // WhatsApp Settings State
@@ -52,6 +66,7 @@ export default function Billing() {
       return {};
     }
   });
+
   const [waSettings, setWaSettings] = useState({
     companyName: '',
     reminderDays: 3,
@@ -59,6 +74,11 @@ export default function Billing() {
     delayedMessage: 'Olá {nome}, tudo bem? Consta em nosso sistema que a sua mensalidade do dia {vencimento} no valor de R$ {valor} está pendente. Poderia verificá-la, por favor?',
     reportMessage1: 'Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}',
     reportMessage2: 'Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}',
+    receiptMessage: 'Olá {nome}! Confirmamos o recebimento da sua mensalidade referente a {mes} no valor de R$ {valor}. Muito obrigado pela confiança e pontualidade! 💦✨\n\n*Comprovante de Quitação*\n• Cliente: {nome}\n• Valor Pago: R$ {valor}\n• Data: {data_pagamento}\n• Próximo Vencimento: {proximo_vencimento}',
+    pixKey: '',
+    pixReceiverName: '',
+    pixKeyType: 'phone',
+    autoAppendPix: true,
     autoScheduleTime: '09:00',
     provider: 'astracalls',
     useAstracalls: true,
@@ -123,6 +143,11 @@ export default function Billing() {
         delayedMessage: s.delayedMessage || 'Olá {nome}, tudo bem? Consta em nosso sistema que a sua mensalidade do dia {vencimento} no valor de R$ {valor} está pendente. Poderia verificá-la, por favor?',
         reportMessage1: (s.reportMessage1 || 'Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}').replace(/https:\/\/www\.rspiscinas\.app\.br\/client-panel/gi, 'www.rspiscinas.app.br/client-panel'),
         reportMessage2: (s.reportMessage2 || 'Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}').replace(/https:\/\/www\.rspiscinas\.app\.br\/client-panel/gi, 'www.rspiscinas.app.br/client-panel'),
+        receiptMessage: s.receiptMessage || 'Olá {nome}! Confirmamos o recebimento da sua mensalidade referente a {mes} no valor de R$ {valor}. Muito obrigado pela confiança e pontualidade! 💦✨\n\n*Comprovante de Quitação*\n• Cliente: {nome}\n• Valor Pago: R$ {valor}\n• Data: {data_pagamento}\n• Próximo Vencimento: {proximo_vencimento}',
+        pixKey: s.pixKey || '',
+        pixReceiverName: s.pixReceiverName || '',
+        pixKeyType: s.pixKeyType || 'phone',
+        autoAppendPix: s.autoAppendPix !== false,
         autoScheduleTime: s.autoScheduleTime || '09:00',
         provider: isAstra ? 'astracalls' : (isEvo ? 'evolution' : (isMeta ? 'meta' : 'web')),
         useAstracalls: isAstra,
@@ -159,26 +184,211 @@ export default function Billing() {
           ...waSettings
         };
       }
-      // Give feedback that it saved
       setSettingsModalOpen(false);
-    } catch (err) {
+      setReceiptToast({ text: 'Configurações e Chave PIX salvas com sucesso!' });
+      setTimeout(() => setReceiptToast(null), 4000);
+    } catch (err: any) {
       console.error(err);
+      alert('Erro ao salvar configurações: ' + (err.message || ''));
     } finally {
       setSavingSettings(false);
     }
   };
 
   const processMessageTemplate = (template: string, client: ClientBilling) => {
+    const currentPixKey = waSettings.pixKey || (userProfile?.whatsappSettings as any)?.pixKey || '';
+    const currentPixReceiver = waSettings.pixReceiverName || (userProfile?.whatsappSettings as any)?.pixReceiverName || '';
+
     let message = formatClientMessageTemplate(template, client, {
       companyName: waSettings?.companyName || userProfile?.whatsappSettings?.companyName || 'GestãoPro',
-      portalUrl: 'www.rspiscinas.app.br/client-panel'
+      portalUrl: 'www.rspiscinas.app.br/client-panel',
+      pixKey: currentPixKey,
+      pixReceiverName: currentPixReceiver
     });
 
     if (client.extraAmount && client.extraAmount > 0) {
       message += `\n\n*Acréscimo (já incluso no valor total):* R$ ${client.extraAmount.toFixed(2).replace('.', ',')}\n*Motivo:* ${client.extraReason || 'Não especificado'}`;
     }
 
+    // Se o envio automático de PIX estiver ativado e a mensagem ainda não tiver a chave explícita
+    if (waSettings.autoAppendPix && currentPixKey && !message.includes(currentPixKey)) {
+      message += `\n\n*Chave PIX para pagamento:*\n${currentPixKey}${currentPixReceiver ? `\n*Titular:* ${currentPixReceiver}` : ''}`;
+    }
+
     return message;
+  };
+
+  // Helper de envio do recibo digital via WhatsApp
+  const sendReceiptToClient = async (
+    client: { id: string; name: string; phone: string },
+    paymentData: { amount: number; paymentDate: string; refMonth: number; refYear: number; nextDueDate?: string },
+    customMessage?: string
+  ): Promise<boolean> => {
+    let currentSettings = waSettings;
+    if (userProfile?.uid) {
+      const adminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
+      const { data } = await supabase.from('users').select('whatsapp_settings').eq('id', adminId).single();
+      if (data && data.whatsapp_settings) {
+        currentSettings = { ...waSettings, ...data.whatsapp_settings };
+      }
+    }
+
+    if (!client.phone) {
+      alert(`O cliente ${client.name} não possui telefone cadastrado.`);
+      return false;
+    }
+
+    const cleanPhone = client.phone.replace(/\D/g, '');
+    const templateToUse = customMessage || currentSettings.receiptMessage || 
+      'Olá {nome}! Confirmamos o recebimento da sua mensalidade referente a {mes} no valor de R$ {valor}. Muito obrigado pela confiança e pontualidade! 💦✨\n\n*Comprovante de Quitação*\n• Cliente: {nome}\n• Valor Pago: R$ {valor}\n• Data: {data_pagamento}\n• Próximo Vencimento: {proximo_vencimento}';
+
+    const monthNames = [
+      'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+      'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+    ];
+    const monthFormatted = paymentData.refMonth >= 1 && paymentData.refMonth <= 12
+      ? `${monthNames[paymentData.refMonth - 1]}/${paymentData.refYear}`
+      : `${paymentData.refMonth}/${paymentData.refYear}`;
+
+    const formattedNextDue = paymentData.nextDueDate 
+      ? (paymentData.nextDueDate.includes('-') 
+          ? `${paymentData.nextDueDate.split('-')[2]}/${paymentData.nextDueDate.split('-')[1]}/${paymentData.nextDueDate.split('-')[0]}` 
+          : paymentData.nextDueDate)
+      : '';
+
+    const message = formatClientMessageTemplate(templateToUse, {
+      name: client.name,
+      phone: client.phone,
+      monthlyFee: paymentData.amount,
+      monthly_price: paymentData.amount,
+      extraAmount: 0,
+      paymentDate: paymentData.paymentDate,
+      referenceMonth: monthFormatted,
+      nextDueDate: formattedNextDue,
+      pixKey: currentSettings.pixKey,
+      pixReceiverName: currentSettings.pixReceiverName
+    }, {
+      companyName: currentSettings?.companyName || userProfile?.whatsappSettings?.companyName || 'GestãoPro',
+      portalUrl: 'www.rspiscinas.app.br/client-panel',
+      referenceMonth: monthFormatted,
+      paymentDate: paymentData.paymentDate,
+      nextDueDate: formattedNextDue,
+      pixKey: currentSettings.pixKey,
+      pixReceiverName: currentSettings.pixReceiverName
+    });
+
+    const receiptMsgId = `receipt_${client.id}_${paymentData.refYear}_${paymentData.refMonth}_${Date.now()}`;
+    const effectiveProvider = getEffectiveWhatsAppProvider(currentSettings);
+
+    if (effectiveProvider === 'manual') {
+      openWhatsApp(`55${cleanPhone}`, message);
+      setReceiptToast({ text: `WhatsApp aberto com o recibo para ${client.name}.` });
+      return true;
+    }
+
+    if (effectiveProvider === 'astracalls') {
+      try {
+        await sendAstraCallsMessage(client.phone, message, currentSettings, receiptMsgId);
+        setReceiptToast({ text: `Recibo de pagamento enviado com sucesso para ${client.name} via AstraCalls!` });
+        return true;
+      } catch (err: any) {
+        console.error(err);
+        if (confirm(`Falha no AstraCalls (${err.message}).\n\nDeseja abrir o WhatsApp no seu aparelho para enviar o recibo manualmente?`)) {
+          openWhatsApp(`55${cleanPhone}`, message);
+        }
+        return false;
+      }
+    } else if (effectiveProvider === 'meta') {
+      try {
+        await sendMetaMessage(client.phone, message, currentSettings, receiptMsgId);
+        setReceiptToast({ text: `Recibo de pagamento enviado com sucesso para ${client.name} via WhatsApp Meta!` });
+        return true;
+      } catch (err: any) {
+        console.error(err);
+        if (confirm(`Falha na API Meta (${err.message}).\n\nDeseja abrir o WhatsApp no seu aparelho para enviar o recibo manualmente?`)) {
+          openWhatsApp(`55${cleanPhone}`, message);
+        }
+        return false;
+      }
+    } else if (effectiveProvider === 'evolution') {
+      try {
+        await sendEvolutionMessage(client.phone, message, currentSettings, receiptMsgId);
+        setReceiptToast({ text: `Recibo de pagamento enviado com sucesso para ${client.name} via Evolution API!` });
+        return true;
+      } catch (err: any) {
+        console.error(err);
+        if (confirm(`Falha na Evolution API (${err.message}).\n\nDeseja abrir o WhatsApp no seu aparelho para enviar o recibo manualmente?`)) {
+          openWhatsApp(`55${cleanPhone}`, message);
+        }
+        return false;
+      }
+    } else {
+      openWhatsApp(`55${cleanPhone}`, message);
+      setReceiptToast({ text: `WhatsApp aberto com o recibo para ${client.name}.` });
+      return true;
+    }
+  };
+
+  // Prévia dinâmica do recibo para o modal de pagamento
+  const getReceiptPreviewForCurrentClient = () => {
+    if (!clientToPay) return '';
+    const totalAmountPaid = Number(clientToPay.monthlyFee || 0) + Number(clientToPay.extraAmount || 0);
+    const currentDate = new Date();
+    const curMonth = currentDate.getMonth() + 1;
+    const curYear = currentDate.getFullYear();
+    const monthNames = [
+      'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+      'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+    ];
+    const monthFormatted = `${monthNames[curMonth - 1]}/${curYear}`;
+    const todayFormatted = currentDate.toLocaleDateString('pt-BR');
+    
+    let nextDueDateFormatted = '';
+    if (clientToPay.dueDate) {
+      try {
+        const baseDay = clientToPay.rawClient?.base_due_day || parseInt(clientToPay.dueDate.split('-')[2], 10) || 1;
+        const nd = calculateNextDueDateHelper(clientToPay.dueDate, baseDay);
+        const [ny, nm, nday] = nd.split('-');
+        nextDueDateFormatted = `${nday}/${nm}/${ny}`;
+      } catch(e) {}
+    }
+
+    const templateToUse = customReceiptMessage || waSettings.receiptMessage || 
+      'Olá {nome}! Confirmamos o recebimento da sua mensalidade referente a {mes} no valor de R$ {valor}. Muito obrigado pela confiança e pontualidade! 💦✨\n\n*Comprovante de Quitação*\n• Cliente: {nome}\n• Valor Pago: R$ {valor}\n• Data: {data_pagamento}\n• Próximo Vencimento: {proximo_vencimento}';
+
+    return formatClientMessageTemplate(templateToUse, {
+      name: clientToPay.name,
+      phone: clientToPay.phone,
+      monthlyFee: totalAmountPaid,
+      monthly_price: totalAmountPaid,
+      paymentDate: todayFormatted,
+      referenceMonth: monthFormatted,
+      nextDueDate: nextDueDateFormatted,
+      pixKey: waSettings.pixKey,
+      pixReceiverName: waSettings.pixReceiverName
+    }, {
+      companyName: waSettings.companyName || userProfile?.whatsappSettings?.companyName || 'GestãoPro',
+      portalUrl: 'www.rspiscinas.app.br/client-panel',
+      referenceMonth: monthFormatted,
+      paymentDate: todayFormatted,
+      nextDueDate: nextDueDateFormatted,
+      pixKey: waSettings.pixKey,
+      pixReceiverName: waSettings.pixReceiverName
+    });
+  };
+
+  // Abrir modal de recibo para pagamento do histórico
+  const handleOpenReceiptForHistory = (payment: any) => {
+    setSelectedPaymentForReceipt(payment);
+    setHistoryReceiptModalOpen(true);
+  };
+
+  // Copiar chave PIX para a área de transferência com feedback
+  const handleCopyPixKey = () => {
+    if (!waSettings.pixKey) return;
+    navigator.clipboard.writeText(waSettings.pixKey);
+    setPixCopiedFeedback(true);
+    setTimeout(() => setPixCopiedFeedback(false), 2500);
   };
 
   
@@ -603,6 +813,8 @@ export default function Billing() {
 
   const handlePaymentClick = (client: ClientBilling) => {
     setClientToPay(client);
+    setSendReceiptOnConfirm(true);
+    setCustomReceiptMessage('');
     setPaymentModalOpen(true);
   };
 
@@ -626,6 +838,25 @@ export default function Billing() {
       const extraAmt = Number(clientToPay.extraAmount || 0);
       const extraRsn = clientToPay.extraReason || null;
       const totalAmountPaid = Number(clientToPay.monthlyFee || 0) + extraAmt;
+      const todayFormatted = new Date().toLocaleDateString('pt-BR');
+
+      let nextDueDateStr = '';
+      if (data.due_date) {
+        try {
+          const baseDay = data.base_due_day || parseInt(data.due_date.split('-')[2], 10) || 1;
+          const nextDueDate = calculateNextDueDateHelper(data.due_date, baseDay);
+          nextDueDateStr = nextDueDate;
+          
+          await supabase.from('clients').update({
+            due_date: nextDueDate,
+            base_due_day: baseDay,
+            extra_amount: 0,
+            extra_reason: ''
+          }).eq('id', data.id);
+        } catch (err) {
+          console.error("Erro ao atualizar data de vencimento:", err);
+        }
+      }
 
       const currentAdminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
       const { error: insertError } = await supabase.from('payments').insert({
@@ -647,28 +878,28 @@ export default function Billing() {
       
       if(insertError) throw new Error(insertError.message);
 
-      if (data.due_date) {
-        try {
-          const baseDay = data.base_due_day || parseInt(data.due_date.split('-')[2], 10) || 1;
-          const nextDueDate = calculateNextDueDateHelper(data.due_date, baseDay);
-          
-          await supabase.from('clients').update({
-            due_date: nextDueDate,
-            base_due_day: baseDay,
-            extra_amount: 0,
-            extra_reason: ''
-          }).eq('id', data.id);
-        } catch (err) {
-          console.error("Erro ao atualizar data de vencimento:", err);
-        }
+      // Dispara o recibo/comprovante digital se habilitado
+      if (sendReceiptOnConfirm && clientToPay.phone) {
+        await sendReceiptToClient(
+          { id: data.id, name: clientToPay.name, phone: clientToPay.phone },
+          {
+            amount: totalAmountPaid,
+            paymentDate: todayFormatted,
+            refMonth,
+            refYear,
+            nextDueDate: nextDueDateStr
+          },
+          customReceiptMessage || undefined
+        );
       }
 
       setPaymentModalOpen(false);
       setClientToPay(null);
+      setCustomReceiptMessage('');
       setRefreshTrigger(prev => prev + 1); // trigger refresh
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      alert("Erro ao registrar pagamento.");
+      alert("Erro ao registrar pagamento: " + (err.message || ''));
     } finally {
       setIsSubmittingPayment(false);
     }
@@ -713,6 +944,88 @@ export default function Billing() {
           )}
         </div>
       </div>
+
+      {/* Toast Feedback */}
+      {receiptToast && (
+        <div className={`mb-6 p-4 rounded-xl border flex items-center justify-between shadow-md transition-all ${
+          receiptToast.isError 
+            ? 'bg-red-50 border-red-200 text-red-800' 
+            : 'bg-emerald-50 border-emerald-300 text-emerald-900'
+        }`}>
+          <div className="flex items-center gap-2.5 text-sm font-semibold">
+            {receiptToast.isError ? (
+              <AlertCircle size={20} className="text-red-600 shrink-0" />
+            ) : (
+              <CheckCircle size={20} className="text-emerald-600 shrink-0" />
+            )}
+            <span>{receiptToast.text}</span>
+          </div>
+          <button
+            onClick={() => setReceiptToast(null)}
+            className="text-gray-400 hover:text-gray-600 p-1"
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
+
+      {/* Banner / Card de Chave PIX Ativa */}
+      {waSettings.pixKey && (
+        <div className="mb-6 bg-gradient-to-r from-emerald-950 via-slate-900 to-emerald-950 border border-emerald-500/40 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-center justify-between shadow-md text-white">
+          <div className="flex items-center gap-3.5 mb-3 sm:mb-0">
+            <div className="p-2.5 bg-emerald-500/20 text-emerald-400 rounded-xl border border-emerald-500/30 shrink-0">
+              <QrCode size={24} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs uppercase font-bold tracking-wider text-emerald-400">
+                  Chave PIX da Empresa
+                </span>
+                {waSettings.autoAppendPix && (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-semibold border border-emerald-500/30">
+                    Auto-anexar ativo
+                  </span>
+                )}
+              </div>
+              <p className="text-sm sm:text-base font-mono font-bold text-white mt-0.5 select-all">
+                {waSettings.pixKey}
+                {waSettings.pixReceiverName && (
+                  <span className="text-xs font-sans font-normal text-emerald-200/80 ml-2">
+                    · Titular: {waSettings.pixReceiverName}
+                  </span>
+                )}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <button
+              onClick={handleCopyPixKey}
+              className="w-full sm:w-auto px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all shadow-sm flex items-center justify-center gap-1.5 cursor-pointer"
+            >
+              {pixCopiedFeedback ? (
+                <>
+                  <Check size={14} className="text-emerald-200" />
+                  <span>Chave Copiada!</span>
+                </>
+              ) : (
+                <>
+                  <Copy size={14} />
+                  <span>Copiar Chave PIX</span>
+                </>
+              )}
+            </button>
+            {isAdmin && (
+              <button
+                onClick={() => setSettingsModalOpen(true)}
+                className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/30 rounded-xl text-xs font-semibold transition-all cursor-pointer whitespace-nowrap"
+                title="Configurar Chave PIX"
+              >
+                Configurar
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {pushStatusMessage && (
         <div className={`mb-6 p-4 rounded-xl border flex items-center justify-between transition-all ${pushStatusMessage.isError ? 'bg-red-50 border-red-200 text-red-800' : 'bg-emerald-50 border-emerald-200 text-emerald-800'}`}>
@@ -919,6 +1232,7 @@ export default function Billing() {
                         <th className="p-4 font-semibold text-gray-600">Data do Pagamento</th>
                         <th className="p-4 font-semibold text-gray-600">Referência (Mês/Ano)</th>
                         <th className="p-4 font-semibold text-gray-600">Valor</th>
+                        <th className="p-4 font-semibold text-gray-600 text-right">Comprovante</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -945,6 +1259,16 @@ export default function Billing() {
                           </td>
                           <td className="p-4 text-green-600 font-semibold">
                             R$ {payment.amount?.toFixed(2)}
+                          </td>
+                          <td className="p-4 text-right">
+                            <button
+                              onClick={() => handleOpenReceiptForHistory(payment)}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 border border-emerald-200 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
+                              title="Enviar Recibo / Comprovante por WhatsApp"
+                            >
+                              <MessageCircle size={14} className="text-emerald-600" />
+                              <span>Recibo WhatsApp</span>
+                            </button>
                           </td>
                         </tr>
                         );
@@ -995,10 +1319,66 @@ export default function Billing() {
                 />
               </div>
 
+              {/* Seção de Chave PIX */}
+              <div className="bg-emerald-50/70 border border-emerald-200 rounded-xl p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="font-bold text-emerald-950 flex items-center gap-2 text-sm">
+                    <QrCode size={18} className="text-emerald-700" />
+                    Chave PIX da Empresa (Copia e Cola Automático)
+                  </h4>
+                  <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full border border-emerald-200">
+                    Cobrança Fácil
+                  </span>
+                </div>
+                <p className="text-xs text-emerald-800 leading-relaxed">
+                  A chave cadastrada abaixo será enviada aos clientes nas mensagens de cobrança e lembretes, agilizando o pagamento sem que precisem solicitar a chave separadamente.
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1">
+                      Chave PIX (Telefone, CNPJ, CPF, E-mail ou Aleatória)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Ex: 67992499469 ou financeiro@rspiscinas.com.br"
+                      value={waSettings.pixKey}
+                      onChange={e => setWaSettings({...waSettings, pixKey: e.target.value})}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-emerald-500 focus:border-emerald-500 outline-none text-sm bg-white font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1">
+                      Nome do Titular / Beneficiário (Opcional)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Ex: RS Piscinas Ltda"
+                      value={waSettings.pixReceiverName}
+                      onChange={e => setWaSettings({...waSettings, pixReceiverName: e.target.value})}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-emerald-500 focus:border-emerald-500 outline-none text-sm bg-white"
+                    />
+                  </div>
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer pt-1">
+                  <input
+                    type="checkbox"
+                    checked={waSettings.autoAppendPix}
+                    onChange={e => setWaSettings({...waSettings, autoAppendPix: e.target.checked})}
+                    className="rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
+                  />
+                  <span className="text-xs font-semibold text-gray-700">
+                    Anexar automaticamente a chave PIX no final das mensagens de cobrança e lembretes
+                  </span>
+                </label>
+                <p className="text-[11px] text-gray-500">
+                  💡 Dica: Você também pode usar a tag <code className="bg-white px-1.5 py-0.5 rounded border border-emerald-200 text-emerald-900 font-bold">{'{pix}'}</code> em qualquer ponto dos seus textos de mensagem.
+                </p>
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Mensagem - Pré venciamento <br/>
-                  <span className="text-xs font-normal text-gray-500">Variáveis: {'{nome}'}, {'{valor}'}, {'{vencimento}'}</span>
+                  Mensagem - Pré vencimento <br/>
+                  <span className="text-xs font-normal text-gray-500">Variáveis: {'{nome}'}, {'{valor}'}, {'{vencimento}'}, {'{pix}'}</span>
                 </label>
                 <textarea
                   rows={3}
@@ -1011,12 +1391,32 @@ export default function Billing() {
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Mensagem - Atrasados <br/>
-                  <span className="text-xs font-normal text-gray-500">Variáveis: {'{nome}'}, {'{valor}'}, {'{vencimento}'}</span>
+                  <span className="text-xs font-normal text-gray-500">Variáveis: {'{nome}'}, {'{valor}'}, {'{vencimento}'}, {'{pix}'}</span>
                 </label>
                 <textarea
                   rows={3}
                   value={waSettings.delayedMessage}
                   onChange={e => setWaSettings({...waSettings, delayedMessage: e.target.value})}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="flex justify-between items-center mb-1">
+                  <span className="block text-sm font-medium text-gray-700">
+                    Mensagem de Recibo / Confirmação de Quitação
+                  </span>
+                  <span className="text-xs font-normal text-gray-500">
+                    Variáveis: {'{nome}'}, {'{valor}'}, {'{mes}'}, {'{data_pagamento}'}, {'{proximo_vencimento}'}
+                  </span>
+                </label>
+                <p className="text-xs text-gray-500 mb-2">
+                  Enviada automaticamente ao confirmar o pagamento de uma mensalidade (ou sob demanda no histórico).
+                </p>
+                <textarea
+                  rows={4}
+                  value={waSettings.receiptMessage}
+                  onChange={e => setWaSettings({...waSettings, receiptMessage: e.target.value})}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none text-sm"
                 />
               </div>
@@ -1250,23 +1650,92 @@ export default function Billing() {
         </div>
       )}
 
-      {/* Payment Modal */}
+      {/* Payment Modal com Emissor de Recibo Digital */}
       {paymentModalOpen && (
-        <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl p-6 max-w-sm w-full">
-            <h3 className="text-lg font-bold text-gray-900 mb-2">Registrar Pagamento</h3>
-            <p className="text-gray-600 mb-6">
-              Confirmar pagamento de R$ {((clientToPay?.monthlyFee || 0) + (clientToPay?.extraAmount || 0)).toFixed(2)} para {clientToPay?.name} neste mês?
-              {clientToPay?.extraAmount && clientToPay.extraAmount > 0 ? (
-                <span className="block mt-2 text-sm text-pink-600 font-medium">
-                  Inclui R$ {clientToPay.extraAmount.toFixed(2)} de extra ({clientToPay.extraReason || 'Sem motivo'}).
-                </span>
-              ) : null}
-            </p>
-            <div className="flex justify-end space-x-3">
+        <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-lg w-full shadow-2xl border border-gray-100 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 bg-emerald-100 text-emerald-800 rounded-xl">
+                  <DollarSign size={22} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">Registrar Pagamento</h3>
+                  <p className="text-xs text-gray-500">Confirmação de baixa e emissão de recibo digital</p>
+                </div>
+              </div>
               <button
                 onClick={() => setPaymentModalOpen(false)}
-                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Resumo Financeiro da Mensalidade */}
+            <div className="my-4 p-4 bg-gray-50 rounded-xl border border-gray-200/80 space-y-2.5">
+              <div className="flex justify-between items-start">
+                <div>
+                  <span className="text-xs text-gray-500 block font-medium">Cliente</span>
+                  <span className="font-bold text-gray-900 text-base">{clientToPay?.name}</span>
+                  <span className="text-xs text-gray-500 block mt-0.5">{clientToPay?.phone || 'Sem telefone'}</span>
+                </div>
+                <div className="text-right">
+                  <span className="text-xs text-gray-500 block font-medium">Valor Total</span>
+                  <span className="font-black text-emerald-600 text-2xl tracking-tight">
+                    R$ {((clientToPay?.monthlyFee || 0) + (clientToPay?.extraAmount || 0)).toFixed(2)}
+                  </span>
+                </div>
+              </div>
+
+              {clientToPay?.extraAmount && clientToPay.extraAmount > 0 ? (
+                <div className="text-xs text-pink-700 bg-pink-50 p-2.5 rounded-lg border border-pink-200">
+                  Mensalidade: R$ {(clientToPay?.monthlyFee || 0).toFixed(2)} + Acréscimo Extra: R$ {clientToPay.extraAmount.toFixed(2)} ({clientToPay.extraReason || 'Não informado'})
+                </div>
+              ) : null}
+
+              <div className="flex items-center justify-between pt-2.5 border-t border-gray-200/70 text-xs text-gray-600">
+                <span>Data do Pagamento: <strong className="text-gray-800">{new Date().toLocaleDateString('pt-BR')}</strong></span>
+                <span>Vencimento Original: <strong className="text-gray-800">{clientToPay?.dueDate ? new Date(clientToPay.dueDate + 'T12:00:00').toLocaleDateString('pt-BR') : 'N/A'}</strong></span>
+              </div>
+            </div>
+
+            {/* Caixa de Opção: Enviar Recibo de Quitação no WhatsApp */}
+            <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/60 space-y-3">
+              <label className="flex items-start gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={sendReceiptOnConfirm}
+                  onChange={e => setSendReceiptOnConfirm(e.target.checked)}
+                  className="mt-1 rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
+                />
+                <div>
+                  <span className="font-bold text-sm text-emerald-950 flex items-center gap-1.5">
+                    <MessageCircle size={16} className="text-emerald-700" />
+                    Enviar Comprovante / Recibo no WhatsApp
+                  </span>
+                  <span className="text-xs text-emerald-800 block mt-0.5 leading-relaxed">
+                    Dispara automaticamente a mensagem profissional de confirmação e agradecimento com os dados da quitação.
+                  </span>
+                </div>
+              </label>
+
+              {sendReceiptOnConfirm && (
+                <div className="pt-2 border-t border-emerald-200/80">
+                  <span className="text-xs font-semibold text-emerald-900 block mb-1">
+                    Prévia do Recibo a ser enviado:
+                  </span>
+                  <div className="p-3 bg-white rounded-lg border border-emerald-300 text-xs text-gray-800 font-mono whitespace-pre-wrap leading-relaxed max-h-36 overflow-y-auto shadow-inner">
+                    {getReceiptPreviewForCurrentClient()}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-6 flex justify-end space-x-3">
+              <button
+                onClick={() => setPaymentModalOpen(false)}
+                className="px-4 py-2.5 text-gray-600 hover:bg-gray-100 rounded-xl transition-colors font-semibold text-sm cursor-pointer"
                 disabled={isSubmittingPayment}
               >
                 Cancelar
@@ -1274,9 +1743,179 @@ export default function Billing() {
               <button
                 onClick={confirmPayment}
                 disabled={isSubmittingPayment}
-                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50"
+                className={`px-5 py-2.5 rounded-xl text-white font-bold transition-all shadow-sm flex items-center gap-2 cursor-pointer text-sm ${
+                  sendReceiptOnConfirm 
+                    ? 'bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700' 
+                    : 'bg-green-600 hover:bg-green-700'
+                } disabled:opacity-50`}
               >
-                {isSubmittingPayment ? 'Confirmando...' : 'Confirmar'}
+                {isSubmittingPayment ? (
+                  <>
+                    <RefreshCw size={16} className="animate-spin" />
+                    <span>Processando...</span>
+                  </>
+                ) : sendReceiptOnConfirm ? (
+                  <>
+                    <Send size={16} />
+                    <span>Confirmar & Enviar Recibo</span>
+                  </>
+                ) : (
+                  <>
+                    <Check size={16} />
+                    <span>Confirmar Pagamento</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Reenvio / Visualização de Recibo do Histórico */}
+      {historyReceiptModalOpen && selectedPaymentForReceipt && (
+        <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-lg w-full shadow-2xl border border-gray-100">
+            <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-emerald-100 text-emerald-800 rounded-xl">
+                  <FileText size={20} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">Comprovante de Quitação</h3>
+                  <p className="text-xs text-gray-500">Reenvio de recibo digital para o WhatsApp</p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setHistoryReceiptModalOpen(false);
+                  setSelectedPaymentForReceipt(null);
+                }}
+                className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="my-4">
+              <span className="text-xs font-semibold text-gray-700 block mb-1">
+                Conteúdo do Recibo:
+              </span>
+              <div className="p-3.5 bg-gray-50 rounded-xl border border-gray-200 text-xs text-gray-800 font-mono whitespace-pre-wrap leading-relaxed max-h-56 overflow-y-auto">
+                {(() => {
+                  const client = allClients.find(c => c.id === selectedPaymentForReceipt.client_id) || {
+                    id: selectedPaymentForReceipt.client_id,
+                    name: 'Cliente',
+                    phone: '',
+                    dueDate: ''
+                  };
+                  
+                  const amount = selectedPaymentForReceipt.amount || 0;
+                  const dateStr = selectedPaymentForReceipt.paid_date || selectedPaymentForReceipt.created_at;
+                  let payDateFormatted = new Date().toLocaleDateString('pt-BR');
+                  if (dateStr) {
+                    const d = dateStr.length === 10 ? new Date(`${dateStr}T12:00:00`) : new Date(dateStr);
+                    payDateFormatted = d.toLocaleDateString('pt-BR');
+                  }
+
+                  const refM = selectedPaymentForReceipt.ref_month || selectedPaymentForReceipt.month || 1;
+                  const refY = selectedPaymentForReceipt.ref_year || selectedPaymentForReceipt.year || new Date().getFullYear();
+                  const monthNames = [
+                    'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+                    'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+                  ];
+                  const monthFormatted = refM >= 1 && refM <= 12 ? `${monthNames[refM - 1]}/${refY}` : `${refM}/${refY}`;
+
+                  const templateToUse = waSettings.receiptMessage || 
+                    'Olá {nome}! Confirmamos o recebimento da sua mensalidade referente a {mes} no valor de R$ {valor}. Muito obrigado pela confiança e pontualidade! 💦✨\n\n*Comprovante de Quitação*\n• Cliente: {nome}\n• Valor Pago: R$ {valor}\n• Data: {data_pagamento}\n• Próximo Vencimento: {proximo_vencimento}';
+
+                  return formatClientMessageTemplate(templateToUse, {
+                    name: client.name,
+                    phone: client.phone,
+                    monthlyFee: amount,
+                    monthly_price: amount,
+                    paymentDate: payDateFormatted,
+                    referenceMonth: monthFormatted,
+                    nextDueDate: client.dueDate,
+                    pixKey: waSettings.pixKey,
+                    pixReceiverName: waSettings.pixReceiverName
+                  }, {
+                    companyName: waSettings.companyName || userProfile?.whatsappSettings?.companyName || 'GestãoPro',
+                    portalUrl: 'www.rspiscinas.app.br/client-panel',
+                    referenceMonth: monthFormatted,
+                    paymentDate: payDateFormatted,
+                    nextDueDate: client.dueDate,
+                    pixKey: waSettings.pixKey,
+                    pixReceiverName: waSettings.pixReceiverName
+                  });
+                })()}
+              </div>
+            </div>
+
+            <div className="flex justify-end space-x-3 pt-2 border-t border-gray-100">
+              <button
+                onClick={() => {
+                  setHistoryReceiptModalOpen(false);
+                  setSelectedPaymentForReceipt(null);
+                }}
+                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-xl transition-colors font-semibold text-sm cursor-pointer"
+                disabled={isSendingHistoryReceipt}
+              >
+                Fechar
+              </button>
+              <button
+                onClick={async () => {
+                  setIsSendingHistoryReceipt(true);
+                  try {
+                    const client = allClients.find(c => c.id === selectedPaymentForReceipt.client_id) || {
+                      id: selectedPaymentForReceipt.client_id,
+                      name: 'Cliente',
+                      phone: '',
+                      dueDate: ''
+                    };
+
+                    const dateStr = selectedPaymentForReceipt.paid_date || selectedPaymentForReceipt.created_at;
+                    let payDateFormatted = new Date().toLocaleDateString('pt-BR');
+                    if (dateStr) {
+                      const d = dateStr.length === 10 ? new Date(`${dateStr}T12:00:00`) : new Date(dateStr);
+                      payDateFormatted = d.toLocaleDateString('pt-BR');
+                    }
+
+                    const refM = selectedPaymentForReceipt.ref_month || selectedPaymentForReceipt.month || 1;
+                    const refY = selectedPaymentForReceipt.ref_year || selectedPaymentForReceipt.year || new Date().getFullYear();
+
+                    await sendReceiptToClient(
+                      client,
+                      {
+                        amount: selectedPaymentForReceipt.amount || 0,
+                        paymentDate: payDateFormatted,
+                        refMonth: refM,
+                        refYear: refY,
+                        nextDueDate: client.dueDate
+                      }
+                    );
+                    setHistoryReceiptModalOpen(false);
+                    setSelectedPaymentForReceipt(null);
+                  } catch (err: any) {
+                    console.error(err);
+                    alert('Erro ao enviar recibo: ' + (err.message || ''));
+                  } finally {
+                    setIsSendingHistoryReceipt(false);
+                  }
+                }}
+                disabled={isSendingHistoryReceipt}
+                className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-bold rounded-xl transition-all shadow-sm flex items-center gap-2 cursor-pointer text-sm disabled:opacity-50"
+              >
+                {isSendingHistoryReceipt ? (
+                  <>
+                    <RefreshCw size={16} className="animate-spin" />
+                    <span>Enviando Recibo...</span>
+                  </>
+                ) : (
+                  <>
+                    <Send size={16} />
+                    <span>Disparar Recibo no WhatsApp</span>
+                  </>
+                )}
               </button>
             </div>
           </div>

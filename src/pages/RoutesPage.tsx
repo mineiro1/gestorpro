@@ -4,8 +4,12 @@ import { MessageCircle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { jsPDF } from 'jspdf';
-import { Share2, FileText, Map, Camera, CheckCircle, MapPin, Image as ImageIcon, ArrowUp, ArrowDown, Save, ListOrdered, Search, RefreshCw, Phone } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { 
+  Share2, FileText, Map, Camera, CheckCircle, MapPin, Image as ImageIcon, 
+  ArrowUp, ArrowDown, Save, ListOrdered, Search, RefreshCw, Phone,
+  Clock, ShieldAlert, AlertTriangle, Key, Zap, ArrowRightLeft, Trash2, Edit2, Users, Check, X
+} from 'lucide-react';
 import { useCall } from '../contexts/CallContext';
 import { openMap, openRouteMap, openWaze } from '../lib/maps';
 import { openWhatsApp, sendEvolutionMessage, sendMetaMessage, sendAstraCallsMessage, getEffectiveWhatsAppProvider } from '../lib/whatsapp';
@@ -78,6 +82,24 @@ export default function RoutesPage() {
   const [highlightedClientId, setHighlightedClientId] = useState<string | null>(null);
 
   const [searchTerm, setSearchTerm] = useState('');
+
+  // Filtros Rápidos por Abas: [Todas] | [A Fazer] | [Concluídas]
+  const [routeFilterTab, setRouteFilterTab] = useState<'todas' | 'a_fazer' | 'concluidas'>('todas');
+
+  // Avisos Fixos e Segurança do Imóvel State
+  const [securityModalOpen, setSecurityModalOpen] = useState(false);
+  const [selectedClientForSecurity, setSelectedClientForSecurity] = useState<any>(null);
+  const [securityNoteInput, setSecurityNoteInput] = useState('');
+  const [savingSecurityNote, setSavingSecurityNote] = useState(false);
+  const [localSecurityNotes, setLocalSecurityNotes] = useState<Record<string, string>>({});
+
+  // Repasse de Rota de Emergência (Hand-off) State
+  const [handoffModalOpen, setHandoffModalOpen] = useState(false);
+  const [handoffTargetEmployee, setHandoffTargetEmployee] = useState('');
+  const [handoffSelectedClientIds, setHandoffSelectedClientIds] = useState<Set<string>>(new Set());
+  const [handoffReason, setHandoffReason] = useState('');
+  const [handoffType, setHandoffType] = useState<'today_only' | 'definitive'>('today_only');
+  const [isExecutingHandoff, setIsExecutingHandoff] = useState(false);
 
   // Anticipation state
   const [selectedForAnticipation, setSelectedForAnticipation] = useState<Set<string>>(new Set());
@@ -502,13 +524,183 @@ export default function RoutesPage() {
         }
       }
 
-      return { clients: mergedClients, completed: completedIds, chatStatusByClient, unreadMap };
-    }
-  });
+      // Mini Histórico da Última Visita no Card
+        const lastVisitByClient: Record<string, { dateFormatted: string; techName: string; summary: string }> = {};
+        if (clientIds.length > 0) {
+          try {
+            const { data: pastVisits } = await supabase
+              .from('visits')
+              .select('id, client_id, employee_id, date, created_at, status, notes, observation')
+              .in('client_id', clientIds)
+              .eq('status', 'finalizada')
+              .order('created_at', { ascending: false });
+
+            const techMap: Record<string, string> = {};
+            (employees || []).forEach((emp: any) => {
+              if (emp?.id && emp?.name) techMap[emp.id] = emp.name.split(' ')[0];
+            });
+            if (userProfile?.uid && userProfile?.name) {
+              techMap[userProfile.uid] = userProfile.name.split(' ')[0];
+            }
+
+            const missingTechIds = (pastVisits || [])
+              .map((v: any) => v.employee_id)
+              .filter((id: string) => id && !techMap[id]);
+
+            if (missingTechIds.length > 0) {
+              const { data: missingUsers } = await supabase
+                .from('users')
+                .select('id, name')
+                .in('id', Array.from(new Set(missingTechIds)));
+              (missingUsers || []).forEach((u: any) => {
+                if (u.id && u.name) techMap[u.id] = u.name.split(' ')[0];
+              });
+            }
+
+            (pastVisits || []).forEach((v: any) => {
+              if (!lastVisitByClient[v.client_id]) {
+                let dateFormatted = '';
+                const rawDate = v.date || v.created_at;
+                if (rawDate) {
+                  try {
+                    const parts = rawDate.split('T')[0].split('-');
+                    if (parts.length === 3) {
+                      dateFormatted = `${parts[2]}/${parts[1]}`;
+                    }
+                  } catch (e) {}
+                }
+
+                const fullText = (v.notes || '').trim();
+                const obsText = (v.observation || '').trim();
+                const summaryParts: string[] = [];
+
+                // 1. Tarefas realizadas (Checklist)
+                let tasks: string[] = [];
+                const tarefasSection = fullText.split(/tarefas\s*(?:realizadas)?:\s*/i)[1];
+                if (tarefasSection) {
+                  tasks = tarefasSection
+                    .split(/\n\s*\n/)[0]
+                    .split('\n')
+                    .map(l => l.replace(/^[-•*–—\s]+/, '').trim())
+                    .filter(Boolean);
+                } else {
+                  const servMatch = fullText.match(/servi[cç]os:\s*([^\n]+)/i);
+                  if (servMatch && servMatch[1]) {
+                    tasks = servMatch[1]
+                      .split(',')
+                      .map(s => s.replace(/^[-•*–—\s]+/, '').trim())
+                      .filter(Boolean);
+                  }
+                }
+
+                if (tasks.length > 0) {
+                  const cleanTasks = tasks.map(t => {
+                    let s = t
+                      .replace(/^A piscina foi /i, '')
+                      .replace(/^As paredes da piscina foram /i, 'Paredes ')
+                      .replace(/^O filtro da piscina foi /i, 'Filtro ')
+                      .replace(/^As bordas da piscina foram /i, 'Bordas ')
+                      .replace(/^A capa da piscina foi /i, 'Capa ')
+                      .replace(/^O motor ficou /i, 'Motor ')
+                      .replace(/^Cliente ausente.*$/i, 'Cliente ausente');
+                    return s.charAt(0).toUpperCase() + s.slice(1);
+                  });
+                  summaryParts.push(`Checklist: ${cleanTasks.join(', ')}`);
+                }
+
+                // 2. Produtos Utilizados
+                let productsList: string[] = [];
+                const prodSection = fullText.split(/produtos\s*(?:utilizados)?:\s*/i)[1];
+                if (prodSection) {
+                  productsList = prodSection
+                    .split(/\n\s*\n/)[0]
+                    .split('\n')
+                    .map(l => l.replace(/^[-•*–—\s]+/, '').trim())
+                    .filter(Boolean);
+                } else {
+                  const prodMatch = fullText.match(/produtos(?:\s+utilizados)?:\s*([^\n]+)/i);
+                  if (prodMatch && prodMatch[1] && !prodMatch[1].includes(':')) {
+                    productsList = prodMatch[1]
+                      .split(',')
+                      .map(s => s.replace(/^[-•*–—\s]+/, '').trim())
+                      .filter(Boolean);
+                  }
+                }
+
+                if (productsList.length > 0) {
+                  summaryParts.push(`Produtos: ${productsList.join(', ')}`);
+                }
+
+                // 3. Observações digitadas
+                let customObs = obsText;
+                if (!customObs) {
+                  const headerIndex = fullText.search(/(?:tarefas\s+realizadas|par[âa]metros\s+da\s+[áa]gua|produtos\s+utilizados)/i);
+                  if (headerIndex > 0) {
+                    customObs = fullText.substring(0, headerIndex).trim();
+                  } else if (headerIndex === -1 && fullText && !fullText.toLowerCase().includes('tarefas')) {
+                    customObs = fullText;
+                  }
+                }
+
+                if (customObs && !customObs.toLowerCase().startsWith('tarefas')) {
+                  summaryParts.push(`Obs: ${customObs.replace(/\n+/g, ' ')}`);
+                }
+
+                const summary = summaryParts.length > 0
+                  ? summaryParts.join(' • ')
+                  : (fullText.replace(/\n+/g, ' ') || 'Limpeza e manutenção realizadas');
+
+                lastVisitByClient[v.client_id] = {
+                  dateFormatted: dateFormatted || 'Anterior',
+                  techName: techMap[v.employee_id] || 'Técnico',
+                  summary
+                };
+              }
+            });
+          } catch (vErr) {
+            console.warn('[Mini Histórico] Erro ao buscar histórico de visitas:', vErr);
+          }
+        }
+
+        // Avisos Fixos e Segurança do Imóvel dos clientes
+        let securityNotesByClient: Record<string, string> = {};
+        try {
+          const { data: adminUserRow } = await supabase
+            .from('users')
+            .select('whatsapp_settings')
+            .eq('id', adminId)
+            .maybeSingle();
+
+          if (adminUserRow?.whatsapp_settings?.client_security_notes) {
+            securityNotesByClient = { ...adminUserRow.whatsapp_settings.client_security_notes };
+          }
+        } catch (secErr) {
+          console.warn('[Avisos Fixos] Erro ao buscar avisos de segurança:', secErr);
+        }
+
+        return { 
+          clients: mergedClients, 
+          completed: completedIds, 
+          chatStatusByClient, 
+          unreadMap,
+          lastVisitByClient,
+          securityNotesByClient
+        };
+      }
+    });
 
   const routeClients = queryData?.clients || [];
   const completedVisitsOnRouteDate = queryData?.completed || new Set();
   const chatStatusByClient = queryData?.chatStatusByClient || {};
+  const lastVisitByClient = queryData?.lastVisitByClient || {};
+  const securityNotesByClient = queryData?.securityNotesByClient || {};
+
+// Sincroniza avisos fixos locais
+useEffect(() => {
+  if (queryData?.securityNotesByClient) {
+    setLocalSecurityNotes(prev => ({ ...queryData.securityNotesByClient, ...prev }));
+  }
+}, [queryData?.securityNotesByClient]);
 
   // Sincroniza automaticamente as mensagens não lidas reais
   useEffect(() => {
@@ -1029,6 +1221,213 @@ export default function RoutesPage() {
     setActiveChatVisit({ id: visitId, status: visitStatus, isCompleted });
     setActiveChatClient(client);
     setChatModalOpen(true);
+  };
+
+  // Handlers para Avisos Fixos e Segurança do Imóvel
+  const handleOpenSecurityModal = (client: any, e?: React.MouseEvent) => {
+    if (e) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+    setSelectedClientForSecurity(client);
+    const existing = localSecurityNotes[client.id] || securityNotesByClient[client.id] || '';
+    setSecurityNoteInput(existing);
+    setSecurityModalOpen(true);
+  };
+
+  const handleSaveSecurityNote = async () => {
+    if (!selectedClientForSecurity || !userProfile) return;
+    setSavingSecurityNote(true);
+    try {
+      const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
+      const cid = selectedClientForSecurity.id;
+      const trimmed = securityNoteInput.trim();
+
+      // Atualização otimista imediata na UI
+      setLocalSecurityNotes(prev => {
+        const next = { ...prev };
+        if (trimmed) next[cid] = trimmed;
+        else delete next[cid];
+        return next;
+      });
+
+      // Busca whatsapp_settings atual para atualizar com o mapa de avisos de clientes
+      const { data: userRow } = await supabase
+        .from('users')
+        .select('whatsapp_settings')
+        .eq('id', adminId)
+        .single();
+
+      const currentSettings = userRow?.whatsapp_settings || {};
+      const existingNotes = currentSettings.client_security_notes || {};
+      const updatedNotes = { ...existingNotes };
+      if (trimmed) {
+        updatedNotes[cid] = trimmed;
+      } else {
+        delete updatedNotes[cid];
+      }
+
+      const updatedSettings = {
+        ...currentSettings,
+        client_security_notes: updatedNotes
+      };
+
+      const { error } = await supabase
+        .from('users')
+        .update({ whatsapp_settings: updatedSettings })
+        .eq('id', adminId);
+
+      if (error) throw error;
+
+      queryClient.invalidateQueries({ queryKey: ['routeData'] });
+      setSecurityModalOpen(false);
+      setSelectedClientForSecurity(null);
+    } catch (err: any) {
+      console.error('Erro ao salvar aviso fixo:', err);
+      alert('Erro ao salvar aviso de segurança: ' + (err.message || 'Erro inesperado'));
+    } finally {
+      setSavingSecurityNote(false);
+    }
+  };
+
+  const handleDeleteSecurityNote = async () => {
+    if (!selectedClientForSecurity || !userProfile) return;
+    if (!confirm('Deseja realmente remover o aviso fixo de segurança deste imóvel?')) return;
+    setSavingSecurityNote(true);
+    try {
+      const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
+      const cid = selectedClientForSecurity.id;
+
+      setLocalSecurityNotes(prev => {
+        const next = { ...prev };
+        delete next[cid];
+        return next;
+      });
+
+      const { data: userRow } = await supabase
+        .from('users')
+        .select('whatsapp_settings')
+        .eq('id', adminId)
+        .single();
+
+      const currentSettings = userRow?.whatsapp_settings || {};
+      const existingNotes = currentSettings.client_security_notes || {};
+      const updatedNotes = { ...existingNotes };
+      delete updatedNotes[cid];
+
+      const updatedSettings = {
+        ...currentSettings,
+        client_security_notes: updatedNotes
+      };
+
+      await supabase
+        .from('users')
+        .update({ whatsapp_settings: updatedSettings })
+        .eq('id', adminId);
+
+      queryClient.invalidateQueries({ queryKey: ['routeData'] });
+      setSecurityModalOpen(false);
+      setSelectedClientForSecurity(null);
+    } catch (err: any) {
+      console.error('Erro ao excluir aviso:', err);
+      alert('Erro ao excluir aviso.');
+    } finally {
+      setSavingSecurityNote(false);
+    }
+  };
+
+  // Handlers para Repasse de Rota de Emergência (Hand-off entre Técnicos)
+  const handleOpenHandoff = (preSelectedClientId?: string, e?: React.MouseEvent) => {
+    if (e) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+    if (routeClients.length === 0) {
+      alert('Não há clientes carregados nesta rota para repassar.');
+      return;
+    }
+
+    const availableTargets = employees.filter((emp: any) => emp.id !== selectedEmployee);
+    if (availableTargets.length === 0) {
+      alert('Não foram encontrados outros colaboradores/técnicos cadastrados no sistema para receber o repasse.');
+      return;
+    }
+
+    if (!handoffTargetEmployee || handoffTargetEmployee === selectedEmployee) {
+      setHandoffTargetEmployee(availableTargets[0].id);
+    }
+
+    if (preSelectedClientId) {
+      setHandoffSelectedClientIds(new Set([preSelectedClientId]));
+    } else {
+      // Pré-seleciona todos os clientes da rota que ainda estão pendentes
+      const pendingIds = routeClients
+        .filter((c: any) => !completedVisitsOnRouteDate.has(c.id))
+        .map((c: any) => c.id);
+      setHandoffSelectedClientIds(new Set(pendingIds.length > 0 ? pendingIds : [routeClients[0].id]));
+    }
+
+    setHandoffReason('');
+    setHandoffType('today_only');
+    setHandoffModalOpen(true);
+  };
+
+  const executeHandoff = async () => {
+    if (!handoffTargetEmployee) {
+      alert('Por favor, selecione o técnico que receberá os atendimentos.');
+      return;
+    }
+    if (handoffSelectedClientIds.size === 0) {
+      alert('Selecione pelo menos um cliente para efetuar o repasse.');
+      return;
+    }
+
+    const targetTech = employees.find((emp: any) => emp.id === handoffTargetEmployee);
+    const targetName = targetTech?.name || 'o técnico selecionado';
+    const isTodayOnly = handoffType === 'today_only';
+
+    const promptText = `Confirma o repasse de ${handoffSelectedClientIds.size} cliente(s) para ${targetName}?\n` +
+      (isTodayOnly 
+        ? 'Modalidade: Emergencial (Transferência de rota imediata)' 
+        : 'Modalidade: Definitiva (Troca permanente de carteira)');
+
+    if (!confirm(promptText)) return;
+
+    setIsExecutingHandoff(true);
+    try {
+      const selectedIds = Array.from(handoffSelectedClientIds);
+
+      for (const cid of selectedIds) {
+        const clientObj = routeClients.find((c: any) => c.id === cid);
+        if (clientObj?.isOneOffJob) {
+          await supabase
+            .from('oneoffjobs')
+            .update({
+              employee_id: handoffTargetEmployee,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', cid);
+        } else {
+          // Atualiza o colaborador responsável pelo cliente
+          await supabase
+            .from('clients')
+            .update({
+              employee_id: handoffTargetEmployee
+            })
+            .eq('id', cid);
+        }
+      }
+
+      alert(`✅ Repasse efetuado com sucesso!\n${selectedIds.length} cliente(s) foram transferidos para a rota de ${targetName}.`);
+      setHandoffModalOpen(false);
+      setHandoffSelectedClientIds(new Set());
+      queryClient.invalidateQueries({ queryKey: ['routeData'] });
+    } catch (err: any) {
+      console.error('Erro no repasse de rota:', err);
+      alert('Falha ao concluir repasse: ' + (err.message || 'Erro inesperado'));
+    } finally {
+      setIsExecutingHandoff(false);
+    }
   };
 
   const handleOpenReport = (client: any) => {
@@ -1695,13 +2094,6 @@ export default function RoutesPage() {
                   <RefreshCw size={14} className={isFetching ? "animate-spin text-blue-600" : ""} />
                 </button>
               </div>
-              {routeClients.length > 0 && (
-                <p className="text-sm text-gray-600 mt-1">
-                  Total: <span className="font-semibold">{routeClients.length}</span> |
-                  Concluídos: <span className="font-semibold text-green-600">{routeClients.filter(c => completedVisitsOnRouteDate.has(c.id)).length}</span> |
-                  Faltam: <span className="font-semibold text-red-600">{routeClients.length - routeClients.filter(c => completedVisitsOnRouteDate.has(c.id)).length}</span>
-                </p>
-              )}
             </div>
             <div className="flex flex-wrap gap-2">
               {(isAdmin || isManager) && routeClients.length > 0 && !isOrderingMode && (
@@ -1747,8 +2139,75 @@ export default function RoutesPage() {
                 <Share2 size={18} className="mr-2" />
                 Compartilhar PDF
               </button>
+              {routeClients.length > 0 && !isOrderingMode && (
+                <button
+                  type="button"
+                  onClick={() => handleOpenHandoff()}
+                  className="flex items-center bg-indigo-600 text-white px-3.5 py-2 rounded-lg hover:bg-indigo-700 transition-colors shadow-xs"
+                  title="Repassar clientes da rota em caso de imprevisto ou emergência"
+                >
+                  <ArrowRightLeft size={18} className="md:mr-2" />
+                  <span className="hidden md:inline font-medium">Repasse de Rota</span>
+                </button>
+              )}
             </div>
           </div>
+
+          {/* Filtros Rápidos por Abas: [Todas] | [A Fazer] | [Concluídas] */}
+          {!isOrderingMode && routeClients.length > 0 && (
+            <div className="flex items-center gap-1.5 p-1 bg-gray-100/90 rounded-xl mb-4 border border-gray-200/80 max-w-md shadow-xs">
+              <button
+                type="button"
+                onClick={() => setRouteFilterTab('todas')}
+                className={`flex-1 py-2 px-3 text-xs md:text-sm font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                  routeFilterTab === 'todas'
+                    ? 'bg-white text-gray-900 shadow-xs'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                <span>Todas</span>
+                <span className={`text-[11px] font-bold px-1.5 py-0.5 rounded-md ${
+                  routeFilterTab === 'todas' ? 'bg-gray-100 text-gray-800' : 'bg-gray-200/70 text-gray-600'
+                }`}>
+                  {routeClients.length}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setRouteFilterTab('a_fazer')}
+                className={`flex-1 py-2 px-3 text-xs md:text-sm font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                  routeFilterTab === 'a_fazer'
+                    ? 'bg-white text-amber-700 shadow-xs'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                <span>A Fazer</span>
+                <span className={`text-[11px] font-bold px-1.5 py-0.5 rounded-md ${
+                  routeFilterTab === 'a_fazer' ? 'bg-amber-100 text-amber-800' : 'bg-gray-200/70 text-gray-600'
+                }`}>
+                  {routeClients.length - routeClients.filter(c => completedVisitsOnRouteDate.has(c.id)).length}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setRouteFilterTab('concluidas')}
+                className={`flex-1 py-2 px-3 text-xs md:text-sm font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                  routeFilterTab === 'concluidas'
+                    ? 'bg-white text-emerald-700 shadow-xs'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                <span>Concluídas</span>
+                <span className={`text-[11px] font-bold px-1.5 py-0.5 rounded-md ${
+                  routeFilterTab === 'concluidas' ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-200/70 text-gray-600'
+                }`}>
+                  {routeClients.filter(c => completedVisitsOnRouteDate.has(c.id)).length}
+                </span>
+              </button>
+            </div>
+          )}
 
           {!isOrderingMode && routeClients.length > 0 && (
             <div className="mb-6 relative">
@@ -1823,216 +2282,313 @@ export default function RoutesPage() {
             </div>
           ) : (
             <div className="space-y-4">
-              {routeClients.map((client, index) => {
-                if (searchTerm && !client.name?.toLowerCase().includes(searchTerm.toLowerCase()) && !client.address?.toLowerCase().includes(searchTerm.toLowerCase())) {
-                  return null;
+              {(() => {
+                const filteredRouteClients = routeClients.filter((client) => {
+                  const isCompleted = completedVisitsOnRouteDate.has(client.id);
+                  if (routeFilterTab === 'a_fazer' && isCompleted) return false;
+                  if (routeFilterTab === 'concluidas' && !isCompleted) return false;
+                  if (searchTerm) {
+                    const q = searchTerm.toLowerCase();
+                    const matchName = client.name?.toLowerCase().includes(q);
+                    const matchAddress = client.address?.toLowerCase().includes(q);
+                    if (!matchName && !matchAddress) return false;
+                  }
+                  return true;
+                });
+
+                if (filteredRouteClients.length === 0) {
+                  return (
+                    <div className="text-center py-10 px-4 bg-gray-50 rounded-xl border border-dashed border-gray-200">
+                      <p className="text-gray-500 font-medium">
+                        {routeFilterTab === 'a_fazer'
+                          ? '🎉 Excelente trabalho! Todas as visitas desta rota foram concluídas.'
+                          : routeFilterTab === 'concluidas'
+                            ? 'Nenhuma visita concluída ainda nesta rota.'
+                            : 'Nenhum cliente encontrado para os termos da busca.'}
+                      </p>
+                    </div>
+                  );
                 }
 
-                const isCompleted = completedVisitsOnRouteDate.has(client.id);
-                const isFutureRoute = routeDate > getLocalISODate();
-                const isSelectedForAnticipation = selectedForAnticipation.has(client.id);
-                
-                return (
-                  <motion.div 
-                    key={client.id} 
-                    onClick={() => {
-                      setHighlightedClientId(client.id);
-                      if (isFutureRoute && !isCompleted && !isAdmin && !isManager) {
-                        alert('A data da rota ainda não chegou. Não é possível preencher a visita antecipadamente.');
-                        return;
-                      }
-                      handleOpenReport(client);
-                    }}
-                    layout
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ 
-                      opacity: 1, 
-                      y: 0,
-                      scale: isCompleted ? [0.98, 1.02, 1] : 1,
-                    }}
-                    transition={{ duration: 0.3 }}
-                    className={`border rounded-lg p-4 flex items-start transition-colors relative ${
-                      isCompleted 
-                        ? 'border-green-200 bg-green-50 cursor-default' 
-                        : isFutureRoute && !isAdmin && !isManager
-                          ? 'border-gray-200 bg-gray-50 opacity-80 cursor-not-allowed'
-                          : isSelectedForAnticipation
-                            ? 'border-orange-300 bg-orange-50'
-                            : 'border-gray-100 hover:border-primary/50 hover:bg-gray-50 cursor-pointer'
-                    }`}
-                  >
-                    {(isAdmin || isManager) && routeDate >= getLocalISODate() && !isCompleted && !isOrderingMode && (
-                      <div className="flex items-center justify-center mr-3 mt-1" onClick={e => e.stopPropagation()}>
-                        <input
-                          type="checkbox"
-                          checked={isSelectedForAnticipation}
-                          onChange={(e) => {
-                            const newSet = new Set(selectedForAnticipation);
-                            if (e.target.checked) newSet.add(client.id);
-                            else newSet.delete(client.id);
-                            setSelectedForAnticipation(newSet);
-                          }}
-                          className="w-5 h-5 rounded text-orange-500 focus:ring-orange-500 border-gray-300 cursor-pointer"
-                        />
-                      </div>
-                    )}
+                return filteredRouteClients.map((client, index) => {
+                  const isCompleted = completedVisitsOnRouteDate.has(client.id);
+                  const isFutureRoute = routeDate > getLocalISODate();
+                  const isSelectedForAnticipation = selectedForAnticipation.has(client.id);
+                  const secNotice = localSecurityNotes[client.id] || securityNotesByClient[client.id];
+                  const lastVisit = lastVisitByClient[client.id];
+                  
+                  return (
                     <motion.div 
+                      key={client.id} 
+                      onClick={() => {
+                        setHighlightedClientId(client.id);
+                        if (isFutureRoute && !isCompleted && !isAdmin && !isManager) {
+                          alert('A data da rota ainda não chegou. Não é possível preencher a visita antecipadamente.');
+                          return;
+                        }
+                        handleOpenReport(client);
+                      }}
                       layout
-                      className={`${isCompleted ? 'bg-green-500' : 'bg-primary/10 text-primary'} font-bold w-8 h-8 rounded-full flex items-center justify-center shrink-0 mr-4 text-white`}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ 
+                        opacity: 1, 
+                        y: 0,
+                        scale: isCompleted ? [0.98, 1.02, 1] : 1,
+                      }}
+                      transition={{ duration: 0.3 }}
+                      className={`border rounded-lg p-4 flex items-start transition-colors relative ${
+                        isCompleted 
+                          ? 'border-green-200 bg-green-50/70 cursor-default' 
+                          : isFutureRoute && !isAdmin && !isManager
+                            ? 'border-gray-200 bg-gray-50 opacity-80 cursor-not-allowed'
+                            : isSelectedForAnticipation
+                              ? 'border-orange-300 bg-orange-50'
+                              : 'border-gray-100 hover:border-primary/50 hover:bg-gray-50 cursor-pointer'
+                      }`}
                     >
-                      <AnimatePresence mode="wait">
-                        {isCompleted ? (
-                          <motion.div
-                            key="checkmark"
-                            initial={{ scale: 0, rotate: -180 }}
-                            animate={{ scale: 1, rotate: 0 }}
-                            transition={{ type: "spring", stiffness: 200, damping: 10 }}
-                          >
-                            <CheckCircle size={16} className="text-white" />
-                          </motion.div>
-                        ) : (
-                          <motion.span
-                            key="number"
-                            initial={{ scale: 0 }}
-                            animate={{ scale: 1 }}
-                            exit={{ scale: 0 }}
-                            className="text-primary"
-                          >
-                            {index + 1}
-                          </motion.span>
-                        )}
-                      </AnimatePresence>
-                    </motion.div>
-                    <div className="flex-1">
-                      <div className="flex justify-between items-start">
-                        <div className="flex items-center space-x-2">
-                          <h3 className={`font-semibold text-lg ${isCompleted ? 'text-green-800 line-through opacity-70' : 'text-gray-800'}`}>
-                            {client.name}
-                          </h3>
-
-                          {/* Botão de Ligação */}
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              startCall({
-                                clientId: client.id,
-                                clientPhone: client.phone,
-                                clientName: client.name,
-                                avatarUrl: client.photo_url || client.avatar_url,
-                              });
+                      {(isAdmin || isManager) && routeDate >= getLocalISODate() && !isCompleted && !isOrderingMode && (
+                        <div className="flex items-center justify-center mr-3 mt-1" onClick={e => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            checked={isSelectedForAnticipation}
+                            onChange={(e) => {
+                              const newSet = new Set(selectedForAnticipation);
+                              if (e.target.checked) newSet.add(client.id);
+                              else newSet.delete(client.id);
+                              setSelectedForAnticipation(newSet);
                             }}
-                            className="p-1 text-emerald-600 hover:bg-emerald-100 rounded-md transition-colors"
-                            title="Ligar para o cliente"
-                          >
-                            <Phone size={20} />
-                          </button>
-
-                          {/* Botão Abrir no Maps */}
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openMap(client.address);
-                            }}
-                            className="p-1 text-blue-600 hover:bg-blue-100 rounded-md transition-colors"
-                            title="Abrir no Google Maps"
-                          >
-                            <MapPin size={20} />
-                          </button>
-                          
-                          {/* Botão Estou a caminho / Chat */}
-                          {(() => {
-                            const chatStatus = chatStatusByClient[client.id];
-                            const isChatInactive = isCompleted || (chatStatus?.isExpiredOrClosed && !chatStatus?.isActive);
-                            const unread = isChatInactive ? 0 : (unreadCounts[client.id] || 0);
-
-                            return (
-                              <button
-                                onClick={(e) => {
-                                  if (isChatInactive) {
-                                    e.stopPropagation();
-                                    e.preventDefault();
-                                    if (isCompleted) {
-                                      alert('A visita já foi finalizada. O chat está inativo para este cliente.');
-                                    } else {
-                                      alert('O limite diário de 30 minutos já foi atingido para este cliente. O chat está inativo e poderá ser reaberto amanhã às 00:00.');
-                                    }
-                                    return;
-                                  }
-                                  handleOpenChat(client, isCompleted, e);
-                                }}
-                                disabled={isChatInactive}
-                                className={`relative p-1 rounded-md transition-colors ${
-                                  isChatInactive
-                                    ? 'text-gray-300 bg-gray-50 cursor-not-allowed opacity-50'
-                                    : unread > 0
-                                      ? 'text-green-600 bg-green-100 hover:bg-green-200 cursor-pointer'
-                                      : chatStatus?.isActive
-                                        ? 'text-blue-700 bg-blue-100 hover:bg-blue-200 ring-2 ring-blue-400 cursor-pointer'
-                                        : 'text-blue-600 hover:bg-blue-100 cursor-pointer'
-                                }`}
-                                title={
-                                  isCompleted
-                                    ? 'Atendimento finalizado - Chat inativo'
-                                    : chatStatus?.isActive
-                                      ? 'Chat em andamento (Iniciado) - Clique para abrir'
-                                      : chatStatus?.isExpiredOrClosed
-                                        ? 'Limite de 30 min atingido - Chat inativo até as 00:00'
-                                        : 'Iniciar chat (30 min)'
-                                }
-                              >
-                                <MessageCircle size={20} />
-                                {unread > 0 && !isChatInactive ? (
-                                  <span className="absolute -top-2 -right-2 flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-[9px] font-bold text-white shadow-sm ring-1 ring-white">
-                                    {unread > 9 ? '9+' : unread}
-                                  </span>
-                                ) : chatStatus?.isActive && !isChatInactive ? (
-                                  <span className="absolute -top-1 -right-1 flex h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-white animate-pulse" title="Chat em andamento" />
-                                ) : null}
-                              </button>
-                            );
-                          })()}
+                            className="w-5 h-5 rounded text-orange-500 focus:ring-orange-500 border-gray-300 cursor-pointer"
+                          />
                         </div>
-                        {isCompleted && (
-                          <motion.span 
-                            initial={{ opacity: 0, scale: 0.8 }}
-                            animate={{ opacity: 1, scale: 1 }}
-                            className="text-xs font-bold bg-green-200 text-green-800 px-2 py-1 rounded-full"
-                          >
-                            Concluído
-                          </motion.span>
+                      )}
+                      <motion.div 
+                        layout
+                        className={`${isCompleted ? 'bg-green-500' : 'bg-primary/10 text-primary'} font-bold w-8 h-8 rounded-full flex items-center justify-center shrink-0 mr-4 text-white`}
+                      >
+                        <AnimatePresence mode="wait">
+                          {isCompleted ? (
+                            <motion.div
+                              key="checkmark"
+                              initial={{ scale: 0, rotate: -180 }}
+                              animate={{ scale: 1, rotate: 0 }}
+                              transition={{ type: "spring", stiffness: 200, damping: 10 }}
+                            >
+                              <CheckCircle size={16} className="text-white" />
+                            </motion.div>
+                          ) : (
+                            <motion.span
+                              key="number"
+                              initial={{ scale: 0 }}
+                              animate={{ scale: 1 }}
+                              exit={{ scale: 0 }}
+                              className="text-primary font-bold"
+                            >
+                              {index + 1}
+                            </motion.span>
+                          )}
+                        </AnimatePresence>
+                      </motion.div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex justify-between items-start gap-2">
+                          <div className="flex items-center space-x-2 flex-wrap">
+                            <h3 className={`font-semibold text-lg ${isCompleted ? 'text-green-800 line-through opacity-70' : 'text-gray-800'}`}>
+                              {client.name}
+                            </h3>
+
+                            {/* Botão de Ligação */}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                startCall({
+                                  clientId: client.id,
+                                  clientPhone: client.phone,
+                                  clientName: client.name,
+                                  avatarUrl: client.photo_url || client.avatar_url,
+                                });
+                              }}
+                              className="p-1 text-emerald-600 hover:bg-emerald-100 rounded-md transition-colors"
+                              title="Ligar para o cliente"
+                            >
+                              <Phone size={20} />
+                            </button>
+
+                            {/* Botão Abrir no Maps */}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openMap(client.address);
+                              }}
+                              className="p-1 text-blue-600 hover:bg-blue-100 rounded-md transition-colors"
+                              title="Abrir no Google Maps"
+                            >
+                              <MapPin size={20} />
+                            </button>
+                            
+                            {/* Botão Estou a caminho / Chat */}
+                            {(() => {
+                              const chatStatus = chatStatusByClient[client.id];
+                              const isChatInactive = isCompleted || (chatStatus?.isExpiredOrClosed && !chatStatus?.isActive);
+                              const unread = isChatInactive ? 0 : (unreadCounts[client.id] || 0);
+
+                              return (
+                                <button
+                                  onClick={(e) => {
+                                    if (isChatInactive) {
+                                      e.stopPropagation();
+                                      e.preventDefault();
+                                      if (isCompleted) {
+                                        alert('A visita já foi finalizada. O chat está inativo para este cliente.');
+                                      } else {
+                                        alert('O limite diário de 30 minutos já foi atingido para este cliente. O chat está inativo e poderá ser reaberto amanhã às 00:00.');
+                                      }
+                                      return;
+                                    }
+                                    handleOpenChat(client, isCompleted, e);
+                                  }}
+                                  disabled={isChatInactive}
+                                  className={`relative p-1 rounded-md transition-colors ${
+                                    isChatInactive
+                                      ? 'text-gray-300 bg-gray-50 cursor-not-allowed opacity-50'
+                                      : unread > 0
+                                        ? 'text-green-600 bg-green-100 hover:bg-green-200 cursor-pointer'
+                                        : chatStatus?.isActive
+                                          ? 'text-blue-700 bg-blue-100 hover:bg-blue-200 ring-2 ring-blue-400 cursor-pointer'
+                                          : 'text-blue-600 hover:bg-blue-100 cursor-pointer'
+                                  }`}
+                                  title={
+                                    isCompleted
+                                      ? 'Atendimento finalizado - Chat inativo'
+                                      : chatStatus?.isActive
+                                        ? 'Chat em andamento (Iniciado) - Clique para abrir'
+                                        : chatStatus?.isExpiredOrClosed
+                                          ? 'Limite de 30 min atingido - Chat inativo até as 00:00'
+                                          : 'Iniciar chat (30 min)'
+                                  }
+                                >
+                                  <MessageCircle size={20} />
+                                  {unread > 0 && !isChatInactive ? (
+                                    <span className="absolute -top-2 -right-2 flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-[9px] font-bold text-white shadow-sm ring-1 ring-white">
+                                      {unread > 9 ? '9+' : unread}
+                                    </span>
+                                  ) : chatStatus?.isActive && !isChatInactive ? (
+                                    <span className="absolute -top-1 -right-1 flex h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-white animate-pulse" title="Chat em andamento" />
+                                  ) : null}
+                                </button>
+                              );
+                            })()}
+
+                            {/* Botão Repasse de Emergência (Hand-off) */}
+                            <button
+                              type="button"
+                              onClick={(e) => handleOpenHandoff(client.id, e)}
+                              className="p-1 text-indigo-600 hover:bg-indigo-100 rounded-md transition-colors"
+                              title="Repassar este cliente para outro técnico (Hand-off)"
+                            >
+                              <ArrowRightLeft size={20} />
+                            </button>
+                          </div>
+                          {isCompleted && (
+                            <motion.span 
+                              initial={{ opacity: 0, scale: 0.8 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              className="text-xs font-bold bg-green-200 text-green-800 px-2 py-1 rounded-full shrink-0"
+                            >
+                              Concluído
+                            </motion.span>
+                          )}
+                        </div>
+
+                        {/* Card de Avisos Fixos e Segurança do Imóvel */}
+                        {(() => {
+                          if (secNotice) {
+                            return (
+                              <div 
+                                onClick={(e) => handleOpenSecurityModal(client, e)}
+                                className="mt-2.5 mb-2 bg-amber-50 border border-amber-200/90 text-amber-950 rounded-lg p-2.5 flex items-start justify-between text-xs cursor-pointer hover:bg-amber-100/70 transition-colors shadow-xs"
+                                title="Clique para editar aviso de segurança do imóvel"
+                              >
+                                <div className="flex items-start gap-2 pr-2">
+                                  <AlertTriangle size={15} className="text-amber-600 shrink-0 mt-0.5" />
+                                  <div className="space-y-0.5">
+                                    <span className="font-bold text-amber-950 uppercase tracking-wider text-[10px] block">
+                                      Aviso Fixo &amp; Segurança do Imóvel
+                                    </span>
+                                    <p className="text-amber-900 leading-snug font-medium whitespace-pre-wrap">
+                                      {secNotice}
+                                    </p>
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleOpenSecurityModal(client, e)}
+                                  className="text-amber-700 hover:text-amber-950 hover:bg-amber-200/60 p-1 rounded transition-colors shrink-0"
+                                  title="Editar aviso"
+                                >
+                                  <Edit2 size={13} />
+                                </button>
+                              </div>
+                            );
+                          }
+                          return (
+                            <div className="mt-1.5 mb-1">
+                              <button
+                                type="button"
+                                onClick={(e) => handleOpenSecurityModal(client, e)}
+                                className="inline-flex items-center gap-1.5 text-[11px] font-medium text-gray-500 hover:text-amber-800 hover:bg-amber-50 px-2 py-0.5 rounded border border-dashed border-gray-300 hover:border-amber-300 transition-colors"
+                                title="Adicionar aviso crítico do imóvel (cão bravo, chave, disjuntor)"
+                              >
+                                <ShieldAlert size={12} className="text-amber-500 shrink-0" />
+                                <span>+ Aviso Fixo do Imóvel</span>
+                              </button>
+                            </div>
+                          );
+                        })()}
+
+                        <p className={`mt-1 flex items-start text-sm ${isCompleted ? 'text-green-600/70' : 'text-gray-600'}`}>
+                          <Map size={16} className="mr-1 mt-0.5 shrink-0" />
+                          <span className="truncate">{client.address}</span>
+                        </p>
+                        {client.phone && (isAdmin || isManager) && (
+                          <p className={`text-sm mt-0.5 ${isCompleted ? 'text-green-600/70' : 'text-gray-500'}`}>
+                            Tel: {client.phone}
+                          </p>
+                        )}
+
+                        {/* Mini Histórico da Última Visita no Card */}
+                        {lastVisit && (
+                          <div className="mt-2 text-xs text-gray-700 flex items-start gap-1.5 bg-gray-50/95 p-2 rounded-lg border border-gray-200/80 leading-relaxed shadow-2xs">
+                            <Clock size={14} className="text-gray-400 shrink-0 mt-0.5" />
+                            <div className="flex-1 min-w-0">
+                              <span className="font-semibold text-gray-900">
+                                Última visita ({lastVisit.dateFormatted}{lastVisit.techName ? ` por ${lastVisit.techName}` : ''}):
+                              </span>{' '}
+                              <span className="text-gray-700">{lastVisit.summary}</span>
+                            </div>
+                          </div>
+                        )}
+                        
+                        {isCompleted ? (
+                          <div className="mt-3 inline-flex items-center text-sm font-semibold text-green-600 bg-green-100 px-3 py-1 rounded-full">
+                            <CheckCircle size={16} className="mr-1" />
+                            Visita Concluída
+                          </div>
+                        ) : isFutureRoute ? (
+                          <div className="mt-3 text-sm text-gray-500 flex items-center font-medium bg-gray-100 px-3 py-1 rounded-full inline-flex">
+                            Disponível em {routeDate.split('-').reverse().join('/')}
+                          </div>
+                        ) : (
+                          <div className="mt-3 text-sm text-gray-500 flex items-center">
+                            <Camera size={16} className="mr-1" />
+                            Clique para registrar visita
+                          </div>
                         )}
                       </div>
-                      <p className={`mt-1 flex items-start ${isCompleted ? 'text-green-600/70' : 'text-gray-600'}`}>
-                        <Map size={16} className="mr-1 mt-1 shrink-0" />
-                        {client.address}
-                      </p>
-                      {client.phone && (isAdmin || isManager) && (
-                        <p className={`text-sm mt-1 ${isCompleted ? 'text-green-600/70' : 'text-gray-500'}`}>
-                          Tel: {client.phone}
-                        </p>
-                      )}
-                      
-                      {isCompleted ? (
-                        <div className="mt-3 inline-flex items-center text-sm font-semibold text-green-600 bg-green-100 px-3 py-1 rounded-full">
-                          <CheckCircle size={16} className="mr-1" />
-                          Visita Concluída
-                        </div>
-                      ) : isFutureRoute ? (
-                        <div className="mt-3 text-sm text-gray-500 flex items-center font-medium bg-gray-100 px-3 py-1 rounded-full inline-flex">
-                          Disponível em {routeDate.split('-').reverse().join('/')}
-                        </div>
-                      ) : (
-                        <div className="mt-3 text-sm text-gray-500 flex items-center">
-                          <Camera size={16} className="mr-1" />
-                          Clique para registrar visita
-                        </div>
-                      )}
-                    </div>
-                  </motion.div>
-                );
-              })}
+                    </motion.div>
+                  );
+                });
+              })()}
             </div>
           )}
 
@@ -2347,6 +2903,320 @@ export default function RoutesPage() {
         </div>
       )}
 
+      {/* Modal de Avisos Fixos e Segurança do Imóvel */}
+      {securityModalOpen && selectedClientForSecurity && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-gray-100 flex flex-col max-h-[90vh]">
+            <div className="flex justify-between items-start mb-4">
+              <div>
+                <div className="flex items-center gap-2 text-amber-700">
+                  <ShieldAlert size={20} className="text-amber-600" />
+                  <h3 className="text-lg font-bold text-gray-900">Avisos Fixos &amp; Segurança do Imóvel</h3>
+                </div>
+                <p className="text-sm font-semibold text-gray-700 mt-1">{selectedClientForSecurity.name}</p>
+                <p className="text-xs text-gray-500">{selectedClientForSecurity.address}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setSecurityModalOpen(false); setSelectedClientForSecurity(null); }}
+                className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <p className="text-xs text-gray-600 mb-3 bg-amber-50/70 p-2.5 rounded-lg border border-amber-200/60 leading-relaxed">
+              Informações críticas da residência (cão bravo, chaves, disjuntores, portões) que ficarão sempre visíveis no topo do card desta rota para todos os técnicos.
+            </p>
+
+            <div className="mb-3">
+              <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1.5">
+                Inserir Sugestão Rápida:
+              </label>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  '⚠️ Cão bravo no corredor dos fundos',
+                  '🔑 Chave da casa de máquinas escondida no vaso',
+                  '⚡ Disjuntor da bomba desarma se ligar junto com o aquecedor',
+                  '🐕 Manter portão sempre trancado (cães soltos)',
+                  '💧 Registro geral da piscina atrás da cascata',
+                  '🚪 Tocar campainha e aguardar abertura do portão'
+                ].map((sug, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => {
+                      setSecurityNoteInput(prev => {
+                        const trimmed = prev.trim();
+                        if (!trimmed) return sug;
+                        if (trimmed.includes(sug)) return trimmed;
+                        return `${trimmed}\n${sug}`;
+                      });
+                    }}
+                    className="text-[11px] bg-gray-100 hover:bg-amber-100/70 text-gray-700 hover:text-amber-900 px-2 py-1 rounded-md border border-gray-200 hover:border-amber-300 transition-colors cursor-pointer text-left font-medium"
+                  >
+                    {sug}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="mb-4 flex-1">
+              <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
+                Aviso de Segurança:
+              </label>
+              <textarea
+                rows={4}
+                value={securityNoteInput}
+                onChange={(e) => setSecurityNoteInput(e.target.value)}
+                placeholder="Ex: ⚠️ Cão bravo no quintal. Chave da casa de máquinas fica no vaso azul ao lado da ducha..."
+                className="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none resize-none shadow-xs"
+              />
+            </div>
+
+            <div className="flex justify-between items-center pt-3 border-t border-gray-100">
+              <div>
+                {(localSecurityNotes[selectedClientForSecurity.id] || securityNotesByClient[selectedClientForSecurity.id]) && (
+                  <button
+                    type="button"
+                    onClick={handleDeleteSecurityNote}
+                    disabled={savingSecurityNote}
+                    className="flex items-center text-xs font-semibold text-red-600 hover:text-red-800 hover:bg-red-50 px-2.5 py-1.5 rounded-lg transition-colors disabled:opacity-50 cursor-pointer"
+                  >
+                    <Trash2 size={14} className="mr-1" />
+                    Excluir Aviso
+                  </button>
+                )}
+              </div>
+              <div className="flex space-x-2">
+                <button
+                  type="button"
+                  onClick={() => { setSecurityModalOpen(false); setSelectedClientForSecurity(null); }}
+                  disabled={savingSecurityNote}
+                  className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-xl transition-colors font-medium cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveSecurityNote}
+                  disabled={savingSecurityNote}
+                  className="flex items-center px-5 py-2 text-sm bg-amber-600 hover:bg-amber-700 text-white rounded-xl shadow-xs transition-colors font-semibold disabled:opacity-50 cursor-pointer"
+                >
+                  <Save size={15} className="mr-1.5" />
+                  {savingSecurityNote ? 'Salvando...' : 'Salvar Aviso'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Repasse de Rota de Emergência (Hand-off entre Técnicos) */}
+      {handoffModalOpen && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-gray-100 flex flex-col max-h-[90vh]">
+            <div className="flex justify-between items-start mb-4">
+              <div>
+                <div className="flex items-center gap-2 text-indigo-700">
+                  <ArrowRightLeft size={20} className="text-indigo-600" />
+                  <h3 className="text-lg font-bold text-gray-900">Repasse de Rota de Emergência (Hand-off)</h3>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  Transfira atendimentos para outro colaborador em caso de quebra de veículo, chuva ou sobrecarga.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setHandoffModalOpen(false)}
+                className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-4 overflow-y-auto pr-1 flex-1">
+              {/* Seleção do Técnico de Destino */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1.5">
+                  1. Colaborador que Receberá o Atendimento:
+                </label>
+                <select
+                  value={handoffTargetEmployee}
+                  onChange={(e) => setHandoffTargetEmployee(e.target.value)}
+                  className="w-full px-3.5 py-2.5 text-sm border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white font-medium shadow-xs"
+                >
+                  <option value="">Selecione o técnico de destino...</option>
+                  {employees
+                    .filter((emp: any) => emp.id !== selectedEmployee)
+                    .map((emp: any) => (
+                      <option key={emp.id} value={emp.id}>
+                        {emp.name} ({emp.role === 'manager' ? 'Gerente' : 'Técnico'})
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              {/* Modalidade do Repasse */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1.5">
+                  2. Tipo de Transferência:
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setHandoffType('today_only')}
+                    className={`p-3 text-left rounded-xl border text-xs transition-all cursor-pointer ${
+                      handoffType === 'today_only'
+                        ? 'border-indigo-600 bg-indigo-50/70 text-indigo-950 ring-2 ring-indigo-500/30 font-semibold'
+                        : 'border-gray-200 hover:bg-gray-50 text-gray-700'
+                    }`}
+                  >
+                    <span className="font-bold block text-sm mb-0.5">🚨 Emergencial (Hoje)</span>
+                    <span className="text-gray-500">Transfere apenas para a rota de hoje para concluir o serviço.</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setHandoffType('definitive')}
+                    className={`p-3 text-left rounded-xl border text-xs transition-all cursor-pointer ${
+                      handoffType === 'definitive'
+                        ? 'border-indigo-600 bg-indigo-50/70 text-indigo-950 ring-2 ring-indigo-500/30 font-semibold'
+                        : 'border-gray-200 hover:bg-gray-50 text-gray-700'
+                    }`}
+                  >
+                    <span className="font-bold block text-sm mb-0.5">🔄 Definitivo</span>
+                    <span className="text-gray-500">Muda o responsável pela carteira fixa do cliente.</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Seleção dos Clientes para Transferência */}
+              <div>
+                <div className="flex justify-between items-center mb-1.5">
+                  <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                    3. Clientes a Repassar ({handoffSelectedClientIds.size} selecionado{handoffSelectedClientIds.size !== 1 ? 's' : ''}):
+                  </label>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const pendingIds = routeClients
+                          .filter((c: any) => !completedVisitsOnRouteDate.has(c.id))
+                          .map((c: any) => c.id);
+                        setHandoffSelectedClientIds(new Set(pendingIds));
+                      }}
+                      className="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 cursor-pointer"
+                    >
+                      Selecionar Pendentes
+                    </button>
+                    <span className="text-gray-300">|</span>
+                    <button
+                      type="button"
+                      onClick={() => setHandoffSelectedClientIds(new Set())}
+                      className="text-[11px] font-semibold text-gray-500 hover:text-gray-700 cursor-pointer"
+                    >
+                      Limpar
+                    </button>
+                  </div>
+                </div>
+
+                <div className="max-h-48 overflow-y-auto space-y-1.5 border border-gray-200 rounded-xl p-2 bg-gray-50/50">
+                  {routeClients.map((client: any) => {
+                    const isCompleted = completedVisitsOnRouteDate.has(client.id);
+                    const isChecked = handoffSelectedClientIds.has(client.id);
+                    return (
+                      <label
+                        key={client.id}
+                        className={`flex items-start p-2 rounded-lg cursor-pointer transition-colors text-xs ${
+                          isChecked ? 'bg-indigo-50/80 border border-indigo-200' : 'bg-white border border-gray-200 hover:bg-gray-100/60'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={(e) => {
+                            const newSet = new Set(handoffSelectedClientIds);
+                            if (e.target.checked) newSet.add(client.id);
+                            else newSet.delete(client.id);
+                            setHandoffSelectedClientIds(newSet);
+                          }}
+                          className="mt-0.5 rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4 mr-2.5 cursor-pointer shrink-0"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold text-gray-800 truncate">{client.name}</span>
+                            {isCompleted ? (
+                              <span className="text-[10px] font-bold text-green-700 bg-green-100 px-1.5 py-0.2 rounded">
+                                Concluído
+                              </span>
+                            ) : (
+                              <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.2 rounded">
+                                Pendente
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-gray-500 truncate block text-[11px]">{client.address}</span>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Motivo do Repasse (opcional) */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1.5">
+                  4. Motivo / Justificativa (Opcional):
+                </label>
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {['🏍️ Moto com defeito', '🌧️ Chuva forte', '⏱️ Atraso no cronograma', '🤒 Mal-estar', '🤝 Ajuda mútua'].map((chip, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => setHandoffReason(chip)}
+                      className={`text-[11px] px-2 py-0.5 rounded-md border transition-colors cursor-pointer ${
+                        handoffReason === chip ? 'bg-indigo-100 text-indigo-800 border-indigo-300 font-semibold' : 'bg-gray-100 text-gray-600 border-gray-200 hover:bg-gray-200'
+                      }`}
+                    >
+                      {chip}
+                    </button>
+                  ))}
+                </div>
+                <input
+                  type="text"
+                  value={handoffReason}
+                  onChange={(e) => setHandoffReason(e.target.value)}
+                  placeholder="Ex: Pneu furado na rota central, necessita suporte..."
+                  className="w-full px-3 py-2 text-xs border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end space-x-2 pt-4 border-t border-gray-100 mt-2">
+              <button
+                type="button"
+                onClick={() => setHandoffModalOpen(false)}
+                disabled={isExecutingHandoff}
+                className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-xl transition-colors font-medium cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={executeHandoff}
+                disabled={isExecutingHandoff || handoffSelectedClientIds.size === 0 || !handoffTargetEmployee}
+                className="flex items-center px-5 py-2 text-sm bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-xs transition-colors font-semibold disabled:opacity-50 cursor-pointer"
+              >
+                <ArrowRightLeft size={16} className="mr-1.5" />
+                {isExecutingHandoff
+                  ? 'Transferindo...'
+                  : `Confirmar Repasse (${handoffSelectedClientIds.size})`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <ChatModal 
         isOpen={chatModalOpen} 

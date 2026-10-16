@@ -1741,6 +1741,31 @@ app.all(['/api/cron/sync-visits', '/api/notifications/sweep-recent-visits'], asy
   }
 });
 
+// Endpoint para envio de push em caso de Repasse de Rota de Emergência entre colaboradores
+app.post(['/api/notifications/notify-handoff', '/notifications/notify-handoff'], async (req, res) => {
+  try {
+    const { targetEmployeeId, sourceEmployeeName, clientCount, reason } = req.body || {};
+    if (!targetEmployeeId) {
+      return res.status(400).json({ error: "Missing targetEmployeeId" });
+    }
+    const count = clientCount || 1;
+    const title = '🚨 Rota de Emergência Repassada!';
+    const reasonText = reason ? ` Motivo: ${reason}.` : '';
+    const body = `Você recebeu ${count} atendimento(s) transferido(s) de ${sourceEmployeeName || 'um colega'}.${reasonText} Abra as rotas para visualizar.`;
+
+    const result = await sendPushToAdmin(targetEmployeeId, title, body, {
+      url: '/routes',
+      channelId: 'atendimentos_v2',
+      type: 'route_handoff'
+    });
+
+    return res.json({ success: true, sent: result.sent });
+  } catch (err) {
+    console.error('[Handoff Push Error]:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 app.all(['/api/notifications/test-push', '/notifications/test-push'], async (req, res) => {
   try {
     const { adminId, userId, title, body } = req.body || req.query || {};

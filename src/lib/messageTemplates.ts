@@ -20,6 +20,14 @@ export interface TemplateClientData {
   dueDate?: string;
   due_date?: string;
   address?: string;
+  paymentDate?: string;
+  paid_date?: string;
+  referenceMonth?: string | number;
+  ref_month?: string | number;
+  nextDueDate?: string;
+  pixKey?: string;
+  pix_key?: string;
+  pixReceiverName?: string;
   [key: string]: any;
 }
 
@@ -30,6 +38,11 @@ export function formatClientMessageTemplate(
     techName?: string;
     companyName?: string;
     portalUrl?: string;
+    pixKey?: string;
+    pixReceiverName?: string;
+    referenceMonth?: string;
+    paymentDate?: string;
+    nextDueDate?: string;
   }
 ): string {
   if (!template) return '';
@@ -147,6 +160,69 @@ export function formatClientMessageTemplate(
     msg = msg
       .replace(/\{\s*valor\s*\}/gi, formattedVal)
       .replace(/\[\s*valor\s*\]/gi, formattedVal);
+  }
+
+  // 6.1 PIX Key and Receiver
+  const effectivePixKey = options?.pixKey || client.pixKey || client.pix_key || '';
+  const effectivePixReceiver = options?.pixReceiverName || client.pixReceiverName || '';
+  if (effectivePixKey) {
+    msg = msg
+      .replace(/\{\s*(chave[\s_-]*pix|pix[\s_-]*key|pix)\s*\}/gi, effectivePixKey)
+      .replace(/\[\s*(chave[\s_-]*pix|pix[\s_-]*key|pix)\s*\]/gi, effectivePixKey);
+  }
+  if (effectivePixReceiver) {
+    msg = msg
+      .replace(/\{\s*(titular[\s_-]*pix|beneficiario[\s_-]*pix|pix[\s_-]*titular)\s*\}/gi, effectivePixReceiver)
+      .replace(/\[\s*(titular[\s_-]*pix|beneficiario[\s_-]*pix|pix[\s_-]*titular)\s*\]/gi, effectivePixReceiver);
+  }
+
+  // 6.2 Reference Month (ex: "Outubro/2026" ou "Outubro")
+  const rawMonth = options?.referenceMonth || client.referenceMonth || client.ref_month;
+  let formattedMonthName = '';
+  if (rawMonth) {
+    const monthNum = parseInt(String(rawMonth).split('/')[0], 10);
+    const monthNames = [
+      'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+      'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+    ];
+    if (monthNum >= 1 && monthNum <= 12) {
+      formattedMonthName = monthNames[monthNum - 1];
+    } else {
+      formattedMonthName = String(rawMonth);
+    }
+    msg = msg
+      .replace(/\{\s*(mes[\s_-]*referencia|mes[\s_-]*referente|mes|mês|referencia)\s*\}/gi, formattedMonthName)
+      .replace(/\[\s*(mes[\s_-]*referencia|mes[\s_-]*referente|mes|mês|referencia)\s*\]/gi, formattedMonthName);
+  }
+
+  // 6.3 Payment Date (ex: "15/10/2026")
+  const payDateVal = options?.paymentDate || client.paymentDate || client.paid_date;
+  if (payDateVal) {
+    try {
+      const pStr = String(payDateVal).includes('T') ? String(payDateVal).split('T')[0] : String(payDateVal);
+      const [y, m, d] = pStr.split('-');
+      if (y && m && d) {
+        const fPayDate = `${d}/${m}/${y}`;
+        msg = msg
+          .replace(/\{\s*(data[\s_-]*pagamento|data[\s_-]*pago|data_pagamento)\s*\}/gi, fPayDate)
+          .replace(/\[\s*(data[\s_-]*pagamento|data[\s_-]*pago|data_pagamento)\s*\]/gi, fPayDate);
+      }
+    } catch (e) {}
+  }
+
+  // 6.4 Next Due Date (ex: "15/11/2026")
+  const nextDueVal = options?.nextDueDate || client.nextDueDate;
+  if (nextDueVal) {
+    try {
+      const ndStr = String(nextDueVal).includes('T') ? String(nextDueVal).split('T')[0] : String(nextDueVal);
+      const [y, m, d] = ndStr.split('-');
+      if (y && m && d) {
+        const fNextDue = `${d}/${m}/${y}`;
+        msg = msg
+          .replace(/\{\s*(proximo[\s_-]*vencimento|proxima[\s_-]*data|proximo_vencimento)\s*\}/gi, fNextDue)
+          .replace(/\[\s*(proximo[\s_-]*vencimento|proxima[\s_-]*data|proximo_vencimento)\s*\]/gi, fNextDue);
+      }
+    } catch (e) {}
   }
 
   // 7. Critical fallback for RAW phrases typed without braces by users
