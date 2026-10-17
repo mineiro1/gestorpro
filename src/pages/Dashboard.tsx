@@ -449,7 +449,11 @@ export default function Dashboard() {
 
       const fullTotal = client.monthlyPrice + (client.extraAmount || 0);
 
-      const message = formatClientMessageTemplate(reminderTemplate, {
+      const currentPixKey = currentSettings.pixKey || (userProfile?.whatsappSettings as any)?.pixKey || '';
+      const currentPixReceiver = currentSettings.pixReceiverName || (userProfile?.whatsappSettings as any)?.pixReceiverName || '';
+      const shouldAppendPix = currentSettings.autoAppendPix !== false;
+
+      let message = formatClientMessageTemplate(reminderTemplate, {
         name: client.name,
         phone: client.phone,
         monthly_price: fullTotal,
@@ -460,10 +464,18 @@ export default function Dashboard() {
         extra_amount: client.extraAmount,
         extraReason: client.extraReason,
         extra_reason: client.extraReason,
+        pixKey: currentPixKey,
+        pixReceiverName: currentPixReceiver
       }, {
         companyName: currentSettings?.companyName || userProfile?.whatsappSettings?.companyName || 'RS Piscinas',
-        portalUrl: 'www.rspiscinas.app.br/client-panel'
+        portalUrl: 'www.rspiscinas.app.br/client-panel',
+        pixKey: currentPixKey,
+        pixReceiverName: currentPixReceiver
       });
+
+      if (shouldAppendPix && currentPixKey && !message.includes(currentPixKey)) {
+        message += `\n\n*Chave PIX para pagamento:*\n${currentPixKey}${currentPixReceiver ? `\n*Titular:* ${currentPixReceiver}` : ''}`;
+      }
 
       const billingMsgClientId = `preventive_${client.id}_${client.dueDate}_${new Date().toISOString().slice(0, 10)}`;
       const effectiveProvider = getEffectiveWhatsAppProvider(currentSettings);

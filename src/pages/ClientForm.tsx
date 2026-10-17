@@ -318,12 +318,14 @@ export default function ClientForm() {
 
     try {
       const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
+      const safeEmployeeId = userProfile?.uid || adminId || '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
       await supabase.from('visits').insert({
         admin_id: adminId,
         client_id: id,
-        employee_id: isAdmin ? null : userProfile.uid,
+        employee_id: safeEmployeeId,
         notes: newVisitNotes.trim(),
-        location: locationData ? `${locationData.lat},${locationData.lng}` : null
+        location: locationData ? `${locationData.lat},${locationData.lng}` : null,
+        status: 'realizada'
       });
 
       // Update client with lastVisitDate

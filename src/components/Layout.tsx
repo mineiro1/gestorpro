@@ -227,7 +227,7 @@ export default function Layout() {
 
     const handleNewVisit = async (payload: any) => {
       if (payload.new) {
-        const isNowFinalizada = payload.new.status === 'finalizada';
+        const isNowFinalizada = payload.new.status === 'finalizada' || payload.new.status === 'realizada';
         if (isNowFinalizada) {
           // Instantly sync route data query cache across the app
           queryClient.invalidateQueries({ queryKey: ['routeData'] });

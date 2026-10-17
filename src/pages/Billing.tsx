@@ -195,12 +195,14 @@ export default function Billing() {
     }
   };
 
-  const processMessageTemplate = (template: string, client: ClientBilling) => {
-    const currentPixKey = waSettings.pixKey || (userProfile?.whatsappSettings as any)?.pixKey || '';
-    const currentPixReceiver = waSettings.pixReceiverName || (userProfile?.whatsappSettings as any)?.pixReceiverName || '';
+  const processMessageTemplate = (template: string, client: ClientBilling, settingsOverride?: any) => {
+    const activeSettings = settingsOverride || waSettings;
+    const currentPixKey = activeSettings.pixKey || (userProfile?.whatsappSettings as any)?.pixKey || '';
+    const currentPixReceiver = activeSettings.pixReceiverName || (userProfile?.whatsappSettings as any)?.pixReceiverName || '';
+    const shouldAppendPix = activeSettings.autoAppendPix !== false;
 
     let message = formatClientMessageTemplate(template, client, {
-      companyName: waSettings?.companyName || userProfile?.whatsappSettings?.companyName || 'GestãoPro',
+      companyName: activeSettings?.companyName || userProfile?.whatsappSettings?.companyName || 'GestãoPro',
       portalUrl: 'www.rspiscinas.app.br/client-panel',
       pixKey: currentPixKey,
       pixReceiverName: currentPixReceiver
@@ -211,7 +213,7 @@ export default function Billing() {
     }
 
     // Se o envio automático de PIX estiver ativado e a mensagem ainda não tiver a chave explícita
-    if (waSettings.autoAppendPix && currentPixKey && !message.includes(currentPixKey)) {
+    if (shouldAppendPix && currentPixKey && !message.includes(currentPixKey)) {
       message += `\n\n*Chave PIX para pagamento:*\n${currentPixKey}${currentPixReceiver ? `\n*Titular:* ${currentPixReceiver}` : ''}`;
     }
 
@@ -604,8 +606,8 @@ export default function Billing() {
     const isDelayed = client.status === 'delayed';
     
     const message = isDelayed
-      ? processMessageTemplate(waSettings.delayedMessage, client)
-      : processMessageTemplate(waSettings.reminderMessage, client);
+      ? processMessageTemplate(currentSettings.delayedMessage || waSettings.delayedMessage, client, currentSettings)
+      : processMessageTemplate(currentSettings.reminderMessage || waSettings.reminderMessage, client, currentSettings);
 
     const billingMsgClientId = `billing_${client.id}_${isDelayed ? 'delayed' : 'reminder'}_${new Date().toISOString().slice(0, 10)}`;
     const effectiveProvider = getEffectiveWhatsAppProvider(currentSettings);
@@ -701,8 +703,8 @@ export default function Billing() {
 
         const isDelayed = client.status === 'delayed';
         const message = isDelayed
-          ? processMessageTemplate(waSettings.delayedMessage, client)
-          : processMessageTemplate(waSettings.reminderMessage, client);
+          ? processMessageTemplate(currentSettings.delayedMessage || waSettings.delayedMessage, client, currentSettings)
+          : processMessageTemplate(currentSettings.reminderMessage || waSettings.reminderMessage, client, currentSettings);
           
         try {
           if (effectiveProvider === 'astracalls') {

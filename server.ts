@@ -3213,7 +3213,7 @@ app.all("/api/sync-payment", async (req, res) => {
       const targetTable = table || (row.client_id !== undefined ? 'visits' : (row.price !== undefined ? 'oneoffjobs' : 'visits'));
       console.log(`[Server Database Webhook] Recebido evento: Tabela ${targetTable}, Tipo ${type || 'direct'}, Status ${row?.status}`);
 
-      if (targetTable === 'visits' && row && row.status === 'finalizada') {
+      if (targetTable === 'visits' && row && (row.status === 'finalizada' || row.status === 'realizada')) {
         await handleVisitCompleted(row, false);
       } else if (targetTable === 'oneoffjobs' && row && row.status === 'concluido') {
         await handleVisitCompleted(row, true);
@@ -3335,8 +3335,8 @@ app.all("/api/sync-payment", async (req, res) => {
   supabaseAdmin.channel('push-notifications-db-events')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'visits' }, async (payload) => {
        const newVisit = payload.new as any;
-       if (!newVisit || newVisit.status !== 'finalizada') return;
-       console.log(`[Realtime DB Event] Visita finalizada detectada via WebSocket: ${newVisit.id}`);
+       if (!newVisit || (newVisit.status !== 'finalizada' && newVisit.status !== 'realizada')) return;
+       console.log(`[Realtime DB Event] Visita finalizada/realizada detectada via WebSocket: ${newVisit.id}`);
        await handleVisitCompleted(newVisit, false);
     })
     .on('postgres_changes', { event: '*', schema: 'public', table: 'oneoffjobs' }, async (payload) => {
@@ -3604,7 +3604,7 @@ app.all("/api/sync-payment", async (req, res) => {
       const { data: existingVisits } = await supabaseAdmin
         .from('visits')
         .select('id, date, created_at')
-        .eq('status', 'finalizada')
+        .in('status', ['finalizada', 'realizada'])
         .lt('created_at', tenMinutesAgo)
         .order('created_at', { ascending: false })
         .limit(100);
@@ -3642,7 +3642,7 @@ app.all("/api/sync-payment", async (req, res) => {
       const { data: recentVisits, error: vErr } = await supabaseAdmin
         .from('visits')
         .select('id, admin_id, client_id, employee_id, status, created_at, date')
-        .eq('status', 'finalizada')
+        .in('status', ['finalizada', 'realizada'])
         .or(`created_at.gte.${sinceDate},date.gte.${sinceDate}`)
         .order('date', { ascending: false })
         .limit(30);

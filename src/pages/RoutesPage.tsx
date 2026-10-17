@@ -223,21 +223,21 @@ export default function RoutesPage() {
             .select('id')
             .eq('client_id', payload.clientId)
             .eq('time', payload.time)
-            .eq('status', 'finalizada')
+            .in('status', ['finalizada', 'realizada'])
             .limit(1);
 
           if (!alreadyExists || alreadyExists.length === 0) {
+            const safeEmployeeId = payload.employeeId || userProfile?.uid || '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
             const { error: insertError } = await supabase.from('visits').insert({
               admin_id: payload.adminId || '698dfcdd-7c91-4df5-aaee-eae9e67f15ae',
               client_id: payload.clientId,
-              client_name: payload.clientName || 'Cliente',
-              employee_id: payload.employeeId,
+              employee_id: safeEmployeeId,
               date: payload.date,
               time: payload.time,
               notes: payload.notes,
-              photo_urls: payload.photoUrls,
+              photo_urls: payload.photoUrls || [],
               location: payload.location,
-              status: 'finalizada'
+              status: 'realizada'
             });
             if (insertError) throw insertError;
           }
@@ -532,7 +532,7 @@ export default function RoutesPage() {
               .from('visits')
               .select('id, client_id, employee_id, date, created_at, status, notes, observation')
               .in('client_id', clientIds)
-              .eq('status', 'finalizada')
+              .in('status', ['finalizada', 'realizada'])
               .order('created_at', { ascending: false });
 
             const techMap: Record<string, string> = {};
@@ -1791,7 +1791,9 @@ useEffect(() => {
         clientId: targetClient.id,
         clientName: targetClient.name,
         techName: userProfile?.name || 'Colaborador',
-        employeeId: (isAdmin || isManager) && selectedEmployee ? selectedEmployee : userProfile.uid,
+        employeeId: (isAdmin || isManager) && selectedEmployee 
+          ? selectedEmployee 
+          : (userProfile?.uid || targetClient.employee_id || adminId || '698dfcdd-7c91-4df5-aaee-eae9e67f15ae'),
         date: finalVisitDate,
         time: activeRouteDate,
         notes: finalNotes,
@@ -1850,14 +1852,13 @@ useEffect(() => {
               const { error: updateErr } = await supabase.from('visits').update({
                 admin_id: adminId,
                 client_id: targetClient.id,
-                client_name: targetClient.name || 'Cliente',
                 employee_id: payload.employeeId,
                 date: finalVisitDate,
                 time: activeRouteDate,
                 notes: finalNotes,
                 photo_urls: reportPhotos,
                 location: locationData,
-                status: 'finalizada'
+                status: 'realizada'
               }).eq('id', existingAgendada[0].id);
               if (updateErr) throw updateErr;
               savedToDb = true;
@@ -1865,14 +1866,13 @@ useEffect(() => {
               const { data: insertedList, error: insertErr } = await supabase.from('visits').insert({
                 admin_id: adminId,
                 client_id: targetClient.id,
-                client_name: targetClient.name || 'Cliente',
                 employee_id: payload.employeeId,
                 date: finalVisitDate,
                 time: activeRouteDate,
                 notes: finalNotes,
                 photo_urls: reportPhotos,
                 location: locationData,
-                status: 'finalizada'
+                status: 'realizada'
               }).select('id');
               if (insertErr) throw insertErr;
               savedToDb = true;
@@ -1905,7 +1905,8 @@ useEffect(() => {
                      time: originalDate,
                      notes: `[SERVIÇO REALIZADO NO DIA ${activeRouteDate.split('-').reverse().join('/')}]\n\n` + finalNotes,
                      photo_urls: reportPhotos,
-                     location: locationData
+                     location: locationData,
+                     status: 'realizada'
                    });
                    
                    const newExtraVisits = extraVisitsRaw.filter((v: string) => v !== rescheduleEntry);
