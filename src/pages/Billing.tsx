@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { openWhatsApp, sendMetaMessage, sendEvolutionMessage, sendAstraCallsMessage, getEffectiveWhatsAppProvider } from '../lib/whatsapp';
+import { openWhatsApp, sendMetaMessage, sendEvolutionMessage, sendAstraCallsMessage, getEffectiveWhatsAppProvider, resolveAdminWhatsAppSettings } from '../lib/whatsapp';
 import { formatClientMessageTemplate } from '../lib/messageTemplates';
 import { 
   MessageCircle, AlertCircle, Clock, History, Settings, X, Play, MessageSquare, 
@@ -130,39 +130,46 @@ export default function Billing() {
   };
 
   useEffect(() => {
-    if (userProfile?.whatsappSettings) {
-      const s = userProfile.whatsappSettings as any;
-      const isMeta = s.useMetaApi && s.provider === 'meta';
-      const isEvo = s.useEvolutionApi && s.provider === 'evolution';
-      const isAstra = s.provider === 'astracalls' || s.useAstracalls || (!isMeta && !isEvo);
+    async function loadSettings() {
+      const targetAdmin = userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId;
+      const s = await resolveAdminWhatsAppSettings(targetAdmin, userProfile);
+      if (s && Object.keys(s).length > 0) {
+        const isMeta = s.useMetaApi && s.provider === 'meta';
+        const isEvo = s.useEvolutionApi && s.provider === 'evolution';
+        const isAstra = s.provider === 'astracalls' || s.useAstracalls || (!isMeta && !isEvo);
 
-      setWaSettings({
-        companyName: s.companyName || '',
-        reminderDays: s.reminderDays ?? 3,
-        reminderMessage: s.reminderMessage || 'Olá {nome}, tudo bem? Passando para lembrar que sua mensalidade no valor de R$ {valor} vence no dia {vencimento}.',
-        delayedMessage: s.delayedMessage || 'Olá {nome}, tudo bem? Consta em nosso sistema que a sua mensalidade do dia {vencimento} no valor de R$ {valor} está pendente. Poderia verificá-la, por favor?',
-        reportMessage1: (s.reportMessage1 || 'Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}').replace(/https:\/\/www\.rspiscinas\.app\.br\/client-panel/gi, 'www.rspiscinas.app.br/client-panel'),
-        reportMessage2: (s.reportMessage2 || 'Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}').replace(/https:\/\/www\.rspiscinas\.app\.br\/client-panel/gi, 'www.rspiscinas.app.br/client-panel'),
-        receiptMessage: s.receiptMessage || 'Olá {nome}! Confirmamos o recebimento da sua mensalidade referente a {mes} no valor de R$ {valor}. Muito obrigado pela confiança e pontualidade! 💦✨\n\n*Comprovante de Quitação*\n• Cliente: {nome}\n• Valor Pago: R$ {valor}\n• Data: {data_pagamento}\n• Próximo Vencimento: {proximo_vencimento}',
-        pixKey: s.pixKey || '',
-        pixReceiverName: s.pixReceiverName || '',
-        pixKeyType: s.pixKeyType || 'phone',
-        autoAppendPix: s.autoAppendPix !== false,
-        autoScheduleTime: s.autoScheduleTime || '09:00',
-        provider: isAstra ? 'astracalls' : (isEvo ? 'evolution' : (isMeta ? 'meta' : 'web')),
-        useAstracalls: isAstra,
-        astracallsUrl: s.astracallsUrl || 'https://calls.rspiscinas.app.br',
-        astracallsApiKey: s.astracallsApiKey || 'rs_piscinas_segredo_2026',
-        astracallsSessionId: s.astracallsSessionId || '8090cca3add0b8eb3e41efb9eec363e4',
-        useEvolutionApi: isEvo,
-        evolutionApiUrl: s.evolutionApiUrl || '',
-        evolutionApiKey: s.evolutionApiKey || '',
-        evolutionInstanceName: s.evolutionInstanceName || '',
-        useMetaApi: isMeta,
-        metaToken: s.metaToken || '',
-        metaPhoneNumberId: s.metaPhoneNumberId || '',
-        metaServerUrl: s.metaServerUrl || ''
-      });
+        setWaSettings((prev: any) => ({
+          ...prev,
+          companyName: s.companyName || '',
+          reminderDays: s.reminderDays ?? 3,
+          reminderMessage: s.reminderMessage || 'Olá {nome}, tudo bem? Passando para lembrar que sua mensalidade no valor de R$ {valor} vence no dia {vencimento}.',
+          delayedMessage: s.delayedMessage || 'Olá {nome}, tudo bem? Consta em nosso sistema que a sua mensalidade do dia {vencimento} no valor de R$ {valor} está pendente. Poderia verificá-la, por favor?',
+          reportMessage1: (s.reportMessage1 || 'Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}').replace(/https:\/\/www\.rspiscinas\.app\.br\/client-panel/gi, 'www.rspiscinas.app.br/client-panel'),
+          reportMessage2: (s.reportMessage2 || 'Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}').replace(/https:\/\/www\.rspiscinas\.app\.br\/client-panel/gi, 'www.rspiscinas.app.br/client-panel'),
+          receiptMessage: s.receiptMessage || 'Olá {nome}! Confirmamos o recebimento da sua mensalidade referente a {mes} no valor de R$ {valor}. Muito obrigado pela confiança e pontualidade! 💦✨\n\n*Comprovante de Quitação*\n• Cliente: {nome}\n• Valor Pago: R$ {valor}\n• Data: {data_pagamento}\n• Próximo Vencimento: {proximo_vencimento}',
+          pixKey: s.pixKey || '',
+          pixReceiverName: s.pixReceiverName || '',
+          pixKeyType: s.pixKeyType || 'phone',
+          autoAppendPix: s.autoAppendPix !== false,
+          autoScheduleTime: s.autoScheduleTime || '09:00',
+          provider: isAstra ? 'astracalls' : (isEvo ? 'evolution' : (isMeta ? 'meta' : 'web')),
+          useAstracalls: isAstra,
+          astracallsUrl: s.astracallsUrl || 'https://calls.rspiscinas.app.br',
+          astracallsApiKey: s.astracallsApiKey || 'rs_piscinas_segredo_2026',
+          astracallsSessionId: s.astracallsSessionId || '8090cca3add0b8eb3e41efb9eec363e4',
+          useEvolutionApi: isEvo,
+          evolutionApiUrl: s.evolutionApiUrl || '',
+          evolutionApiKey: s.evolutionApiKey || '',
+          evolutionInstanceName: s.evolutionInstanceName || '',
+          useMetaApi: isMeta,
+          metaToken: s.metaToken || '',
+          metaPhoneNumberId: s.metaPhoneNumberId || '',
+          metaServerUrl: s.metaServerUrl || ''
+        }));
+      }
+    }
+    if (userProfile?.uid) {
+      loadSettings();
     }
   }, [userProfile]);
 
@@ -227,12 +234,10 @@ export default function Billing() {
     customMessage?: string
   ): Promise<boolean> => {
     let currentSettings = waSettings;
-    if (userProfile?.uid) {
-      const adminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
-      const { data } = await supabase.from('users').select('whatsapp_settings').eq('id', adminId).single();
-      if (data && data.whatsapp_settings) {
-        currentSettings = { ...waSettings, ...data.whatsapp_settings };
-      }
+    const adminId = userProfile?.role === 'admin' ? userProfile?.uid : userProfile?.adminId;
+    const resolved = await resolveAdminWhatsAppSettings(adminId, userProfile);
+    if (resolved && Object.keys(resolved).length > 0) {
+      currentSettings = { ...waSettings, ...resolved };
     }
 
     if (!client.phone) {
@@ -584,12 +589,10 @@ export default function Billing() {
 
   const handleSendWhatsApp = async (client: ClientBilling) => {
     let currentSettings = waSettings;
-    if (userProfile?.uid) {
-      const adminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
-      const { data } = await supabase.from('users').select('whatsapp_settings').eq('id', adminId).single();
-      if (data && data.whatsapp_settings) {
-        currentSettings = { ...waSettings, ...data.whatsapp_settings };
-      }
+    const adminId = userProfile?.role === 'admin' ? userProfile?.uid : userProfile?.adminId;
+    const resolved = await resolveAdminWhatsAppSettings(adminId, userProfile);
+    if (resolved && Object.keys(resolved).length > 0) {
+      currentSettings = { ...waSettings, ...resolved };
     }
 
     if (!client.phone) {
@@ -662,12 +665,10 @@ export default function Billing() {
 
   const processQueue = async (clients: ClientBilling[], silent = false) => {
     let currentSettings = waSettings;
-    if (userProfile?.uid) {
-      const adminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
-      const { data } = await supabase.from('users').select('whatsapp_settings').eq('id', adminId).single();
-      if (data && data.whatsapp_settings) {
-        currentSettings = { ...waSettings, ...data.whatsapp_settings };
-      }
+    const adminId = userProfile?.role === 'admin' ? userProfile?.uid : userProfile?.adminId;
+    const resolved = await resolveAdminWhatsAppSettings(adminId, userProfile);
+    if (resolved && Object.keys(resolved).length > 0) {
+      currentSettings = { ...waSettings, ...resolved };
     }
 
     const effectiveProvider = getEffectiveWhatsAppProvider(currentSettings);

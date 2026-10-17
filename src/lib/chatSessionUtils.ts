@@ -101,7 +101,8 @@ export interface DailyChatCheckResult {
  */
 export async function checkDailyChatAvailability(
   clientId: string,
-  supabase: SupabaseClient
+  supabase: SupabaseClient,
+  isAdminOrPro: boolean = false
 ): Promise<DailyChatCheckResult> {
   const { startUtcIso, endUtcIso } = getLocalDayUtcRange();
 
@@ -133,7 +134,7 @@ export async function checkDailyChatAvailability(
   }
 
   if (!todaySessions || todaySessions.length === 0) {
-    // Nenhuma sessão foi iniciada hoje ainda: liberado para iniciar 1 atendimento de 30 minutos
+    // Nenhuma sessão foi iniciada hoje ainda: liberado para iniciar atendimento
     return {
       canStartNewSession: true,
       activeSession: null,
@@ -143,6 +144,17 @@ export async function checkDailyChatAvailability(
   }
 
   const mostRecentSession = todaySessions[0];
+
+  // Se o usuário for Administrador ou PRO, não é bloqueado por limite diário
+  if (isAdminOrPro) {
+    const active = todaySessions.find(s => s.status === 'open' && !evaluateSessionExpiry(s, nowMs).isExpired);
+    return {
+      canStartNewSession: !active,
+      activeSession: active || null,
+      lastSession: mostRecentSession,
+      dailyLimitReached: false
+    };
+  }
 
   // Existe sessão hoje: verificar se alguma ainda está ativa dentro dos 30 minutos
   for (const sess of todaySessions) {

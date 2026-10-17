@@ -1148,10 +1148,10 @@ useEffect(() => {
        return;
     }
 
-    // Validação de Limite Diário Estrito (30 min por dia civil local)
-    const check = await checkDailyChatAvailability(client.id, supabase);
+    // Validação de Limite Diário (Admin e PRO possuem acesso ilimitado sem bloqueio)
+    const check = await checkDailyChatAvailability(client.id, supabase, isAdmin || isManager);
 
-    if (check.dailyLimitReached) {
+    if (check.dailyLimitReached && !isAdmin && !isManager) {
       alert(check.message || 'O limite diário de atendimento (30 minutos) já foi atingido para este cliente hoje. Um novo chat poderá ser aberto amanhã a partir das 00:00.');
       return;
     }
@@ -1176,9 +1176,12 @@ useEffect(() => {
       console.error(err);
     }
 
-    // Se nenhuma sessão foi criada hoje, pede confirmação para iniciar o atendimento de 30 min
+    // Se precisa criar nova sessão, confirma início
     if (check.canStartNewSession) {
-      if (!window.confirm(`Gostaria de iniciar o chat com o cliente ${client.name}? O atendimento terá duração de 30 minutos (limite diário).`)) {
+      const confirmPrompt = (isAdmin || isManager)
+        ? `Gostaria de iniciar o chat com o cliente ${client.name}?`
+        : `Gostaria de iniciar o chat com o cliente ${client.name}? O atendimento terá duração de 30 minutos (limite diário).`;
+      if (!window.confirm(confirmPrompt)) {
         return;
       }
 
@@ -2430,7 +2433,7 @@ useEffect(() => {
                             {/* Botão Estou a caminho / Chat */}
                             {(() => {
                               const chatStatus = chatStatusByClient[client.id];
-                              const isChatInactive = isCompleted || (chatStatus?.isExpiredOrClosed && !chatStatus?.isActive);
+                              const isChatInactive = isCompleted || (!isAdmin && !isManager && chatStatus?.isExpiredOrClosed && !chatStatus?.isActive);
                               const unread = isChatInactive ? 0 : (unreadCounts[client.id] || 0);
 
                               return (

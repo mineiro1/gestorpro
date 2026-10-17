@@ -14,7 +14,8 @@ import {
   sendMetaMessage, 
   sendEvolutionMessage, 
   sendAstraCallsMessage, 
-  getEffectiveWhatsAppProvider 
+  getEffectiveWhatsAppProvider,
+  resolveAdminWhatsAppSettings
 } from '../lib/whatsapp';
 import { formatClientMessageTemplate } from '../lib/messageTemplates';
 
@@ -418,18 +419,9 @@ export default function Dashboard() {
     try {
       setSendingReminderId(client.id);
 
-      let currentSettings: any = userProfile?.whatsappSettings || {};
       const currentAdminId = userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId;
-      if (currentAdminId) {
-        try {
-          const { data } = await supabase.from('users').select('whatsapp_settings').eq('id', currentAdminId).single();
-          if (data && data.whatsapp_settings) {
-            currentSettings = { ...currentSettings, ...data.whatsapp_settings };
-          }
-        } catch (e) {
-          // ignore
-        }
-      }
+      const resolved = await resolveAdminWhatsAppSettings(currentAdminId, userProfile);
+      let currentSettings: any = { ...(userProfile?.whatsappSettings || {}), ...(resolved || {}) };
 
       if (!client.phone) {
         alert(`O cliente ${client.name} não possui telefone cadastrado.`);

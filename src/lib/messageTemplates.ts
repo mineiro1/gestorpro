@@ -308,6 +308,10 @@ export function formatClientMessageTemplate(
     .replace(/\{?telefone\s*de\s*cadastro\}?/gi, portalLoginPhone)
     .replace(/\{?telefone\s*do\s*cliente\}?/gi, portalLoginPhone);
 
+  // Fallback for receipt lines typed or copied without tags: "• Data: " or "* Data: " or "Data: "
+  msg = msg.replace(/([•\*\-]?\s*Data(\s*do\s*pagamento)?:\s*)(?=\r?\n|$)/gi, `$1${formattedPayDate}`);
+  msg = msg.replace(/([•\*\-]?\s*Pr[oó]ximo\s*vencimento:\s*)(?=\r?\n|$)/gi, `$1${formattedNextDue}`);
+
   // 8. Final cleanup: remove any leftover unmatched single template tags
   msg = msg.replace(/\{[a-zA-Z0-9_\s]{2,40}\}/g, (match) => {
     const lower = match.toLowerCase();

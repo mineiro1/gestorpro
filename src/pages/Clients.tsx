@@ -2,8 +2,20 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { openWhatsApp } from '../lib/whatsapp';
-import { Edit, Trash2, Plus, DollarSign, RotateCcw, Package, Search, MessageCircle, PlusCircle, Phone, RefreshCw } from 'lucide-react';
+import { 
+  openWhatsApp, 
+  sendMetaMessage, 
+  sendEvolutionMessage, 
+  sendAstraCallsMessage, 
+  getEffectiveWhatsAppProvider, 
+  resolveAdminWhatsAppSettings 
+} from '../lib/whatsapp';
+import { formatClientMessageTemplate } from '../lib/messageTemplates';
+import { 
+  Edit, Trash2, Plus, DollarSign, RotateCcw, Package, Search, 
+  MessageCircle, PlusCircle, Phone, RefreshCw, X, Send, Check, 
+  CheckCircle, AlertCircle 
+} from 'lucide-react';
 import { useRealtimeUpdates } from '../hooks/useRealtimeUpdates';
 import { useCall } from '../contexts/CallContext';
 
@@ -24,6 +36,10 @@ export default function Clients() {
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
   const [clientToPay, setClientToPay] = useState<any>(null);
   const [isSubmittingPayment, setIsSubmittingPayment] = useState(false);
+  const [sendReceiptOnConfirm, setSendReceiptOnConfirm] = useState(true);
+  const [customReceiptMessage, setCustomReceiptMessage] = useState('');
+  const [receiptToast, setReceiptToast] = useState<{ text: string; isError?: boolean } | null>(null);
+  const [waSettings, setWaSettings] = useState<any>({});
 
   // Undo Payment Modal
   const [paidClients, setPaidClients] = useState<Record<string, any>>({});
@@ -49,6 +65,26 @@ export default function Clients() {
   useEffect(() => {
     setCurrentPage(1);
   }, [searchTerm, filterActive]);
+
+  useEffect(() => {
+    async function loadWaSettings() {
+      const targetAdmin = isAdmin ? userProfile?.uid : userProfile?.adminId;
+      const settings = await resolveAdminWhatsAppSettings(targetAdmin, userProfile);
+      if (settings) {
+        setWaSettings(settings);
+      }
+    }
+    if (userProfile?.uid) {
+      loadWaSettings();
+    }
+  }, [userProfile, isAdmin]);
+
+  useEffect(() => {
+    if (receiptToast) {
+      const timer = setTimeout(() => setReceiptToast(null), 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [receiptToast]);
 
   const fetchClientsAndPayments = useCallback(async (isManual = false) => {
     if (!userProfile?.uid) return;
@@ -215,8 +251,16 @@ export default function Clients() {
     }
   };
 
-  const handlePaymentClick = (client: any) => {
+  const handlePaymentClick = async (client: any) => {
     setClientToPay(client);
+    setSendReceiptOnConfirm(true);
+    setCustomReceiptMessage('');
+    // Garante as configurações mais recentes do WhatsApp do administrador
+    const targetAdmin = isAdmin ? userProfile?.uid : userProfile?.adminId;
+    const settings = await resolveAdminWhatsAppSettings(targetAdmin, userProfile);
+    if (settings && Object.keys(settings).length > 0) {
+      setWaSettings(settings);
+    }
     setPaymentModalOpen(true);
   };
 
@@ -245,6 +289,168 @@ export default function Clients() {
     return `${year}-${formattedMonth}-${formattedDay}`;
   };
 
+  // Prévia dinâmica do recibo para o modal de pagamento
+  const getReceiptPreviewForCurrentClient = () => {
+    if (!clientToPay) return '';
+    const totalAmountPaid = Number(clientToPay.monthlyFee || 0) + Number(clientToPay.extraAmount || 0);
+    const currentDate = new Date();
+    const curMonth = currentDate.getMonth() + 1;
+    const curYear = currentDate.getFullYear();
+    const monthNames = [
+      'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+      'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+    ];
+    const monthFormatted = `${monthNames[curMonth - 1]}/${curYear}`;
+    const todayFormatted = currentDate.toLocaleDateString('pt-BR');
+    
+    let nextDueDateFormatted = '';
+    if (clientToPay.dueDate) {
+      try {
+        let currentDueDateStr = clientToPay.dueDate;
+        if (typeof currentDueDateStr !== 'string') {
+          let d = currentDueDateStr && typeof currentDueDateStr.toDate === 'function' ? currentDueDateStr.toDate() : new Date(currentDueDateStr);
+          currentDueDateStr = `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
+        }
+        const baseDay = clientToPay.baseDueDay || clientToPay.base_due_day || parseInt(currentDueDateStr.split('-')[2], 10) || 1;
+        const nd = calculateNextDueDate(currentDueDateStr, baseDay);
+        const [ny, nm, nday] = nd.split('-');
+        nextDueDateFormatted = `${nday}/${nm}/${ny}`;
+      } catch(e) {}
+    }
+
+    const templateToUse = customReceiptMessage || waSettings.receiptMessage || 
+      'Olá {nome}! Confirmamos o recebimento da sua mensalidade referente a {mes} no valor de R$ {valor}. Muito obrigado pela confiança e pontualidade! 💦✨\n\n*Comprovante de Quitação*\n• Cliente: {nome}\n• Valor Pago: R$ {valor}\n• Data: {data_pagamento}\n• Próximo Vencimento: {proximo_vencimento}';
+
+    return formatClientMessageTemplate(templateToUse, {
+      name: clientToPay.name,
+      phone: clientToPay.phone,
+      monthlyFee: totalAmountPaid,
+      monthly_price: totalAmountPaid,
+      paymentDate: todayFormatted,
+      referenceMonth: monthFormatted,
+      nextDueDate: nextDueDateFormatted,
+      pixKey: waSettings.pixKey,
+      pixReceiverName: waSettings.pixReceiverName
+    }, {
+      companyName: waSettings.companyName || userProfile?.whatsappSettings?.companyName || 'GestãoPro',
+      portalUrl: 'www.rspiscinas.app.br/client-panel',
+      referenceMonth: monthFormatted,
+      paymentDate: todayFormatted,
+      nextDueDate: nextDueDateFormatted,
+      pixKey: waSettings.pixKey,
+      pixReceiverName: waSettings.pixReceiverName
+    });
+  };
+
+  // Helper de envio do recibo digital via WhatsApp
+  const sendReceiptToClient = async (
+    client: { id: string; name: string; phone: string },
+    paymentData: { amount: number; paymentDate: string; refMonth: number; refYear: number; nextDueDate?: string },
+    customMessage?: string
+  ): Promise<boolean> => {
+    let currentSettings = waSettings;
+    const targetAdmin = isAdmin ? userProfile?.uid : userProfile?.adminId;
+    const resolved = await resolveAdminWhatsAppSettings(targetAdmin, userProfile);
+    if (resolved && Object.keys(resolved).length > 0) {
+      currentSettings = { ...waSettings, ...resolved };
+    }
+
+    if (!client.phone) {
+      alert(`O cliente ${client.name} não possui telefone cadastrado.`);
+      return false;
+    }
+
+    const cleanPhone = client.phone.replace(/\D/g, '');
+    const templateToUse = customMessage || currentSettings.receiptMessage || 
+      'Olá {nome}! Confirmamos o recebimento da sua mensalidade referente a {mes} no valor de R$ {valor}. Muito obrigado pela confiança e pontualidade! 💦✨\n\n*Comprovante de Quitação*\n• Cliente: {nome}\n• Valor Pago: R$ {valor}\n• Data: {data_pagamento}\n• Próximo Vencimento: {proximo_vencimento}';
+
+    const monthNames = [
+      'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+      'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+    ];
+    const monthFormatted = paymentData.refMonth >= 1 && paymentData.refMonth <= 12
+      ? `${monthNames[paymentData.refMonth - 1]}/${paymentData.refYear}`
+      : `${paymentData.refMonth}/${paymentData.refYear}`;
+
+    const formattedNextDue = paymentData.nextDueDate 
+      ? (paymentData.nextDueDate.includes('-') 
+          ? `${paymentData.nextDueDate.split('-')[2]}/${paymentData.nextDueDate.split('-')[1]}/${paymentData.nextDueDate.split('-')[0]}` 
+          : paymentData.nextDueDate)
+      : '';
+
+    const message = formatClientMessageTemplate(templateToUse, {
+      name: client.name,
+      phone: client.phone,
+      monthlyFee: paymentData.amount,
+      monthly_price: paymentData.amount,
+      extraAmount: 0,
+      paymentDate: paymentData.paymentDate,
+      referenceMonth: monthFormatted,
+      nextDueDate: formattedNextDue,
+      pixKey: currentSettings.pixKey,
+      pixReceiverName: currentSettings.pixReceiverName
+    }, {
+      companyName: currentSettings?.companyName || userProfile?.whatsappSettings?.companyName || 'GestãoPro',
+      portalUrl: 'www.rspiscinas.app.br/client-panel',
+      referenceMonth: monthFormatted,
+      paymentDate: paymentData.paymentDate,
+      nextDueDate: formattedNextDue,
+      pixKey: currentSettings.pixKey,
+      pixReceiverName: currentSettings.pixReceiverName
+    });
+
+    const receiptMsgId = `receipt_${client.id}_${paymentData.refYear}_${paymentData.refMonth}_${Date.now()}`;
+    const effectiveProvider = getEffectiveWhatsAppProvider(currentSettings);
+
+    if (effectiveProvider === 'manual') {
+      openWhatsApp(`55${cleanPhone}`, message);
+      setReceiptToast({ text: `WhatsApp aberto com o recibo para ${client.name}.` });
+      return true;
+    }
+
+    if (effectiveProvider === 'astracalls') {
+      try {
+        await sendAstraCallsMessage(client.phone, message, currentSettings, receiptMsgId);
+        setReceiptToast({ text: `Recibo de pagamento enviado com sucesso para ${client.name} via AstraCalls!` });
+        return true;
+      } catch (err: any) {
+        console.error(err);
+        if (confirm(`Falha no AstraCalls (${err.message}).\n\nDeseja abrir o WhatsApp no seu aparelho para enviar o recibo manualmente?`)) {
+          openWhatsApp(`55${cleanPhone}`, message);
+        }
+        return false;
+      }
+    } else if (effectiveProvider === 'meta') {
+      try {
+        await sendMetaMessage(client.phone, message, currentSettings, receiptMsgId);
+        setReceiptToast({ text: `Recibo de pagamento enviado com sucesso para ${client.name} via WhatsApp Meta!` });
+        return true;
+      } catch (err: any) {
+        console.error(err);
+        if (confirm(`Falha na API Meta (${err.message}).\n\nDeseja abrir o WhatsApp no seu aparelho para enviar o recibo manualmente?`)) {
+          openWhatsApp(`55${cleanPhone}`, message);
+        }
+        return false;
+      }
+    } else if (effectiveProvider === 'evolution') {
+      try {
+        await sendEvolutionMessage(client.phone, message, currentSettings, receiptMsgId);
+        setReceiptToast({ text: `Recibo de pagamento enviado com sucesso para ${client.name} via Evolution API!` });
+        return true;
+      } catch (err: any) {
+        console.error(err);
+        if (confirm(`Falha na Evolution API (${err.message}).\n\nDeseja abrir o WhatsApp no seu aparelho para enviar o recibo manualmente?`)) {
+          openWhatsApp(`55${cleanPhone}`, message);
+        }
+        return false;
+      }
+    } else {
+      openWhatsApp(`55${cleanPhone}`, message);
+      setReceiptToast({ text: `WhatsApp aberto com o recibo para ${client.name}.` });
+      return true;
+    }
+  };
+
   const confirmPayment = async () => {
     if (!clientToPay || !userProfile || isSubmittingPayment) return;
     setIsSubmittingPayment(true);
@@ -265,6 +471,42 @@ export default function Clients() {
       const extraAmt = Number(clientToPay.extraAmount || 0);
       const extraRsn = clientToPay.extraReason || null;
       const totalAmountPaid = Number(clientToPay.monthlyFee || 0) + extraAmt;
+      const todayFormatted = new Date().toLocaleDateString('pt-BR');
+
+      let nextDueDateStr = '';
+      if (clientToPay.dueDate) {
+        try {
+          let currentDueDateStr = clientToPay.dueDate;
+          
+          if (typeof currentDueDateStr !== 'string') {
+            let d;
+            if (currentDueDateStr && typeof currentDueDateStr.toDate === 'function') {
+              d = currentDueDateStr.toDate();
+            } else {
+              d = new Date(currentDueDateStr);
+            }
+            currentDueDateStr = `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
+          }
+
+          const baseDay = clientToPay.baseDueDay || clientToPay.base_due_day || parseInt(currentDueDateStr.split('-')[2], 10) || 1;
+          const nextDueDate = calculateNextDueDate(currentDueDateStr, baseDay);
+          nextDueDateStr = nextDueDate;
+          
+          await supabase.from('clients').update({
+            due_date: nextDueDate,
+            base_due_day: baseDay,
+            extra_amount: 0,
+            extra_reason: ''
+          }).eq('id', clientToPay.id);
+        } catch (err) {
+          console.error("Erro ao atualizar data de vencimento:", err);
+        }
+      } else {
+        await supabase.from('clients').update({
+          extra_amount: 0,
+          extra_reason: ''
+        }).eq('id', clientToPay.id);
+      }
 
       const currentAdminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
       const { error: insertError } = await supabase.from('payments').insert({
@@ -286,44 +528,25 @@ export default function Clients() {
       
       if(insertError) throw new Error(insertError.message);
 
-      // Update client due date
-      if (clientToPay.dueDate) {
-        try {
-          let currentDueDateStr = clientToPay.dueDate;
-          
-          // Se por algum motivo a data salva no banco for um timestamp ou objeto Date
-          if (typeof currentDueDateStr !== 'string') {
-            let d;
-            if (currentDueDateStr && typeof currentDueDateStr.toDate === 'function') {
-              d = currentDueDateStr.toDate();
-            } else {
-              d = new Date(currentDueDateStr);
-            }
-            currentDueDateStr = `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
-          }
-
-          const baseDay = clientToPay.baseDueDay || parseInt(currentDueDateStr.split('-')[2], 10) || 1;
-          const nextDueDate = calculateNextDueDate(currentDueDateStr, baseDay);
-          
-          await supabase.from('clients').update({
-            due_date: nextDueDate,
-            base_due_day: baseDay,
-            extra_amount: 0,
-            extra_reason: ''
-          }).eq('id', clientToPay.id);
-        } catch (err) {
-          console.error("Erro ao atualizar data de vencimento:", err);
-        }
-      } else {
-        // Just clear extra if no due date
-        await supabase.from('clients').update({
-          extra_amount: 0,
-          extra_reason: ''
-        }).eq('id', clientToPay.id);
+      // Dispara o recibo/comprovante digital se habilitado
+      if (sendReceiptOnConfirm && clientToPay.phone) {
+        await sendReceiptToClient(
+          { id: clientToPay.id, name: clientToPay.name, phone: clientToPay.phone },
+          {
+            amount: totalAmountPaid,
+            paymentDate: todayFormatted,
+            refMonth,
+            refYear,
+            nextDueDate: nextDueDateStr
+          },
+          customReceiptMessage || undefined
+        );
       }
 
       setPaymentModalOpen(false);
       setClientToPay(null);
+      setCustomReceiptMessage('');
+      fetchClientsAndPayments(true);
     } catch (error: any) {
       console.error(error);
       alert("Erro ao registrar pagamento: " + (error.message || "Verifique o console."));
@@ -430,6 +653,30 @@ export default function Clients() {
           )}
         </div>
       </div>
+
+      {/* Toast Feedback */}
+      {receiptToast && (
+        <div className={`mb-6 p-4 rounded-xl border flex items-center justify-between shadow-md transition-all ${
+          receiptToast.isError 
+            ? 'bg-red-50 border-red-200 text-red-800' 
+            : 'bg-emerald-50 border-emerald-300 text-emerald-900'
+        }`}>
+          <div className="flex items-center gap-2.5 text-sm font-semibold">
+            {receiptToast.isError ? (
+              <AlertCircle size={20} className="text-red-600 shrink-0" />
+            ) : (
+              <CheckCircle size={20} className="text-emerald-600 shrink-0" />
+            )}
+            <span>{receiptToast.text}</span>
+          </div>
+          <button
+            onClick={() => setReceiptToast(null)}
+            className="text-gray-400 hover:text-gray-600 p-1 cursor-pointer"
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
 
       <div className="flex border-b border-gray-200 mb-6">
          <button
@@ -720,32 +967,121 @@ export default function Clients() {
         </div>
       )}
 
-      {/* Payment Modal */}
-      {paymentModalOpen && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl p-6 max-w-sm w-full">
-            <h3 className="text-lg font-bold text-gray-900 mb-2">Registrar Pagamento</h3>
-            <p className="text-gray-600 mb-6">
-              Confirmar pagamento de R$ {((clientToPay?.monthlyFee || 0) + (clientToPay?.extraAmount || 0)).toFixed(2)} para {clientToPay?.name} neste mês?
-              {clientToPay?.extraAmount && clientToPay.extraAmount > 0 ? (
-                <span className="block mt-2 text-sm text-pink-600 font-medium">
-                  Inclui R$ {clientToPay.extraAmount.toFixed(2)} de extra ({clientToPay.extraReason || 'Sem motivo'}).
-                </span>
-              ) : null}
-            </p>
-            <div className="flex justify-end space-x-3">
+      {/* Modal de Confirmação de Pagamento com Recibo Digital (Padrão Billing) */}
+      {paymentModalOpen && clientToPay && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-lg w-full shadow-2xl border border-gray-100 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 bg-emerald-100 text-emerald-800 rounded-xl">
+                  <DollarSign size={22} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">Registrar Pagamento</h3>
+                  <p className="text-xs text-gray-500">Confirmação de baixa e emissão de recibo digital</p>
+                </div>
+              </div>
               <button
                 onClick={() => setPaymentModalOpen(false)}
-                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Resumo Financeiro da Mensalidade */}
+            <div className="my-4 p-4 bg-gray-50 rounded-xl border border-gray-200/80 space-y-2.5">
+              <div className="flex justify-between items-start">
+                <div>
+                  <span className="text-xs text-gray-500 block font-medium">Cliente</span>
+                  <span className="font-bold text-gray-900 text-base">{clientToPay?.name}</span>
+                  <span className="text-xs text-gray-500 block mt-0.5">{clientToPay?.phone || 'Sem telefone'}</span>
+                </div>
+                <div className="text-right">
+                  <span className="text-xs text-gray-500 block font-medium">Valor Total</span>
+                  <span className="font-black text-emerald-600 text-2xl tracking-tight">
+                    R$ {((clientToPay?.monthlyFee || 0) + (clientToPay?.extraAmount || 0)).toFixed(2)}
+                  </span>
+                </div>
+              </div>
+
+              {clientToPay?.extraAmount && clientToPay.extraAmount > 0 ? (
+                <div className="text-xs text-pink-700 bg-pink-50 p-2.5 rounded-lg border border-pink-200">
+                  Mensalidade: R$ {(clientToPay?.monthlyFee || 0).toFixed(2)} + Acréscimo Extra: R$ {clientToPay.extraAmount.toFixed(2)} ({clientToPay.extraReason || 'Não informado'})
+                </div>
+              ) : null}
+
+              <div className="flex items-center justify-between pt-2.5 border-t border-gray-200/70 text-xs text-gray-600">
+                <span>Data do Pagamento: <strong className="text-gray-800">{new Date().toLocaleDateString('pt-BR')}</strong></span>
+                <span>Vencimento Original: <strong className="text-gray-800">{clientToPay?.dueDate ? new Date(clientToPay.dueDate + 'T12:00:00').toLocaleDateString('pt-BR') : 'N/A'}</strong></span>
+              </div>
+            </div>
+
+            {/* Caixa de Opção: Enviar Recibo de Quitação no WhatsApp */}
+            <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/60 space-y-3">
+              <label className="flex items-start gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={sendReceiptOnConfirm}
+                  onChange={e => setSendReceiptOnConfirm(e.target.checked)}
+                  className="mt-1 rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
+                />
+                <div>
+                  <span className="font-bold text-sm text-emerald-950 flex items-center gap-1.5">
+                    <MessageCircle size={16} className="text-emerald-700" />
+                    Enviar Comprovante / Recibo no WhatsApp
+                  </span>
+                  <span className="text-xs text-emerald-800 block mt-0.5 leading-relaxed">
+                    Dispara automaticamente a mensagem profissional de confirmação e agradecimento com os dados da quitação.
+                  </span>
+                </div>
+              </label>
+
+              {sendReceiptOnConfirm && (
+                <div className="pt-2 border-t border-emerald-200/80">
+                  <span className="text-xs font-semibold text-emerald-900 block mb-1">
+                    Prévia do Recibo a ser enviado:
+                  </span>
+                  <div className="p-3 bg-white rounded-lg border border-emerald-300 text-xs text-gray-800 font-mono whitespace-pre-wrap leading-relaxed max-h-36 overflow-y-auto shadow-inner">
+                    {getReceiptPreviewForCurrentClient()}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-6 flex justify-end space-x-3">
+              <button
+                onClick={() => setPaymentModalOpen(false)}
+                className="px-4 py-2.5 text-gray-600 hover:bg-gray-100 rounded-xl transition-colors font-semibold text-sm cursor-pointer"
+                disabled={isSubmittingPayment}
               >
                 Cancelar
               </button>
               <button
                 onClick={confirmPayment}
                 disabled={isSubmittingPayment}
-                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50"
+                className={`px-5 py-2.5 rounded-xl text-white font-bold transition-all shadow-sm flex items-center gap-2 cursor-pointer text-sm ${
+                  sendReceiptOnConfirm 
+                    ? 'bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700' 
+                    : 'bg-green-600 hover:bg-green-700'
+                } disabled:opacity-50`}
               >
-                {isSubmittingPayment ? 'Confirmando...' : 'Confirmar'}
+                {isSubmittingPayment ? (
+                  <>
+                    <RefreshCw size={16} className="animate-spin" />
+                    <span>Processando...</span>
+                  </>
+                ) : sendReceiptOnConfirm ? (
+                  <>
+                    <Send size={16} />
+                    <span>Confirmar & Enviar Recibo</span>
+                  </>
+                ) : (
+                  <>
+                    <Check size={16} />
+                    <span>Confirmar Pagamento</span>
+                  </>
+                )}
               </button>
             </div>
           </div>
