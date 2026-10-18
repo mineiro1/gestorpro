@@ -2972,9 +2972,30 @@ app.all("/api/sync-payment", async (req, res) => {
     }
   }
 
-  // Helper específico para envio de push ao Administrador
+  // Helper específico para envio de push ao Administrador com fallback de alta disponibilidade
   async function sendPushToAdmin(adminId: string, title: string, body: string, data: Record<string, string> = {}) {
-    return sendPushToUser(adminId, title, body, data);
+    let sent = false;
+    if (adminId) {
+      sent = await sendPushToUser(adminId, title, body, data);
+    }
+
+    // Se o admin vinculado ao colaborador/cliente não possui dispositivo cadastrado (ou se for diferente do principal),
+    // despacha para o administrador principal do sistema e outros admins ativos com dispositivo conectado
+    if (!sent || adminId !== '698dfcdd-7c91-4df5-aaee-eae9e67f15ae') {
+      const { data: allAdmins } = await supabaseAdmin
+        .from('users')
+        .select('id, fcm_token')
+        .eq('role', 'admin')
+        .not('fcm_token', 'is', null);
+
+      for (const adm of (allAdmins || [])) {
+        if (adm.id !== adminId && adm.fcm_token) {
+          const ok = await sendPushToUser(adm.id, title, body, data);
+          if (ok) sent = true;
+        }
+      }
+    }
+    return sent;
   }
 
   // Helper específico para envio de push ao Colaborador
@@ -3082,21 +3103,15 @@ app.all("/api/sync-payment", async (req, res) => {
     }
   });
 
-  // Conjunto em memória de atendimentos já notificados pelo sistema online
-  const notifiedVisitKeys = new Set<string>();
-
   // Processador central de finalização de visita / serviço: disparado pelo sistema online de forma autônoma
   async function handleVisitCompleted(visitRecord: any, isOneOffJob = false): Promise<boolean> {
     try {
-      if (!visitRecord || !visitRecord.id) return false;
-      const visitId = String(visitRecord.id);
+      if (!visitRecord) return false;
+      const visitId = String(visitRecord.id || visitRecord.client_id || Date.now());
       const dedupeKey = isOneOffJob ? `job_${visitId}` : `visit_${visitId}`;
 
-      if (notifiedVisitKeys.has(dedupeKey)) {
-        return false;
-      }
+      // Deduplicação inteligente de 15 segundos (evita repetições instantâneas sem bloquear visitas futuras)
       if (!shouldSendPush(dedupeKey)) {
-        notifiedVisitKeys.add(dedupeKey);
         return false;
       }
 
@@ -3127,24 +3142,7 @@ app.all("/api/sync-payment", async (req, res) => {
       }
 
       // 3. Determinar o Admin Responsável pelo Colaborador
-      // Ordem de resolução:
-      // a) visitRecord.admin_id
-      // b) employeeAdminId (o admin_id vinculado ao cadastro do colaborador no banco)
-      // c) clientAdminId (o admin_id do cliente atendido)
-      // d) primeiro admin geral do sistema
       let targetAdminId = visitRecord.admin_id || employeeAdminId || clientAdminId;
-      if (!targetAdminId) {
-        const { data: fallbackAdmin } = await supabaseAdmin
-          .from('users')
-          .select('id')
-          .eq('role', 'admin')
-          .limit(1)
-          .maybeSingle();
-        if (fallbackAdmin?.id) {
-          targetAdminId = fallbackAdmin.id;
-        }
-      }
-
       if (!targetAdminId) {
         targetAdminId = '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
       }
@@ -3152,7 +3150,7 @@ app.all("/api/sync-payment", async (req, res) => {
       const title = isOneOffJob ? '🏊 Serviço Avulso Finalizado' : '🏊 Visita Finalizada!';
       const body = `O colaborador ${empName} finalizou o atendimento no cliente ${clientName}.`;
 
-      console.log(`[Online Push Engine - SISTEMA ONLINE] Disparando notificação de atendimento finalizado para o admin responsável (${targetAdminId}): "${title}" - "${body}"`);
+      console.log(`[Online Push Engine - SISTEMA ONLINE] Disparando notificação de atendimento finalizado para o admin (${targetAdminId}): "${title}" - "${body}"`);
 
       const sent = await sendPushToAdmin(
         targetAdminId,
@@ -3169,12 +3167,6 @@ app.all("/api/sync-payment", async (req, res) => {
         }
       );
 
-      notifiedVisitKeys.add(dedupeKey);
-      if (notifiedVisitKeys.size > 2000) {
-        const firstKeys = Array.from(notifiedVisitKeys).slice(0, 500);
-        firstKeys.forEach(k => notifiedVisitKeys.delete(k));
-      }
-
       return sent;
     } catch (err: any) {
       console.error('[Online Push Engine] Erro ao processar finalização de visita:', err);
@@ -3188,7 +3180,7 @@ app.all("/api/sync-payment", async (req, res) => {
       const { visitId, adminId, employeeId, clientId, clientName, techName, type } = req.body || {};
       const isJob = type === 'job';
       const visitRecord = {
-        id: visitId,
+        id: visitId || clientId || `${isJob ? 'job' : 'visit'}_${Date.now()}`,
         admin_id: adminId,
         employee_id: employeeId,
         client_id: clientId,

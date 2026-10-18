@@ -183,6 +183,7 @@ export default function OneOffJobs() {
           adminId: targetAdminId,
           employeeId: job.employeeId || userProfile?.uid,
           clientId: job.id,
+          visitId: job.id,
           clientName: job.clientName,
           type: 'job'
         }).catch(e => console.warn('[Push] Error notifying job completion:', e));

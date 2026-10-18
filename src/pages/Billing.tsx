@@ -75,6 +75,7 @@ export default function Billing() {
     reportMessage1: 'Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}',
     reportMessage2: 'Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}',
     receiptMessage: 'Olá {nome}! Confirmamos o recebimento da sua mensalidade referente a {mes} no valor de R$ {valor}. Muito obrigado pela confiança e pontualidade! 💦✨\n\n*Comprovante de Quitação*\n• Cliente: {nome}\n• Valor Pago: R$ {valor}\n• Data: {data_pagamento}\n• Próximo Vencimento: {proximo_vencimento}',
+    onTheWayMessage: 'Olá {nome}! Seu técnico {tecnico} já está a caminho da sua residência. Previsão de chegada: ~15 minutos.',
     pixKey: '',
     pixReceiverName: '',
     pixKeyType: 'phone',
@@ -147,6 +148,7 @@ export default function Billing() {
           reportMessage1: (s.reportMessage1 || 'Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}').replace(/https:\/\/www\.rspiscinas\.app\.br\/client-panel/gi, 'www.rspiscinas.app.br/client-panel'),
           reportMessage2: (s.reportMessage2 || 'Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}').replace(/https:\/\/www\.rspiscinas\.app\.br\/client-panel/gi, 'www.rspiscinas.app.br/client-panel'),
           receiptMessage: s.receiptMessage || 'Olá {nome}! Confirmamos o recebimento da sua mensalidade referente a {mes} no valor de R$ {valor}. Muito obrigado pela confiança e pontualidade! 💦✨\n\n*Comprovante de Quitação*\n• Cliente: {nome}\n• Valor Pago: R$ {valor}\n• Data: {data_pagamento}\n• Próximo Vencimento: {proximo_vencimento}',
+          onTheWayMessage: s.onTheWayMessage || 'Olá {nome}! Seu técnico {tecnico} já está a caminho da sua residência. Previsão de chegada: ~15 minutos.',
           pixKey: s.pixKey || '',
           pixReceiverName: s.pixReceiverName || '',
           pixKeyType: s.pixKeyType || 'phone',
@@ -1448,6 +1450,22 @@ export default function Billing() {
                   rows={4}
                   value={waSettings.reportMessage2}
                   onChange={e => setWaSettings({...waSettings, reportMessage2: e.target.value})}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="flex justify-between items-center mb-1">
+                  <span className="block text-sm font-medium text-gray-700">Aviso de Deslocamento ("Estou a Caminho")</span>
+                  <span className="text-xs font-normal text-gray-500">Variáveis: {'{nome}'}, {'{tecnico}'}, {'{empresa}'}</span>
+                </label>
+                <p className="text-xs text-gray-500 mb-2">
+                  Mensagem concisa e educada enviada pela Rota de Atendimento antes de se deslocar até a residência do cliente.
+                </p>
+                <textarea
+                  rows={2}
+                  value={waSettings.onTheWayMessage || 'Olá {nome}! Seu técnico {tecnico} já está a caminho da sua residência. Previsão de chegada: ~15 minutos.'}
+                  onChange={e => setWaSettings({...waSettings, onTheWayMessage: e.target.value})}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none text-sm"
                 />
               </div>

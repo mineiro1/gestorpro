@@ -3,6 +3,7 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { RS_LOGO_BASE64 } from '../assets/logoBase64';
+import { formatAstraCallsNumber } from '../lib/whatsapp';
 
 export default function Login() {
   const location = useLocation();
@@ -62,28 +63,45 @@ export default function Login() {
               });
               
               if (untrimmedFallbackServi.error) {
-                 // Third fallback: maybe it's a client using phone with mask as password
+                 // Third fallback: check if client is registered in AstraCalls format (55 + DDD + 8 digits)
+                 const astraPhone = formatAstraCallsNumber(cleanPhone);
                  const cleanedPassword = password.replace(/\D/g, '');
-                 if (cleanedPassword.length >= 6) {
-                   const clientFallbackGestao = await supabase.auth.signInWithPassword({
-                     email: emailGestao,
-                     password: cleanedPassword,
+                 const astraPassword = formatAstraCallsNumber(cleanedPassword) || cleanedPassword;
+
+                 let astraSuccess = false;
+                 if (astraPhone && astraPhone !== cleanPhone) {
+                   const astraGestao = await supabase.auth.signInWithPassword({
+                     email: `${astraPhone}@gestaopro.com`,
+                     password: astraPassword || password.trim(),
                    });
-                   
-                   if (clientFallbackGestao.error) {
-                      const clientFallbackServi = await supabase.auth.signInWithPassword({
-                        email: emailServi,
-                        password: cleanedPassword,
-                      });
-                      if (clientFallbackServi.error) {
-                        throw fetchFallback.error; // throw original
-                      }
-                      data = clientFallbackServi.data;
-                   } else {
-                     data = clientFallbackGestao.data;
+                   if (!astraGestao.error && astraGestao.data) {
+                     data = astraGestao.data;
+                     astraSuccess = true;
                    }
-                 } else {
-                   throw fetchFallback.error;
+                 }
+
+                 if (!astraSuccess) {
+                   if (cleanedPassword.length >= 6) {
+                     const clientFallbackGestao = await supabase.auth.signInWithPassword({
+                       email: emailGestao,
+                       password: cleanedPassword,
+                     });
+                     
+                     if (clientFallbackGestao.error) {
+                        const clientFallbackServi = await supabase.auth.signInWithPassword({
+                          email: emailServi,
+                          password: cleanedPassword,
+                        });
+                        if (clientFallbackServi.error) {
+                          throw fetchFallback.error; // throw original
+                        }
+                        data = clientFallbackServi.data;
+                     } else {
+                       data = clientFallbackGestao.data;
+                     }
+                   } else {
+                     throw fetchFallback.error;
+                   }
                  }
               } else {
                  data = untrimmedFallbackServi.data;

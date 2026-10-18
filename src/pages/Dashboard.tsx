@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
@@ -6,7 +6,9 @@ import { useRealtimeUpdates } from '../hooks/useRealtimeUpdates';
 import { 
   Users, DollarSign, AlertCircle, CheckCircle, Clock, CreditCard, 
   MessageCircle, Eye, EyeOff, RefreshCw, Send, Calendar, TrendingUp, 
-  ShieldCheck, ArrowRight, Check, Sparkles, AlertTriangle
+  ShieldCheck, ArrowRight, Check, Sparkles, AlertTriangle,
+  CloudSun, CloudRain, Sun, CloudLightning, Wind, Droplets, Percent, ChevronLeft, ChevronRight, X, ArrowUpRight, Award, FileCheck,
+  Crown, Gem, Gift, Star
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -18,6 +20,8 @@ import {
   resolveAdminWhatsAppSettings
 } from '../lib/whatsapp';
 import { formatClientMessageTemplate } from '../lib/messageTemplates';
+import { fetchWeatherData, WeatherData } from '../lib/weatherService';
+import { evaluateClientContract, loadContractsMetadata, saveContractAdjustment, ClientContractInfo } from '../lib/contractUtils';
 
 interface DashboardStats {
   totalClients: number;
@@ -42,6 +46,25 @@ interface UpcomingClient {
   dueDate: string;
   diffDays: number;
   rawClient?: any;
+}
+
+export interface VipClientInfo {
+  id: string;
+  name: string;
+  phone: string;
+  monthlyFee: number;
+  monthsActive: number;
+  yearsActive: number;
+  startDateFormatted: string;
+  totalPaymentsCount: number;
+  totalPaidAmount: number;
+  isCurrentlyDelayed: boolean;
+  vipScore: number;
+  tier: 'diamond' | 'gold' | 'silver';
+  tierLabel: string;
+  tierBadgeColor: string;
+  loyaltyBenefitSuggested: string;
+  rawClient: any;
 }
 
 export default function Dashboard() {
@@ -103,6 +126,48 @@ export default function Dashboard() {
   const [sendingReminderId, setSendingReminderId] = useState<string | null>(null);
   const [feedbackMessage, setFeedbackMessage] = useState<{ text: string; isError?: boolean } | null>(null);
 
+  // Weather & Storm Alert State
+  const [weatherData, setWeatherData] = useState<WeatherData | null>(null);
+  const [weatherLoading, setWeatherLoading] = useState<boolean>(false);
+
+  // Contract Management & Annual Readjustment State
+  const [contractClients, setContractClients] = useState<ClientContractInfo[]>([]);
+  const [eligibleContractClients, setEligibleContractClients] = useState<ClientContractInfo[]>([]);
+  const [selectedContractClient, setSelectedContractClient] = useState<ClientContractInfo | null>(null);
+  const [adjustmentPercent, setAdjustmentPercent] = useState<number>(8); // 8% standard
+  const [customPriceInput, setCustomPriceInput] = useState<string>('');
+  const [sendContractWhatsapp, setSendContractWhatsapp] = useState<boolean>(true);
+  const [isApplyingAdjustment, setIsApplyingAdjustment] = useState<boolean>(false);
+  const [contractModalOpen, setContractModalOpen] = useState<boolean>(false);
+
+  // VIP Clients & Loyalty Program State
+  const [vipClients, setVipClients] = useState<VipClientInfo[]>([]);
+  const [vipTierFilter, setVipTierFilter] = useState<'all' | 'diamond' | 'gold' | 'silver'>('all');
+  const [selectedVipClient, setSelectedVipClient] = useState<VipClientInfo | null>(null);
+  const [vipBenefitType, setVipBenefitType] = useState<'discount_percent' | 'discount_fixed' | 'service_gift'>('discount_percent');
+  const [vipDiscountPercent, setVipDiscountPercent] = useState<number>(10);
+  const [vipDiscountFixed, setVipDiscountFixed] = useState<number>(30);
+  const [vipServiceGiftName, setVipServiceGiftName] = useState<string>('Cristalização Total da Piscina de Cortesia');
+  const [applyDiscountToClientFee, setApplyDiscountToClientFee] = useState<boolean>(true);
+  const [sendVipWhatsapp, setSendVipWhatsapp] = useState<boolean>(true);
+  const [isApplyingVipBenefit, setIsApplyingVipBenefit] = useState<boolean>(false);
+  const [vipModalOpen, setVipModalOpen] = useState<boolean>(false);
+
+  // Lateral scrolling refs for card carousels
+  const upcomingScrollRef = useRef<HTMLDivElement>(null);
+  const unvisitedScrollRef = useRef<HTMLDivElement>(null);
+  const contractsScrollRef = useRef<HTMLDivElement>(null);
+  const vipScrollRef = useRef<HTMLDivElement>(null);
+
+  const scrollContainer = (ref: React.RefObject<HTMLDivElement | null>, direction: 'left' | 'right', distance = 350) => {
+    if (ref.current) {
+      ref.current.scrollBy({
+        left: direction === 'left' ? -distance : distance,
+        behavior: 'smooth'
+      });
+    }
+  };
+
   const adminId = userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId;
   const refreshTrigger = useRealtimeUpdates(['clients', 'visits', 'oneoffjobs', 'payments'], 'admin_id', adminId);
 
@@ -129,6 +194,7 @@ export default function Dashboard() {
       const clientsNoVisit: any[] = [];
       const totalActiveClientsList: any[] = [];
       const clientsWhoPaidThisMonth = new Set<string>();
+      const delayedClientIds = new Set<string>();
 
       // 1. Fetch Payments for current month
       const paymentsSnap = await supabase
@@ -216,6 +282,7 @@ export default function Dashboard() {
               if (!clientsWhoPaidThisMonth.has(data.id)) {
                 actualDelayedClients++;
                 delayedTotalAmount += fullPrice;
+                delayedClientIds.add(data.id);
               }
             }
 
@@ -374,6 +441,137 @@ export default function Dashboard() {
         taxaRecebimento,
       });
 
+      // 5. Previsão do Tempo & Alerta Meteorológico para Piscinas (Open-Meteo)
+      try {
+        const weather = await fetchWeatherData();
+        if (weather) setWeatherData(weather);
+      } catch (err) {
+        console.warn('Weather fetch failed:', err);
+      }
+
+      // 6. Gestão de Contratos e Alerta de Reajuste Anual Automático
+      try {
+        const contractsMeta = await loadContractsMetadata();
+        if (clientsSnap?.data) {
+          const evaluated: ClientContractInfo[] = [];
+          clientsSnap.data.forEach((client: any) => {
+            if (client.active !== false) {
+              const info = evaluateClientContract(client, contractsMeta[client.id]);
+              evaluated.push(info);
+            }
+          });
+          evaluated.sort((a, b) => b.monthsActive - a.monthsActive);
+          setContractClients(evaluated);
+          const eligible = evaluated.filter(c => c.isEligibleForAdjustment);
+          setEligibleContractClients(eligible);
+        }
+      } catch (err) {
+        console.warn('Contracts evaluation failed:', err);
+      }
+
+      // 7. Avaliação e Ranking de Clientes VIP (Maior tempo de contrato e pontualidade)
+      try {
+        const paymentsByClient: Record<string, { count: number; total: number }> = {};
+        if (paymentsSnap?.data) {
+          paymentsSnap.data.forEach((p: any) => {
+            const cid = p.client_id;
+            if (!cid) return;
+            if (!paymentsByClient[cid]) paymentsByClient[cid] = { count: 0, total: 0 };
+            paymentsByClient[cid].count += 1;
+            paymentsByClient[cid].total += Number(p.amount || 0);
+          });
+        }
+
+        const contractsMeta = await loadContractsMetadata();
+
+        if (clientsSnap?.data) {
+          const vips: VipClientInfo[] = [];
+
+          clientsSnap.data.forEach((client: any) => {
+            if (client.active === false) return;
+
+            const isDelayed = delayedClientIds.has(client.id);
+            // Clientes VIP priorizam pontualidade e fidelidade (sem débitos em atraso)
+            if (isDelayed) return;
+
+            const currentPrice = Number(client.monthly_price || client.monthly_fee || 0);
+            if (currentPrice <= 0) return;
+
+            const rawStartDate = contractsMeta[client.id]?.customStartDate || client.created_at || new Date().toISOString();
+            const startDate = new Date(rawStartDate);
+            const now = new Date();
+            const totalMonths = Math.max(1, (now.getFullYear() - startDate.getFullYear()) * 12 + (now.getMonth() - startDate.getMonth()));
+            const yearsActive = Math.floor(totalMonths / 12);
+
+            const pInfo = paymentsByClient[client.id] || { count: 0, total: 0 };
+
+            // Cálculo do Score VIP (0 a 100)
+            // 1. Tempo de Contrato (até 45 pontos)
+            let timeScore = 12;
+            if (totalMonths >= 24) timeScore = 45;
+            else if (totalMonths >= 18) timeScore = 40;
+            else if (totalMonths >= 12) timeScore = 35;
+            else if (totalMonths >= 6) timeScore = 25;
+            else if (totalMonths >= 3) timeScore = 18;
+
+            // 2. Pontualidade e Histórico de Pagamentos (até 35 pontos)
+            // Está adimplente (+25) e tem pagamentos confirmados (+2 por pagamento registrado até +10)
+            const punctualityScore = 25 + Math.min(10, pInfo.count * 2);
+
+            // 3. Ticket Mensal (até 20 pontos)
+            let ticketScore = 10;
+            if (currentPrice >= 400) ticketScore = 20;
+            else if (currentPrice >= 300) ticketScore = 16;
+            else if (currentPrice >= 200) ticketScore = 12;
+
+            const vipScore = Math.min(100, Math.round(timeScore + punctualityScore + ticketScore));
+
+            // Classificação em Tiers
+            let tier: 'diamond' | 'gold' | 'silver' = 'silver';
+            let tierLabel = 'VIP Prata';
+            let tierBadgeColor = 'bg-slate-100 text-slate-800 border-slate-300';
+            let loyaltyBenefitSuggested = '5% de desconto de fidelidade OU Análise Química Especial de cortesia';
+
+            if (vipScore >= 80 || totalMonths >= 18) {
+              tier = 'diamond';
+              tierLabel = 'VIP Diamante';
+              tierBadgeColor = 'bg-cyan-100 text-cyan-900 border-cyan-300 shadow-xs';
+              loyaltyBenefitSuggested = '10% de desconto de fidelidade OU Cristalização de Piscina de cortesia';
+            } else if (vipScore >= 60 || totalMonths >= 9) {
+              tier = 'gold';
+              tierLabel = 'VIP Ouro';
+              tierBadgeColor = 'bg-amber-100 text-amber-900 border-amber-300 shadow-xs';
+              loyaltyBenefitSuggested = '8% de desconto de fidelidade OU Polimento de Bordas de cortesia';
+            }
+
+            vips.push({
+              id: client.id,
+              name: client.name,
+              phone: client.phone || client.local_phone || '',
+              monthlyFee: currentPrice,
+              monthsActive: totalMonths,
+              yearsActive,
+              startDateFormatted: rawStartDate.split('T')[0],
+              totalPaymentsCount: pInfo.count,
+              totalPaidAmount: pInfo.total,
+              isCurrentlyDelayed: false,
+              vipScore,
+              tier,
+              tierLabel,
+              tierBadgeColor,
+              loyaltyBenefitSuggested,
+              rawClient: client
+            });
+          });
+
+          // Ordena por Score VIP decrescente e meses ativos decrescentes
+          vips.sort((a, b) => b.vipScore - a.vipScore || b.monthsActive - a.monthsActive);
+          setVipClients(vips);
+        }
+      } catch (err) {
+        console.warn('VIP clients evaluation failed:', err);
+      }
+
       setLastUpdated(new Date());
     } catch (error) {
       console.error(error);
@@ -518,6 +716,275 @@ export default function Dashboard() {
     }
   };
 
+  // Weather Refresh
+  const handleRefreshWeather = async () => {
+    setWeatherLoading(true);
+    try {
+      localStorage.removeItem('gestaopro_weather_cache');
+      const data = await fetchWeatherData();
+      if (data) {
+        setWeatherData(data);
+        setFeedbackMessage({ text: 'Previsão do tempo atualizada com sucesso!' });
+      }
+    } catch (e: any) {
+      console.error(e);
+      setFeedbackMessage({ text: 'Não foi possível atualizar a previsão do tempo.', isError: true });
+    } finally {
+      setWeatherLoading(false);
+      setTimeout(() => setFeedbackMessage(null), 4000);
+    }
+  };
+
+  // Contract Adjustment Handlers
+  const openAdjustmentModal = (clientInfo: ClientContractInfo) => {
+    setSelectedContractClient(clientInfo);
+    setAdjustmentPercent(8);
+    const calculated = Math.round(clientInfo.currentPrice * 1.08);
+    setCustomPriceInput(calculated.toFixed(2));
+    setSendContractWhatsapp(true);
+    setContractModalOpen(true);
+  };
+
+  const handlePercentChange = (pct: number) => {
+    setAdjustmentPercent(pct);
+    if (selectedContractClient) {
+      const calculated = selectedContractClient.currentPrice * (1 + pct / 100);
+      setCustomPriceInput(calculated.toFixed(2));
+    }
+  };
+
+  const handleCustomPriceChange = (val: string) => {
+    setCustomPriceInput(val);
+    const num = parseFloat(val);
+    if (!isNaN(num) && selectedContractClient && selectedContractClient.currentPrice > 0) {
+      const diff = ((num - selectedContractClient.currentPrice) / selectedContractClient.currentPrice) * 100;
+      setAdjustmentPercent(Math.round(diff * 10) / 10);
+    }
+  };
+
+  const executeContractAdjustment = async () => {
+    if (!selectedContractClient) return;
+    const newPrice = parseFloat(customPriceInput);
+    if (isNaN(newPrice) || newPrice <= 0) {
+      alert('Por favor, informe um valor de mensalidade válido.');
+      return;
+    }
+
+    setIsApplyingAdjustment(true);
+    try {
+      const success = await saveContractAdjustment(
+        selectedContractClient.clientId,
+        newPrice,
+        adjustmentPercent
+      );
+
+      if (!success) {
+        throw new Error('Falha ao salvar o reajuste no banco de dados');
+      }
+
+      // Se solicitado, dispara o comunicado de reajuste no WhatsApp do cliente
+      if (sendContractWhatsapp && selectedContractClient.clientPhone) {
+        const currentAdminId = userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId;
+        const currentSettings = await resolveAdminWhatsAppSettings(currentAdminId, userProfile);
+        const companyName = currentSettings?.companyName || userProfile?.whatsappSettings?.companyName || 'RS Piscinas';
+
+        const template = 'Olá {nome}! Tudo bem? Seu contrato de manutenção preventiva de piscina com a {empresa} completou 1 ano neste mês de {mes_aniversario}. Informamos que, conforme nosso reajuste anual de {percentual}%, a sua mensalidade passará de R$ {antigo_valor} para R$ {novo_valor}. Agradecemos imensamente a sua parceria e confiança em nosso trabalho! 🏊‍♂️✨';
+
+        const message = formatClientMessageTemplate(template, {
+          name: selectedContractClient.clientName,
+          phone: selectedContractClient.clientPhone,
+          monthlyFee: newPrice,
+          monthly_price: newPrice
+        }, {
+          companyName,
+          newPrice,
+          oldPrice: selectedContractClient.currentPrice,
+          adjustmentPercent,
+          anniversaryMonth: selectedContractClient.anniversaryMonthName
+        });
+
+        const effectiveProvider = getEffectiveWhatsAppProvider(currentSettings);
+        const cleanPhone = selectedContractClient.clientPhone.replace(/\D/g, '');
+        const msgId = `adj_${selectedContractClient.clientId}_${Date.now()}`;
+
+        if (effectiveProvider === 'astracalls') {
+          try {
+            await sendAstraCallsMessage(selectedContractClient.clientPhone, message, currentSettings, msgId);
+          } catch {
+            openWhatsApp(`55${cleanPhone}`, message);
+          }
+        } else if (effectiveProvider === 'meta') {
+          try {
+            await sendMetaMessage(selectedContractClient.clientPhone, message, currentSettings, msgId);
+          } catch {
+            openWhatsApp(`55${cleanPhone}`, message);
+          }
+        } else if (effectiveProvider === 'evolution') {
+          try {
+            await sendEvolutionMessage(selectedContractClient.clientPhone, message, currentSettings, msgId);
+          } catch {
+            openWhatsApp(`55${cleanPhone}`, message);
+          }
+        } else {
+          openWhatsApp(`55${cleanPhone}`, message);
+        }
+      }
+
+      setFeedbackMessage({ text: `Reajuste de ${adjustmentPercent}% aplicado com sucesso para ${selectedContractClient.clientName}!` });
+      setContractModalOpen(false);
+      setSelectedContractClient(null);
+      await fetchStats(true);
+    } catch (err: any) {
+      console.error(err);
+      alert('Erro ao aplicar reajuste: ' + (err.message || ''));
+    } finally {
+      setIsApplyingAdjustment(false);
+      setTimeout(() => setFeedbackMessage(null), 5000);
+    }
+  };
+
+  // VIP Loyalty Benefit Handlers
+  const openVipModal = (client: VipClientInfo) => {
+    setSelectedVipClient(client);
+    setVipBenefitType(client.tier === 'diamond' ? 'discount_percent' : client.tier === 'gold' ? 'discount_percent' : 'service_gift');
+    setVipDiscountPercent(client.tier === 'diamond' ? 10 : client.tier === 'gold' ? 8 : 5);
+    setVipDiscountFixed(30);
+    setVipServiceGiftName(
+      client.tier === 'diamond'
+        ? 'Cristalização Total da Piscina de Cortesia'
+        : client.tier === 'gold'
+        ? 'Polimento e Limpeza de Bordas de Cortesia'
+        : 'Análise Química Laboratorial Especial de Cortesia'
+    );
+    setApplyDiscountToClientFee(true);
+    setSendVipWhatsapp(true);
+    setVipModalOpen(true);
+  };
+
+  const getVipBenefitDescription = (client: VipClientInfo) => {
+    if (vipBenefitType === 'discount_percent') {
+      const discVal = client.monthlyFee * (vipDiscountPercent / 100);
+      const newFee = client.monthlyFee - discVal;
+      return `${vipDiscountPercent}% de desconto na mensalidade (de R$ ${client.monthlyFee.toFixed(2)} por R$ ${newFee.toFixed(2)})`;
+    }
+    if (vipBenefitType === 'discount_fixed') {
+      const newFee = Math.max(0, client.monthlyFee - vipDiscountFixed);
+      return `Desconto especial de R$ ${vipDiscountFixed.toFixed(2)} (mensalidade de R$ ${client.monthlyFee.toFixed(2)} por R$ ${newFee.toFixed(2)})`;
+    }
+    return vipServiceGiftName;
+  };
+
+  const executeVipBenefit = async () => {
+    if (!selectedVipClient) return;
+
+    setIsApplyingVipBenefit(true);
+    try {
+      const benefitText = getVipBenefitDescription(selectedVipClient);
+
+      // Se for desconto e o usuário marcou para aplicar na mensalidade
+      if ((vipBenefitType === 'discount_percent' || vipBenefitType === 'discount_fixed') && applyDiscountToClientFee) {
+        let newMonthlyPrice = selectedVipClient.monthlyFee;
+        if (vipBenefitType === 'discount_percent') {
+          newMonthlyPrice = Math.round(selectedVipClient.monthlyFee * (1 - vipDiscountPercent / 100));
+        } else {
+          newMonthlyPrice = Math.max(0, Math.round(selectedVipClient.monthlyFee - vipDiscountFixed));
+        }
+
+        const { error: clientError } = await supabase
+          .from('clients')
+          .update({
+            monthly_price: newMonthlyPrice,
+            monthly_fee: newMonthlyPrice
+          })
+          .eq('id', selectedVipClient.id);
+
+        if (clientError) throw clientError;
+      }
+
+      // Salva histórico do benefício nos settings e localStorage
+      try {
+        const nowIso = new Date().toISOString();
+        const record = {
+          clientId: selectedVipClient.id,
+          benefit: benefitText,
+          tier: selectedVipClient.tier,
+          date: nowIso
+        };
+        localStorage.setItem(`vip_benefit_${selectedVipClient.id}`, JSON.stringify(record));
+        await supabase.from('settings').upsert({
+          id: `vip_benefit_${selectedVipClient.id}`,
+          updated_at: nowIso
+        });
+      } catch (e) {}
+
+      // Se solicitado, envia comunicado no WhatsApp
+      if (sendVipWhatsapp && selectedVipClient.phone) {
+        const currentAdminId = userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId;
+        const currentSettings = await resolveAdminWhatsAppSettings(currentAdminId, userProfile);
+        const companyName = currentSettings?.companyName || userProfile?.whatsappSettings?.companyName || 'RS Piscinas';
+        const cleanPhone = selectedVipClient.phone.replace(/\D/g, '');
+
+        const durationStr = selectedVipClient.yearsActive > 0 
+          ? `${selectedVipClient.yearsActive} ano${selectedVipClient.yearsActive > 1 ? 's' : ''}` 
+          : `${selectedVipClient.monthsActive} meses`;
+
+        const template = `Olá {nome}! Tudo bem? 🏊‍♂️✨
+
+Temos a alegria de comunicar que você faz parte do seleto grupo de Clientes ${selectedVipClient.tierLabel} da {empresa}, com ${durationStr} de parceria e pontualidade exemplar! 💎
+
+Como forma de reconhecimento e agradecimento pela sua fidelidade e confiança no nosso trabalho, concedemos a você o seguinte benefício especial:
+🎁 Benefício: ${benefitText}
+
+Agradecemos imensamente pela parceria e por nos permitir cuidar da sua piscina para mantê-la sempre cristalina e segura! 💦✨`;
+
+        const message = formatClientMessageTemplate(template, {
+          name: selectedVipClient.name,
+          phone: selectedVipClient.phone,
+          monthlyFee: selectedVipClient.monthlyFee,
+          monthly_price: selectedVipClient.monthlyFee
+        }, {
+          companyName
+        });
+
+        const effectiveProvider = getEffectiveWhatsAppProvider(currentSettings);
+        const msgId = `vip_${selectedVipClient.id}_${Date.now()}`;
+
+        if (effectiveProvider === 'astracalls') {
+          try {
+            await sendAstraCallsMessage(selectedVipClient.phone, message, currentSettings, msgId);
+          } catch {
+            openWhatsApp(`55${cleanPhone}`, message);
+          }
+        } else if (effectiveProvider === 'meta') {
+          try {
+            await sendMetaMessage(selectedVipClient.phone, message, currentSettings, msgId);
+          } catch {
+            openWhatsApp(`55${cleanPhone}`, message);
+          }
+        } else if (effectiveProvider === 'evolution') {
+          try {
+            await sendEvolutionMessage(selectedVipClient.phone, message, currentSettings, msgId);
+          } catch {
+            openWhatsApp(`55${cleanPhone}`, message);
+          }
+        } else {
+          openWhatsApp(`55${cleanPhone}`, message);
+        }
+      }
+
+      setFeedbackMessage({ text: `Benefício VIP concedido com sucesso para ${selectedVipClient.name}!` });
+      setVipModalOpen(false);
+      setSelectedVipClient(null);
+      await fetchStats(true);
+    } catch (err: any) {
+      console.error(err);
+      alert('Erro ao conceder benefício VIP: ' + (err.message || ''));
+    } finally {
+      setIsApplyingVipBenefit(false);
+      setTimeout(() => setFeedbackMessage(null), 5000);
+    }
+  };
+
   // Trial & Subscription checks
   const isTrial = userProfile?.role === 'admin' && userProfile?.subscriptionStatus === 'trial';
   const isExpiringSoon = () => {
@@ -581,6 +1048,19 @@ export default function Dashboard() {
 
   // Active upcoming list based on tab
   const activeUpcomingList = upcomingTab === '3to5' ? upcomingClients3to5 : upcomingClientsNext7;
+
+  // VIP Clients metrics & active filtered list
+  const diamondVips = vipClients.filter(c => c.tier === 'diamond');
+  const goldVips = vipClients.filter(c => c.tier === 'gold');
+  const silverVips = vipClients.filter(c => c.tier === 'silver');
+
+  const filteredVipClients = vipClients.filter(c => {
+    if (vipTierFilter === 'all') return true;
+    return c.tier === vipTierFilter;
+  });
+
+  const totalVipRevenue = vipClients.reduce((acc, c) => acc + c.monthlyFee, 0);
+  const avgVipMonths = vipClients.length > 0 ? Math.round(vipClients.reduce((acc, c) => acc + c.monthsActive, 0) / vipClients.length) : 0;
 
   if (loading) {
     return (
@@ -963,32 +1443,58 @@ export default function Dashboard() {
             </p>
           </div>
 
-          {/* Tab selector for window filter */}
-          <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl self-start sm:self-auto border border-slate-200">
-            <button
-              onClick={() => setUpcomingTab('3to5')}
-              className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                upcomingTab === '3to5'
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Janela 3 a 5 dias ({upcomingClients3to5.length})
-            </button>
-            <button
-              onClick={() => setUpcomingTab('7days')}
-              className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                upcomingTab === '7days'
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Próximos 7 dias ({upcomingClientsNext7.length})
-            </button>
+          {/* Tab selector for window filter & Lateral scroll navigation */}
+          <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+            <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl border border-slate-200">
+              <button
+                onClick={() => setUpcomingTab('3to5')}
+                className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                  upcomingTab === '3to5'
+                    ? 'bg-white text-slate-900 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Janela 3 a 5 dias ({upcomingClients3to5.length})
+              </button>
+              <button
+                onClick={() => setUpcomingTab('7days')}
+                className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                  upcomingTab === '7days'
+                    ? 'bg-white text-slate-900 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Próximos 7 dias ({upcomingClientsNext7.length})
+              </button>
+            </div>
+
+            {/* Lateral scroll arrows */}
+            {activeUpcomingList.length > 0 && (
+              <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => scrollContainer(upcomingScrollRef, 'left')}
+                  className="p-1.5 rounded-lg bg-white hover:bg-slate-200 text-slate-700 shadow-xs cursor-pointer transition-colors"
+                  title="Rolar para esquerda"
+                  aria-label="Rolar para esquerda"
+                >
+                  <ChevronLeft size={16} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => scrollContainer(upcomingScrollRef, 'right')}
+                  className="p-1.5 rounded-lg bg-white hover:bg-slate-200 text-slate-700 shadow-xs cursor-pointer transition-colors"
+                  title="Rolar para direita"
+                  aria-label="Rolar para direita"
+                >
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* List of Upcoming Clients */}
+        {/* List of Upcoming Clients with Horizontal Lateral Scrolling */}
         {activeUpcomingList.length === 0 ? (
           <div className="py-10 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200">
             <ShieldCheck size={36} className="text-emerald-500 mx-auto mb-2 opacity-80" />
@@ -1004,7 +1510,10 @@ export default function Dashboard() {
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          <div 
+            ref={upcomingScrollRef}
+            className="flex gap-3.5 overflow-x-auto scroll-smooth pb-3 pt-1 no-scrollbar snap-x snap-mandatory"
+          >
             {activeUpcomingList.map((client) => {
               const isSentToday = sentReminders[client.id] === new Date().toLocaleDateString('pt-BR');
               const isSending = sendingReminderId === client.id;
@@ -1013,7 +1522,7 @@ export default function Dashboard() {
               return (
                 <div 
                   key={client.id}
-                  className="p-4 rounded-xl border border-slate-200 hover:border-slate-300 bg-slate-50/70 hover:bg-white transition-all shadow-xs flex flex-col justify-between"
+                  className="w-[300px] sm:w-[320px] md:w-[340px] shrink-0 snap-start p-4 rounded-xl border border-slate-200 hover:border-slate-300 bg-slate-50/70 hover:bg-white transition-all shadow-xs flex flex-col justify-between"
                 >
                   <div>
                     <div className="flex items-start justify-between gap-2">
@@ -1129,41 +1638,630 @@ export default function Dashboard() {
               </div>
             </div>
 
-            <button
-              onClick={() => navigate('/routes')}
-              className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white font-bold rounded-xl text-xs transition-all flex items-center justify-center gap-1.5 shadow-xs cursor-pointer self-start sm:self-auto"
-            >
-              Ver Rotas de Hoje <ArrowRight size={14} />
-            </button>
+            <div className="flex items-center gap-2 self-start sm:self-auto">
+              <button
+                onClick={() => navigate('/routes')}
+                className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white font-bold rounded-xl text-xs transition-all flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
+              >
+                Ver Rotas de Hoje <ArrowRight size={14} />
+              </button>
+
+              {/* Lateral scroll arrows */}
+              {clientsWithoutVisits.length > 0 && (
+                <div className="flex items-center gap-1 bg-red-100/80 p-1 rounded-xl border border-red-200">
+                  <button
+                    type="button"
+                    onClick={() => scrollContainer(unvisitedScrollRef, 'left')}
+                    className="p-1.5 rounded-lg bg-white hover:bg-red-50 text-red-800 shadow-xs cursor-pointer transition-colors"
+                    title="Rolar piscinas para esquerda"
+                    aria-label="Rolar para esquerda"
+                  >
+                    <ChevronLeft size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => scrollContainer(unvisitedScrollRef, 'right')}
+                    className="p-1.5 rounded-lg bg-white hover:bg-red-50 text-red-800 shadow-xs cursor-pointer transition-colors"
+                    title="Rolar piscinas para direita"
+                    aria-label="Rolar para direita"
+                  >
+                    <ChevronRight size={16} />
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-            {clientsWithoutVisits.slice(0, 9).map(client => (
+          <div 
+            ref={unvisitedScrollRef}
+            className="flex gap-3 overflow-x-auto scroll-smooth pb-2 pt-1 no-scrollbar snap-x snap-mandatory"
+          >
+            {clientsWithoutVisits.map(client => (
               <div 
                 key={client.id} 
                 onClick={() => navigate('/routes')}
-                className="bg-white border border-red-200/80 p-3.5 rounded-xl shadow-xs flex flex-col justify-center hover:border-red-400 transition-colors cursor-pointer group"
+                className="w-[260px] sm:w-[280px] shrink-0 snap-start bg-white border border-red-200/80 p-3.5 rounded-xl shadow-xs flex flex-col justify-center hover:border-red-400 transition-colors cursor-pointer group"
               >
-                <span className="font-bold text-slate-900 text-sm truncate group-hover:text-red-700 transition-colors">
+                <span className="font-bold text-slate-900 text-sm truncate group-hover:text-red-700 transition-colors" title={client.name}>
                   {client.name}
                 </span>
-                <span className="text-xs text-slate-500 mt-0.5 flex items-center gap-1">
-                  <Clock size={12} className="text-slate-400" />
-                  {client.lastVisitDate 
-                    ? `Última visita: ${new Date(client.lastVisitDate).toLocaleDateString('pt-BR')}` 
-                    : 'Nenhuma visita registrada recente'}
+                <span className="text-xs text-slate-500 mt-1 flex items-center gap-1">
+                  <Clock size={12} className="text-slate-400 shrink-0" />
+                  <span className="truncate">
+                    {client.lastVisitDate 
+                      ? `Última visita: ${new Date(client.lastVisitDate).toLocaleDateString('pt-BR')}` 
+                      : 'Nenhuma visita recente'}
+                  </span>
                 </span>
               </div>
             ))}
           </div>
 
-          {clientsWithoutVisits.length > 9 && (
-            <p className="text-xs text-red-700 mt-3 font-semibold italic">
-              ... e mais {clientsWithoutVisits.length - 9} clientes necessitando de visita nesta semana.
-            </p>
-          )}
+          <div className="mt-2.5 pt-2 border-t border-red-200/50 flex items-center justify-between text-xs text-red-800 font-medium">
+            <span>Deslize lateralmente para visualizar todas as {clientsWithoutVisits.length} piscinas pendentes de atendimento</span>
+            <span className="font-bold text-red-900">Total: {clientsWithoutVisits.length}</span>
+          </div>
         </div>
       )}
+
+      {/* =========================================================================
+          INTEGRAÇÃO COM PREVISÃO DO TEMPO & ALERTA DE TEMPESTADES PARA PISCINAS
+          ========================================================================= */}
+      <div className="bg-white border border-slate-200/90 rounded-2xl shadow-xs p-5 sm:p-6 overflow-hidden relative">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
+          <div className="flex items-center gap-3">
+            <div className={`p-2.5 rounded-xl shrink-0 ${weatherData?.hasStormAlert ? 'bg-amber-100 text-amber-700' : 'bg-sky-100 text-sky-700'}`}>
+              {weatherData?.hasStormAlert ? <AlertTriangle size={24} /> : <CloudSun size={24} />}
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-lg font-bold text-slate-900 tracking-tight">
+                  Previsão do Tempo & Alerta Meteorológico
+                </h3>
+                <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+                  {weatherData?.city || 'Campo Grande / MS'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Inteligência climática com Open-Meteo para planejamento de rotas e dosagem preventiva de químicos
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 self-start sm:self-auto">
+            <button
+              onClick={handleRefreshWeather}
+              disabled={weatherLoading}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-semibold transition-all cursor-pointer disabled:opacity-60"
+              title="Atualizar dados meteorológicos"
+            >
+              <RefreshCw size={13} className={`text-sky-600 ${weatherLoading ? 'animate-spin' : ''}`} />
+              <span>{weatherLoading ? 'Atualizando...' : 'Atualizar Clima'}</span>
+            </button>
+          </div>
+        </div>
+
+        {weatherData ? (
+          <div className="space-y-4">
+            {/* Storm Alert Banner if storm or heavy rain detected */}
+            {weatherData.hasStormAlert && (
+              <div className="p-4 rounded-xl border border-amber-300 bg-amber-50/90 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-amber-950">
+                <div className="flex items-start gap-3">
+                  <div className="p-2 rounded-lg bg-amber-200 text-amber-900 shrink-0 mt-0.5 sm:mt-0">
+                    <CloudLightning size={20} />
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-sm text-amber-900 flex items-center gap-2">
+                      ⚠️ Alerta de Tempestade / Chuva Severa Detectada
+                    </h4>
+                    <p className="text-xs text-amber-800 mt-0.5 leading-relaxed">
+                      {weatherData.stormAlertMessage || 'Previsão de tempestades com descargas elétricas ou alto volume de precipitação nas próximas 24-48 horas.'}
+                    </p>
+                    <p className="text-[11px] text-amber-900 font-semibold mt-1.5">
+                      💡 Recomendações RS Piscinas: Elevar dosagem de cloro residual para 3-5 ppm, conferir ralos de fundo/extravasores e aplicar clarificante após cessar a chuva para evitar proliferação rápida de algas.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Current Conditions Bar + 5-Day Forecast Grid */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-center">
+              {/* Today Current Card */}
+              <div className="lg:col-span-4 p-4 rounded-xl bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white flex items-center justify-between shadow-xs">
+                <div>
+                  <span className="text-xs text-slate-400 font-medium block">Agora em {weatherData.city}</span>
+                  <div className="flex items-baseline gap-2 mt-1">
+                    <span className="text-3xl font-black tracking-tight">{weatherData.currentTemp}°C</span>
+                    <span className="text-xs text-sky-300 font-semibold">{weatherData.condition.label}</span>
+                  </div>
+                  <div className="flex items-center gap-3 mt-2 text-[11px] text-slate-300">
+                    <span className="flex items-center gap-1">
+                      <Droplets size={12} className="text-sky-400" /> {weatherData.humidity}% umidade
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <Wind size={12} className="text-teal-400" /> {weatherData.windSpeed} km/h
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-3 bg-white/10 rounded-xl text-amber-400">
+                  {weatherData.condition.icon === 'sun' && <Sun size={32} />}
+                  {weatherData.condition.icon === 'cloud-sun' && <CloudSun size={32} />}
+                  {weatherData.condition.icon === 'cloud-rain' && <CloudRain size={32} />}
+                  {weatherData.condition.icon === 'cloud-lightning' && <CloudLightning size={32} />}
+                  {(!['sun', 'cloud-sun', 'cloud-rain', 'cloud-lightning'].includes(weatherData.condition.icon)) && <CloudSun size={32} />}
+                </div>
+              </div>
+
+              {/* 5-Day Mini Forecast */}
+              <div className="lg:col-span-8 grid grid-cols-5 gap-2">
+                {weatherData.daily.slice(0, 5).map((day, idx) => (
+                  <div 
+                    key={day.date}
+                    className={`p-2.5 rounded-xl border text-center transition-all ${
+                      day.isStormOrHeavyRain 
+                        ? 'bg-amber-50/80 border-amber-300 text-amber-950 font-medium' 
+                        : idx === 0 
+                        ? 'bg-sky-50/80 border-sky-300 text-slate-800'
+                        : 'bg-slate-50 border-slate-200/80 text-slate-700'
+                    }`}
+                  >
+                    <span className="text-xs font-bold block">{idx === 0 ? 'Hoje' : day.weekday}</span>
+                    <div className="my-1.5 flex justify-center">
+                      {day.condition.icon === 'sun' && <Sun size={20} className="text-amber-500" />}
+                      {day.condition.icon === 'cloud-sun' && <CloudSun size={20} className="text-sky-500" />}
+                      {day.condition.icon === 'cloud-rain' && <CloudRain size={20} className="text-blue-500" />}
+                      {day.condition.icon === 'cloud-lightning' && <CloudLightning size={20} className="text-purple-600" />}
+                      {(!['sun', 'cloud-sun', 'cloud-rain', 'cloud-lightning'].includes(day.condition.icon)) && <CloudSun size={20} className="text-slate-500" />}
+                    </div>
+                    <div className="text-[11px] font-bold text-slate-800">
+                      {day.tempMax}° / <span className="text-slate-400 font-normal">{day.tempMin}°</span>
+                    </div>
+                    <div className="mt-1 flex items-center justify-center gap-0.5 text-[10px] text-blue-600 font-semibold">
+                      <Droplets size={9} />
+                      <span>{day.rainProbability}%</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Practical Pool Treatment Tip */}
+            <div className="p-3 rounded-xl bg-sky-50/70 border border-sky-200 text-xs text-sky-950 flex items-center gap-2">
+              <span className="font-bold text-sky-800 shrink-0">💧 Dica Técnica do Dia:</span>
+              <span className="text-sky-900">{weatherData.poolAdvice}</span>
+            </div>
+          </div>
+        ) : (
+          <div className="py-6 text-center text-slate-400 text-xs">
+            {weatherLoading ? 'Carregando dados meteorológicos via satélite...' : 'Previsão do tempo indisponível no momento.'}
+          </div>
+        )}
+      </div>
+
+      {/* =========================================================================
+          GESTÃO DE CONTRATOS COM ALERTA DE REAJUSTE ANUAL AUTOMÁTICO
+          ========================================================================= */}
+      <div className="bg-white border border-slate-200/90 rounded-2xl shadow-xs p-5 sm:p-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-purple-100 text-purple-700 shrink-0">
+              <Award size={24} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-lg font-bold text-slate-900 tracking-tight">
+                  Gestão de Contratos & Reajuste Anual Automático
+                </h3>
+                {eligibleContractClients.length > 0 ? (
+                  <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-purple-100 text-purple-800 border border-purple-200 animate-pulse">
+                    {eligibleContractClients.length} {eligibleContractClients.length === 1 ? 'cliente completando 1 ano' : 'clientes completando 1 ano'}
+                  </span>
+                ) : (
+                  <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                    Contratos em dia
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Monitoramento inteligente de aniversário de contratos (11+ meses) com aplicação de índice de inflação (IPCA/IGP-M) e aviso automático no WhatsApp
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 self-start sm:self-auto">
+            <div className="text-xs text-slate-500">
+              Total vigentes: <strong className="text-slate-800">{contractClients.length} contratos</strong>
+            </div>
+
+            {/* Lateral scroll arrows */}
+            {eligibleContractClients.length > 0 && (
+              <div className="flex items-center gap-1 bg-purple-50 p-1 rounded-xl border border-purple-200">
+                <button
+                  type="button"
+                  onClick={() => scrollContainer(contractsScrollRef, 'left')}
+                  className="p-1.5 rounded-lg bg-white hover:bg-purple-100 text-purple-800 shadow-xs cursor-pointer transition-colors"
+                  title="Rolar contratos para esquerda"
+                  aria-label="Rolar para esquerda"
+                >
+                  <ChevronLeft size={16} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => scrollContainer(contractsScrollRef, 'right')}
+                  className="p-1.5 rounded-lg bg-white hover:bg-purple-100 text-purple-800 shadow-xs cursor-pointer transition-colors"
+                  title="Rolar contratos para direita"
+                  aria-label="Rolar para direita"
+                >
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {eligibleContractClients.length > 0 ? (
+          <div className="space-y-3">
+            <div className="p-3 rounded-xl bg-purple-50/70 border border-purple-200 text-xs text-purple-950 flex items-center justify-between">
+              <span className="font-semibold text-purple-900">
+                🎉 Os seguintes clientes completaram 1 ano de vigência contratual e estão aptos para reajuste de valor:
+              </span>
+              <span className="text-[11px] text-purple-700 font-bold hidden sm:inline">
+                Sugestão padrão: +8% (IPCA acumulado)
+              </span>
+            </div>
+
+            <div 
+              ref={contractsScrollRef}
+              className="flex gap-3.5 overflow-x-auto scroll-smooth pb-3 pt-1 no-scrollbar snap-x snap-mandatory"
+            >
+              {eligibleContractClients.map((client) => {
+                const suggestedNewPrice = Math.round(client.currentPrice * 1.08);
+
+                return (
+                  <div
+                    key={client.clientId}
+                    className="w-[300px] sm:w-[320px] md:w-[340px] shrink-0 snap-start p-4 rounded-xl border border-purple-200/90 bg-gradient-to-br from-white to-purple-50/30 hover:border-purple-300 transition-all shadow-xs flex flex-col justify-between"
+                  >
+                    <div>
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <h4 className="font-bold text-slate-900 text-sm truncate" title={client.clientName}>
+                            {client.clientName}
+                          </h4>
+                          <p className="text-xs text-slate-500 mt-0.5">
+                            {client.clientPhone || 'Sem telefone'}
+                          </p>
+                        </div>
+
+                        <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 border border-purple-200 shrink-0">
+                          {client.monthsActive} meses ativos
+                        </span>
+                      </div>
+
+                      <div className="mt-3.5 pt-2.5 border-t border-purple-100 space-y-1.5 text-xs">
+                        <div className="flex justify-between items-center text-slate-600">
+                          <span>Mês de Aniversário:</span>
+                          <strong className="text-purple-900 font-semibold">{client.anniversaryMonthName}</strong>
+                        </div>
+                        <div className="flex justify-between items-center text-slate-600">
+                          <span>Mensalidade Atual:</span>
+                          <strong className="text-slate-800 font-bold">R$ {client.currentPrice.toFixed(2)}</strong>
+                        </div>
+                        <div className="flex justify-between items-center text-slate-600">
+                          <span>Sugestão (+8%):</span>
+                          <strong className="text-emerald-700 font-black">R$ {suggestedNewPrice.toFixed(2)}</strong>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 pt-3 border-t border-purple-100">
+                      <button
+                        onClick={() => openAdjustmentModal(client)}
+                        className="w-full py-2 px-3 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs transition-all shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Percent size={14} />
+                        <span>Reajustar & Avisar no WhatsApp</span>
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <div className="p-4 rounded-xl border border-slate-200/80 bg-slate-50/60 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-600">
+            <div className="flex items-center gap-2.5">
+              <FileCheck size={18} className="text-emerald-600 shrink-0" />
+              <span>Nenhum cliente com 1 ano completo aguardando reajuste neste momento. Todos os contratos estão com valores atualizados.</span>
+            </div>
+            <button
+              onClick={() => navigate('/clients')}
+              className="text-purple-600 hover:text-purple-700 font-bold flex items-center gap-1 cursor-pointer shrink-0"
+            >
+              Ver todos os clientes <ArrowRight size={13} />
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* =========================================================================
+          PAINEL DE CLIENTES VIP: LONGEVIDADE DE CONTRATO & PONTUALIDADE (FIDELIDADE)
+          ========================================================================= */}
+      <div className="bg-gradient-to-b from-amber-50/40 via-white to-white border border-amber-200/80 rounded-2xl shadow-xs p-5 sm:p-6 overflow-hidden relative">
+        {/* Subtle Ambient Gold Glow */}
+        <div className="absolute -right-24 -top-24 w-72 h-72 bg-amber-400/10 rounded-full blur-3xl pointer-events-none" />
+
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-5 relative z-10">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-gradient-to-br from-amber-500 to-amber-600 text-white shadow-sm shrink-0">
+              <Crown size={24} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-lg font-black text-slate-900 tracking-tight flex items-center gap-2">
+                  Painel de Clientes VIP
+                  <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300">
+                    Programa de Fidelidade
+                  </span>
+                </h3>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Clientes com maior tempo de contrato ativo e histórico de pontualidade. Destacados para bonificações, descontos e retenção de receita.
+              </p>
+            </div>
+          </div>
+
+          {/* Tier Filter Tabs & Lateral scroll navigation */}
+          <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+            <div className="flex items-center gap-1.5 p-1 bg-slate-100/80 rounded-xl border border-slate-200/80 text-xs">
+              <button
+                onClick={() => setVipTierFilter('all')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer ${
+                  vipTierFilter === 'all'
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Todos ({vipClients.length})
+              </button>
+              <button
+                onClick={() => setVipTierFilter('diamond')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1 cursor-pointer ${
+                  vipTierFilter === 'diamond'
+                    ? 'bg-cyan-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-cyan-700'
+                }`}
+              >
+                <Gem size={13} />
+                <span>Diamante ({diamondVips.length})</span>
+              </button>
+              <button
+                onClick={() => setVipTierFilter('gold')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1 cursor-pointer ${
+                  vipTierFilter === 'gold'
+                    ? 'bg-amber-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-amber-700'
+                }`}
+              >
+                <Star size={13} />
+                <span>Ouro ({goldVips.length})</span>
+              </button>
+              <button
+                onClick={() => setVipTierFilter('silver')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1 cursor-pointer ${
+                  vipTierFilter === 'silver'
+                    ? 'bg-slate-700 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <span>Prata ({silverVips.length})</span>
+              </button>
+            </div>
+
+            {/* Lateral scroll arrows */}
+            {filteredVipClients.length > 0 && (
+              <div className="flex items-center gap-1 bg-amber-100/70 p-1 rounded-xl border border-amber-200">
+                <button
+                  type="button"
+                  onClick={() => scrollContainer(vipScrollRef, 'left')}
+                  className="p-1.5 rounded-lg bg-white hover:bg-amber-50 text-amber-900 shadow-xs cursor-pointer transition-colors"
+                  title="Rolar clientes VIP para esquerda"
+                  aria-label="Rolar para esquerda"
+                >
+                  <ChevronLeft size={16} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => scrollContainer(vipScrollRef, 'right')}
+                  className="p-1.5 rounded-lg bg-white hover:bg-amber-50 text-amber-900 shadow-xs cursor-pointer transition-colors"
+                  title="Rolar clientes VIP para direita"
+                  aria-label="Rolar para direita"
+                >
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Quick VIP Highlights Metrics Bar */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+          <div className="p-3 bg-white rounded-xl border border-amber-200/70 shadow-xs">
+            <span className="text-[11px] font-medium text-slate-500 block">Receita Protegida VIP</span>
+            <span className="text-lg font-black text-emerald-600 tracking-tight mt-0.5 block">
+              {formatCurrency(totalVipRevenue)}
+            </span>
+            <span className="text-[10px] text-slate-400">Total mensal de clientes fiéis</span>
+          </div>
+
+          <div className="p-3 bg-white rounded-xl border border-amber-200/70 shadow-xs">
+            <span className="text-[11px] font-medium text-slate-500 block">Fidelidade Média</span>
+            <span className="text-lg font-black text-slate-900 tracking-tight mt-0.5 block">
+              {avgVipMonths} meses
+            </span>
+            <span className="text-[10px] text-slate-400">Tempo de contrato contínuo</span>
+          </div>
+
+          <div className="p-3 bg-white rounded-xl border border-amber-200/70 shadow-xs">
+            <span className="text-[11px] font-medium text-slate-500 block">Índice de Pontualidade</span>
+            <span className="text-lg font-black text-sky-600 tracking-tight mt-0.5 block">
+              100%
+            </span>
+            <span className="text-[10px] text-slate-400">Sem faturas em atraso</span>
+          </div>
+
+          <div className="p-3 bg-white rounded-xl border border-amber-200/70 shadow-xs">
+            <span className="text-[11px] font-medium text-slate-500 block">Top Tier Diamante</span>
+            <span className="text-lg font-black text-cyan-700 tracking-tight mt-0.5 block">
+              {diamondVips.length} clientes
+            </span>
+            <span className="text-[10px] text-slate-400">Fidelidade máxima (&gt;18 meses)</span>
+          </div>
+        </div>
+
+        {/* VIP Clients Cards List with Horizontal Lateral Scrolling */}
+        {filteredVipClients.length > 0 ? (
+          <div>
+            <div 
+              ref={vipScrollRef}
+              className="flex gap-3.5 overflow-x-auto scroll-smooth pb-3.5 pt-1 no-scrollbar snap-x snap-mandatory"
+            >
+              {filteredVipClients.map((client, index) => {
+                const isDiamond = client.tier === 'diamond';
+                const isGold = client.tier === 'gold';
+
+                return (
+                  <div
+                    key={client.id}
+                    className={`w-[310px] sm:w-[330px] md:w-[350px] shrink-0 snap-start p-4 rounded-xl border transition-all shadow-xs flex flex-col justify-between ${
+                    isDiamond
+                      ? 'bg-gradient-to-br from-white via-cyan-50/20 to-cyan-50/50 border-cyan-200 hover:border-cyan-400'
+                      : isGold
+                      ? 'bg-gradient-to-br from-white via-amber-50/20 to-amber-50/40 border-amber-200 hover:border-amber-400'
+                      : 'bg-white border-slate-200 hover:border-slate-300'
+                  }`}
+                >
+                  <div>
+                    {/* Header: Ranking, Name, Badge */}
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 mb-1">
+                          <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-slate-900 text-white">
+                            #{index + 1}
+                          </span>
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border flex items-center gap-1 ${client.tierBadgeColor}`}>
+                            {isDiamond && <Gem size={11} className="text-cyan-600" />}
+                            {isGold && <Crown size={11} className="text-amber-600" />}
+                            {client.tierLabel}
+                          </span>
+                        </div>
+                        <h4 className="font-bold text-slate-900 text-sm truncate" title={client.name}>
+                          {client.name}
+                        </h4>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          {client.phone ? client.phone.replace(/(\d{2})(\d{2})(\d{5})(\d{4})/, '+$1 ($2) $3-$4') : 'Sem telefone'}
+                        </p>
+                      </div>
+
+                      {/* VIP Score Circle */}
+                      <div className="text-right shrink-0">
+                        <span className="text-[10px] font-bold text-slate-400 block uppercase">Score VIP</span>
+                        <span className="font-black text-amber-600 text-base">
+                          {client.vipScore}<span className="text-xs font-normal text-slate-400">/100</span>
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Longevity & Punctuality Details */}
+                    <div className="mt-3.5 pt-2.5 border-t border-slate-100 space-y-1.5 text-xs">
+                      <div className="flex justify-between items-center text-slate-600">
+                        <span className="flex items-center gap-1 text-slate-500">
+                          <Clock size={12} className="text-slate-400" /> Tempo de Parceria:
+                        </span>
+                        <strong className="text-slate-900 font-bold">
+                          {client.monthsActive} meses {client.yearsActive > 0 ? `(${client.yearsActive} ano${client.yearsActive > 1 ? 's' : ''})` : ''}
+                        </strong>
+                      </div>
+
+                      <div className="flex justify-between items-center text-slate-600">
+                        <span className="flex items-center gap-1 text-slate-500">
+                          <ShieldCheck size={12} className="text-emerald-500" /> Pontualidade:
+                        </span>
+                        <span className="text-emerald-700 font-bold flex items-center gap-1">
+                          <Check size={12} className="text-emerald-600" /> 100% em dia
+                          {client.totalPaymentsCount > 0 && (
+                            <span className="text-[10px] font-normal text-slate-500">({client.totalPaymentsCount} pagos)</span>
+                          )}
+                        </span>
+                      </div>
+
+                      <div className="flex justify-between items-center text-slate-600">
+                        <span className="flex items-center gap-1 text-slate-500">
+                          <DollarSign size={12} className="text-emerald-500" /> Mensalidade:
+                        </span>
+                        <strong className="text-slate-900 font-extrabold">
+                          {formatCurrency(client.monthlyFee)}
+                        </strong>
+                      </div>
+                    </div>
+
+                    {/* Loyalty Benefit Suggestion Callout */}
+                    <div className="mt-3 p-2 rounded-lg bg-amber-50/70 border border-amber-200/80 text-[11px] text-amber-950 flex items-start gap-1.5">
+                      <Gift size={13} className="text-amber-600 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-semibold block text-amber-900">Sugestão de Reconhecimento:</span>
+                        <span className="text-amber-800 leading-tight">{client.loyaltyBenefitSuggested}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Action Button: Conceder Benefício & WhatsApp */}
+                  <div className="mt-4 pt-3 border-t border-slate-100 flex items-center gap-2">
+                    <button
+                      onClick={() => openVipModal(client)}
+                      className={`flex-1 py-2 px-3 rounded-xl font-bold text-xs transition-all shadow-xs flex items-center justify-center gap-1.5 cursor-pointer ${
+                        isDiamond
+                          ? 'bg-gradient-to-r from-cyan-600 to-sky-600 hover:from-cyan-500 hover:to-sky-500 text-white'
+                          : isGold
+                          ? 'bg-gradient-to-r from-amber-600 to-yellow-600 hover:from-amber-500 hover:to-yellow-500 text-white'
+                          : 'bg-slate-900 hover:bg-slate-800 text-white'
+                      }`}
+                    >
+                      <Gift size={13} />
+                      <span>Conceder Benefício / Desconto</span>
+                    </button>
+
+                    {client.phone && (
+                      <button
+                        onClick={() => {
+                          const cleanPhone = client.phone.replace(/\D/g, '');
+                          const defaultMsg = `Olá ${client.name}! Gostaríamos de agradecer por sua parceria com a RS Piscinas ao longo destes ${client.monthsActive} meses! Estamos sempre à sua disposição. 🏊‍♂️✨`;
+                          openWhatsApp(`55${cleanPhone}`, defaultMsg);
+                        }}
+                        className="p-2 text-emerald-600 hover:bg-emerald-50 border border-emerald-200 rounded-xl transition-colors cursor-pointer"
+                        title="Abrir WhatsApp direto com o cliente VIP"
+                      >
+                        <MessageCircle size={15} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            </div>
+            <div className="mt-3 pt-2 border-t border-amber-200/40 flex items-center justify-between text-xs text-amber-900/80 font-medium">
+              <span>Deslize para o lado para ver todos os {filteredVipClients.length} clientes VIP</span>
+              <span className="font-bold">Total listados: {filteredVipClients.length}</span>
+            </div>
+          </div>
+        ) : (
+          <div className="p-6 text-center text-slate-400 text-xs bg-white rounded-xl border border-slate-200">
+            Nenhum cliente encontrado para esta categoria de filtro VIP.
+          </div>
+        )}
+      </div>
 
       {/* =========================================================================
           QUICK STATS SUMMARY CARDS (CLEAN & NON-CLUTTERED)
@@ -1211,6 +2309,452 @@ export default function Dashboard() {
         </div>
 
       </div>
+
+      {/* Modal de Reajuste Anual de Contrato com Notificação no WhatsApp */}
+      {contractModalOpen && selectedContractClient && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-5 sm:p-6 shadow-2xl border border-gray-100 animate-in fade-in zoom-in duration-150">
+            
+            {/* Modal Header */}
+            <div className="flex justify-between items-start pb-3 border-b border-gray-100">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 rounded-xl bg-purple-100 text-purple-700">
+                  <Award size={20} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">Reajuste Anual de Contrato</h3>
+                  <p className="text-xs text-gray-500">Atualização do valor mensal e envio de comunicado formal</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setContractModalOpen(false)}
+                className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Resumo do Cliente e Contrato */}
+            <div className="my-4 p-4 bg-purple-50/60 rounded-xl border border-purple-200/80 space-y-2">
+              <div className="flex justify-between items-start">
+                <div>
+                  <span className="text-xs text-purple-700 block font-medium">Cliente</span>
+                  <span className="font-bold text-gray-900 text-base">{selectedContractClient.clientName}</span>
+                  <span className="text-xs text-gray-500 block mt-0.5">{selectedContractClient.clientPhone || 'Sem telefone'}</span>
+                </div>
+                <div className="text-right">
+                  <span className="text-xs text-purple-700 block font-medium">Tempo de Contrato</span>
+                  <span className="font-bold text-purple-900 text-sm">
+                    {selectedContractClient.monthsActive} meses {selectedContractClient.yearsActive > 0 ? `(${selectedContractClient.yearsActive} ano${selectedContractClient.yearsActive > 1 ? 's' : ''})` : ''}
+                  </span>
+                  <span className="text-[11px] text-gray-500 block mt-0.5">Aniversário: {selectedContractClient.anniversaryMonthName}</span>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between pt-2.5 border-t border-purple-200/70 text-xs">
+                <span>Mensalidade Atual: <strong className="text-gray-800">R$ {selectedContractClient.currentPrice.toFixed(2)}</strong></span>
+                <span>Novo Valor Calculado: <strong className="text-emerald-700 text-sm font-black">R$ {parseFloat(customPriceInput || '0').toFixed(2)}</strong></span>
+              </div>
+            </div>
+
+            {/* Seleção de Percentual de Reajuste */}
+            <div className="space-y-3 mb-4">
+              <label className="block text-xs font-bold text-gray-700">
+                Índice de Reajuste:
+              </label>
+              
+              <div className="grid grid-cols-4 gap-2">
+                {[5, 8, 10, 12].map(pct => (
+                  <button
+                    key={pct}
+                    type="button"
+                    onClick={() => handlePercentChange(pct)}
+                    className={`py-2 px-3 rounded-xl text-xs font-bold transition-all border cursor-pointer ${
+                      adjustmentPercent === pct
+                        ? 'bg-purple-600 border-purple-600 text-white shadow-xs'
+                        : 'bg-gray-50 hover:bg-gray-100 border-gray-200 text-gray-700'
+                    }`}
+                  >
+                    +{pct}% {pct === 8 ? '(IPCA)' : ''}
+                  </button>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 pt-1">
+                <div>
+                  <label className="block text-[11px] font-semibold text-gray-600 mb-1">Porcentagem (%)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={adjustmentPercent}
+                    onChange={e => handlePercentChange(parseFloat(e.target.value) || 0)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-bold outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-gray-600 mb-1">Novo Valor Mensal (R$)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={customPriceInput}
+                    onChange={e => handleCustomPriceChange(e.target.value)}
+                    className="w-full px-3 py-2 border border-emerald-300 rounded-lg text-xs font-black text-emerald-800 outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Checkbox WhatsApp Notificação */}
+            <div className="p-3.5 rounded-xl border border-emerald-200 bg-emerald-50/50 space-y-2 mb-4">
+              <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={sendContractWhatsapp}
+                  onChange={e => setSendContractWhatsapp(e.target.checked)}
+                  className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
+                />
+                <div>
+                  <span className="font-bold text-xs text-emerald-950 flex items-center gap-1.5">
+                    <MessageCircle size={15} className="text-emerald-700" />
+                    Enviar Notificação Formal no WhatsApp
+                  </span>
+                  <span className="text-[11px] text-emerald-800 block mt-0.5">
+                    Comunica cordialmente o reajuste anual de {adjustmentPercent}% e agradece pela fidelidade.
+                  </span>
+                </div>
+              </label>
+
+              {sendContractWhatsapp && (
+                <div className="pt-2 border-t border-emerald-200/70">
+                  <span className="text-[10px] font-semibold text-emerald-900 block mb-1">
+                    Prévia da mensagem que será enviada:
+                  </span>
+                  <div className="p-2.5 bg-white rounded-lg border border-emerald-300 text-[11px] text-gray-800 font-mono whitespace-pre-wrap leading-relaxed max-h-24 overflow-y-auto">
+                    {`Olá ${selectedContractClient.clientName}! Tudo bem? Seu contrato de manutenção preventiva de piscina com a RS Piscinas completou 1 ano neste mês de ${selectedContractClient.anniversaryMonthName}. Informamos que, conforme nosso reajuste anual de ${adjustmentPercent}%, a sua mensalidade passará de R$ ${selectedContractClient.currentPrice.toFixed(2)} para R$ ${parseFloat(customPriceInput || '0').toFixed(2)}. Agradecemos imensamente a sua parceria e confiança em nosso trabalho! 🏊‍♂️✨`}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex justify-end gap-2.5 pt-2 border-t border-gray-100">
+              <button
+                onClick={() => setContractModalOpen(false)}
+                disabled={isApplyingAdjustment}
+                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-xl transition-colors font-semibold text-xs cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={executeContractAdjustment}
+                disabled={isApplyingAdjustment}
+                className="px-5 py-2 bg-purple-600 hover:bg-purple-500 active:bg-purple-700 text-white font-bold rounded-xl text-xs transition-all shadow-sm flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                {isApplyingAdjustment ? (
+                  <>
+                    <RefreshCw size={14} className="animate-spin" />
+                    <span>Salvando...</span>
+                  </>
+                ) : sendContractWhatsapp ? (
+                  <>
+                    <Send size={14} />
+                    <span>Confirmar & Notificar Cliente</span>
+                  </>
+                ) : (
+                  <>
+                    <Check size={14} />
+                    <span>Confirmar Reajuste</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Concessão de Benefício de Fidelidade / Desconto VIP */}
+      {vipModalOpen && selectedVipClient && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-5 sm:p-6 shadow-2xl border border-gray-100 animate-in fade-in zoom-in duration-150">
+            
+            {/* Modal Header */}
+            <div className="flex justify-between items-start pb-3 border-b border-gray-100">
+              <div className="flex items-center gap-2.5">
+                <div className={`p-2.5 rounded-xl ${
+                  selectedVipClient.tier === 'diamond'
+                    ? 'bg-cyan-100 text-cyan-800'
+                    : selectedVipClient.tier === 'gold'
+                    ? 'bg-amber-100 text-amber-800'
+                    : 'bg-slate-100 text-slate-800'
+                }`}>
+                  <Crown size={22} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-lg font-bold text-gray-900">Benefício de Fidelidade VIP</h3>
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${selectedVipClient.tierBadgeColor}`}>
+                      {selectedVipClient.tierLabel}
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500">Reconhecimento por tempo de contrato e pontualidade</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setVipModalOpen(false)}
+                className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Resumo do Cliente VIP */}
+            <div className="my-4 p-4 bg-amber-50/50 rounded-xl border border-amber-200/80 space-y-2">
+              <div className="flex justify-between items-start">
+                <div>
+                  <span className="text-xs text-amber-800 block font-semibold">Cliente VIP</span>
+                  <span className="font-bold text-gray-900 text-base">{selectedVipClient.name}</span>
+                  <span className="text-xs text-gray-500 block mt-0.5">{selectedVipClient.phone || 'Sem telefone'}</span>
+                </div>
+                <div className="text-right">
+                  <span className="text-xs text-amber-800 block font-semibold">Tempo de Parceria</span>
+                  <span className="font-bold text-gray-900 text-sm">
+                    {selectedVipClient.monthsActive} meses {selectedVipClient.yearsActive > 0 ? `(${selectedVipClient.yearsActive} ano${selectedVipClient.yearsActive > 1 ? 's' : ''})` : ''}
+                  </span>
+                  <span className="text-[11px] text-emerald-700 font-semibold block mt-0.5">Pontualidade: 100%</span>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between pt-2.5 border-t border-amber-200/70 text-xs">
+                <span>Mensalidade Atual: <strong className="text-gray-900">R$ {selectedVipClient.monthlyFee.toFixed(2)}</strong></span>
+                <span>Score de Fidelidade: <strong className="text-amber-700 font-black">{selectedVipClient.vipScore} pontos</strong></span>
+              </div>
+            </div>
+
+            {/* Escolha do Tipo de Benefício */}
+            <div className="space-y-3 mb-4">
+              <label className="block text-xs font-bold text-gray-700">
+                Selecione o Benefício de Reconhecimento:
+              </label>
+
+              <div className="grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setVipBenefitType('discount_percent')}
+                  className={`py-2 px-2.5 rounded-xl text-xs font-bold transition-all border text-center cursor-pointer ${
+                    vipBenefitType === 'discount_percent'
+                      ? 'bg-amber-600 border-amber-600 text-white shadow-xs'
+                      : 'bg-gray-50 hover:bg-gray-100 border-gray-200 text-gray-700'
+                  }`}
+                >
+                  <Percent size={14} className="mx-auto mb-1" />
+                  <span>Desconto %</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setVipBenefitType('discount_fixed')}
+                  className={`py-2 px-2.5 rounded-xl text-xs font-bold transition-all border text-center cursor-pointer ${
+                    vipBenefitType === 'discount_fixed'
+                      ? 'bg-amber-600 border-amber-600 text-white shadow-xs'
+                      : 'bg-gray-50 hover:bg-gray-100 border-gray-200 text-gray-700'
+                  }`}
+                >
+                  <DollarSign size={14} className="mx-auto mb-1" />
+                  <span>Desconto em R$</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setVipBenefitType('service_gift')}
+                  className={`py-2 px-2.5 rounded-xl text-xs font-bold transition-all border text-center cursor-pointer ${
+                    vipBenefitType === 'service_gift'
+                      ? 'bg-amber-600 border-amber-600 text-white shadow-xs'
+                      : 'bg-gray-50 hover:bg-gray-100 border-gray-200 text-gray-700'
+                  }`}
+                >
+                  <Gift size={14} className="mx-auto mb-1" />
+                  <span>Cortesia / Brinde</span>
+                </button>
+              </div>
+
+              {/* Opções dinâmicas de acordo com o tipo */}
+              {vipBenefitType === 'discount_percent' && (
+                <div className="p-3 bg-gray-50 rounded-xl border border-gray-200 space-y-2">
+                  <span className="text-[11px] font-semibold text-gray-600 block">Percentual de Desconto:</span>
+                  <div className="grid grid-cols-4 gap-2">
+                    {[5, 8, 10, 15].map(pct => (
+                      <button
+                        key={pct}
+                        type="button"
+                        onClick={() => setVipDiscountPercent(pct)}
+                        className={`py-1.5 px-2 rounded-lg text-xs font-bold transition-all border cursor-pointer ${
+                          vipDiscountPercent === pct
+                            ? 'bg-amber-600 border-amber-600 text-white'
+                            : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-100'
+                        }`}
+                      >
+                        -{pct}%
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center justify-between pt-2 border-t border-gray-200 text-xs">
+                    <span className="text-gray-600">Novo valor mensal com desconto:</span>
+                    <strong className="text-emerald-700 font-black text-sm">
+                      R$ {(selectedVipClient.monthlyFee * (1 - vipDiscountPercent / 100)).toFixed(2)}
+                    </strong>
+                  </div>
+
+                  <label className="flex items-center gap-2 pt-1 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={applyDiscountToClientFee}
+                      onChange={e => setApplyDiscountToClientFee(e.target.checked)}
+                      className="rounded text-amber-600 focus:ring-amber-500 w-3.5 h-3.5 cursor-pointer"
+                    />
+                    <span className="text-[11px] text-gray-700 font-medium">
+                      Atualizar automaticamente a mensalidade do cliente no sistema
+                    </span>
+                  </label>
+                </div>
+              )}
+
+              {vipBenefitType === 'discount_fixed' && (
+                <div className="p-3 bg-gray-50 rounded-xl border border-gray-200 space-y-2">
+                  <span className="text-[11px] font-semibold text-gray-600 block">Valor Fixo de Desconto (R$):</span>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[20, 30, 50].map(val => (
+                      <button
+                        key={val}
+                        type="button"
+                        onClick={() => setVipDiscountFixed(val)}
+                        className={`py-1.5 px-2 rounded-lg text-xs font-bold transition-all border cursor-pointer ${
+                          vipDiscountFixed === val
+                            ? 'bg-amber-600 border-amber-600 text-white'
+                            : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-100'
+                        }`}
+                      >
+                        -R$ {val},00
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center justify-between pt-2 border-t border-gray-200 text-xs">
+                    <span className="text-gray-600">Novo valor mensal com desconto:</span>
+                    <strong className="text-emerald-700 font-black text-sm">
+                      R$ {Math.max(0, selectedVipClient.monthlyFee - vipDiscountFixed).toFixed(2)}
+                    </strong>
+                  </div>
+
+                  <label className="flex items-center gap-2 pt-1 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={applyDiscountToClientFee}
+                      onChange={e => setApplyDiscountToClientFee(e.target.checked)}
+                      className="rounded text-amber-600 focus:ring-amber-500 w-3.5 h-3.5 cursor-pointer"
+                    />
+                    <span className="text-[11px] text-gray-700 font-medium">
+                      Atualizar automaticamente a mensalidade do cliente no sistema
+                    </span>
+                  </label>
+                </div>
+              )}
+
+              {vipBenefitType === 'service_gift' && (
+                <div className="p-3 bg-gray-50 rounded-xl border border-gray-200 space-y-2">
+                  <span className="text-[11px] font-semibold text-gray-600 block">Selecione o Serviço ou Brinde de Cortesia:</span>
+                  <div className="space-y-1.5">
+                    {[
+                      'Cristalização Total da Piscina de Cortesia',
+                      'Polimento e Limpeza Química de Bordas de Cortesia',
+                      'Análise Química Laboratorial Especial de Cortesia',
+                      'Tratamento de Choque e Oxi-Ativo Gratuito'
+                    ].map(gift => (
+                      <label key={gift} className="flex items-center gap-2 p-2 rounded-lg bg-white border border-gray-200 hover:border-amber-300 text-xs cursor-pointer">
+                        <input
+                          type="radio"
+                          name="vipGiftOption"
+                          checked={vipServiceGiftName === gift}
+                          onChange={() => setVipServiceGiftName(gift)}
+                          className="text-amber-600 focus:ring-amber-500 w-3.5 h-3.5 cursor-pointer"
+                        />
+                        <span className="text-gray-800 font-medium">{gift}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Checkbox WhatsApp Notificação */}
+            <div className="p-3.5 rounded-xl border border-emerald-200 bg-emerald-50/50 space-y-2 mb-4">
+              <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={sendVipWhatsapp}
+                  onChange={e => setSendVipWhatsapp(e.target.checked)}
+                  className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
+                />
+                <div>
+                  <span className="font-bold text-xs text-emerald-950 flex items-center gap-1.5">
+                    <MessageCircle size={15} className="text-emerald-700" />
+                    Enviar Notificação de Reconhecimento no WhatsApp
+                  </span>
+                  <span className="text-[11px] text-emerald-800 block mt-0.5">
+                    Comunica calorosamente a condição de Cliente VIP e detalha o benefício especial concedido.
+                  </span>
+                </div>
+              </label>
+
+              {sendVipWhatsapp && (
+                <div className="pt-2 border-t border-emerald-200/70">
+                  <span className="text-[10px] font-semibold text-emerald-900 block mb-1">
+                    Prévia da mensagem VIP:
+                  </span>
+                  <div className="p-2.5 bg-white rounded-lg border border-emerald-300 text-[11px] text-gray-800 font-mono whitespace-pre-wrap leading-relaxed max-h-24 overflow-y-auto">
+                    {`Olá ${selectedVipClient.name}! Tudo bem? 🏊‍♂️✨\n\nTemos a alegria de comunicar que você faz parte do seleto grupo de Clientes ${selectedVipClient.tierLabel} da RS Piscinas, com ${selectedVipClient.monthsActive} meses de parceria e pontualidade exemplar! 💎\n\nComo forma de reconhecimento e agradecimento pela sua fidelidade, concedemos a você o seguinte benefício especial:\n🎁 Benefício: ${getVipBenefitDescription(selectedVipClient)}\n\nAgradecemos imensamente pela preferência e por nos confiar a manutenção da sua piscina sempre cristalina! 💦🏊`}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex justify-end gap-2.5 pt-2 border-t border-gray-100">
+              <button
+                onClick={() => setVipModalOpen(false)}
+                disabled={isApplyingVipBenefit}
+                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-xl transition-colors font-semibold text-xs cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={executeVipBenefit}
+                disabled={isApplyingVipBenefit}
+                className="px-5 py-2 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 text-white font-bold rounded-xl text-xs transition-all shadow-sm flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                {isApplyingVipBenefit ? (
+                  <>
+                    <RefreshCw size={14} className="animate-spin" />
+                    <span>Concedendo...</span>
+                  </>
+                ) : sendVipWhatsapp ? (
+                  <>
+                    <Gift size={14} />
+                    <span>Conceder Benefício & Notificar</span>
+                  </>
+                ) : (
+                  <>
+                    <Check size={14} />
+                    <span>Conceder Benefício</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
 
     </div>
   );

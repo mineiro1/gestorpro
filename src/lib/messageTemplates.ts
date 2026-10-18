@@ -5,6 +5,8 @@
  * and raw unbraced phrases (e.g. "Primeiro nome do cliente", "telefone do cliente")
  */
 
+import { formatAstraCallsNumber } from './whatsapp';
+
 export interface TemplateClientData {
   name?: string;
   client_name?: string;
@@ -43,13 +45,24 @@ export function formatClientMessageTemplate(
     referenceMonth?: string;
     paymentDate?: string;
     nextDueDate?: string;
+    newPrice?: number | string;
+    oldPrice?: number | string;
+    adjustmentPercent?: number | string;
+    anniversaryMonth?: string;
   }
 ): string {
   if (!template) return '';
 
   const rawName = (client.name || client.client_name || 'Cliente').trim();
   const nameParts = rawName.split(/\s+/).filter(Boolean);
-  const rawFirstName = nameParts[0] || 'Cliente';
+  let rawFirstName = nameParts[0] || 'Cliente';
+  const honoraryTitles = ['dr.', 'dr', 'dra.', 'dra', 'sr.', 'sr', 'sra.', 'sra', 'prof.', 'prof'];
+  if (honoraryTitles.includes(rawFirstName.toLowerCase()) && nameParts.length > 1) {
+    const nextPart = nameParts[1];
+    const capitalizedTitle = rawFirstName.charAt(0).toUpperCase() + rawFirstName.slice(1);
+    const capitalizedName = nextPart.charAt(0).toUpperCase() + nextPart.slice(1);
+    rawFirstName = `${capitalizedTitle} ${capitalizedName}`;
+  }
   const firstName = rawFirstName.charAt(0).toUpperCase() + rawFirstName.slice(1);
   const fullName = rawName || 'Cliente';
 
@@ -61,32 +74,10 @@ export function formatClientMessageTemplate(
     ? `(${cleanPhone.slice(0, 2)}) ${cleanPhone.slice(2, 6)}-${cleanPhone.slice(6)}`
     : cleanPhone;
 
-  // Determina o telefone real de login do usuário salvo na tabela users (sem 55 e com 9º dígito)
-  let rawUserPhone = client.user_phone || client.login_phone || client.userPhone || client.portal_phone || '';
-  let portalLoginPhone = String(rawUserPhone).replace(/\D/g, '');
-
-  if (!portalLoginPhone) {
-    // Fallback inteligente: se o telefone do cliente estiver no formato Astracalls (55 + DDD + 8 dígitos)
-    // remove o 55 e insere o nono dígito (ex: 556791843875 -> 67991843875 ou 556781629494 -> 67981629494)
-    if (cleanPhone.startsWith('55') && cleanPhone.length === 12) {
-      portalLoginPhone = `${cleanPhone.slice(2, 4)}9${cleanPhone.slice(4)}`;
-    } else if (cleanPhone.startsWith('55') && cleanPhone.length === 13) {
-      portalLoginPhone = cleanPhone.slice(2);
-    } else if (cleanPhone.length === 10) {
-      portalLoginPhone = `${cleanPhone.slice(0, 2)}9${cleanPhone.slice(2)}`;
-    } else {
-      portalLoginPhone = cleanPhone;
-    }
-  } else {
-    // Se o telefone veio da tabela users, garante que não tenha 55 na frente se for número nacional
-    if (portalLoginPhone.startsWith('55') && portalLoginPhone.length === 12) {
-      portalLoginPhone = `${portalLoginPhone.slice(2, 4)}9${portalLoginPhone.slice(4)}`;
-    } else if (portalLoginPhone.startsWith('55') && portalLoginPhone.length === 13) {
-      portalLoginPhone = portalLoginPhone.slice(2);
-    } else if (portalLoginPhone.length === 10) {
-      portalLoginPhone = `${portalLoginPhone.slice(0, 2)}9${portalLoginPhone.slice(2)}`;
-    }
-  }
+  // Determina o telefone real de login e senha do cliente no formato oficial AstraCalls (DDI 55 + DDD + 8 dígitos)
+  const rawUserPhone = client.user_phone || client.login_phone || client.userPhone || client.portal_phone || '';
+  const candidatePhone = String(rawUserPhone).replace(/\D/g, '') || cleanPhone;
+  const portalLoginPhone = formatAstraCallsNumber(candidatePhone) || candidatePhone;
 
   const portalUrl = options?.portalUrl || 'www.rspiscinas.app.br/client-panel';
   const companyName = options?.companyName || 'GestãoPro';
@@ -169,6 +160,15 @@ export function formatClientMessageTemplate(
     msg = msg
       .replace(/\{\s*valor\s*\}/gi, formattedVal)
       .replace(/\[\s*valor\s*\]/gi, formattedVal);
+  }
+
+  // 6.01 New Price / Reajuste
+  const newPriceVal = options?.newPrice ?? client.newPrice ?? client.new_price;
+  if (newPriceVal !== undefined) {
+    const formattedNewPrice = Number(newPriceVal || 0).toFixed(2).replace('.', ',');
+    msg = msg
+      .replace(/\{\s*(novo[\s_-]*valor|valor[\s_-]*reajustado|reajuste)\s*\}/gi, formattedNewPrice)
+      .replace(/\[\s*(novo[\s_-]*valor|valor[\s_-]*reajustado|reajuste)\s*\]/gi, formattedNewPrice);
   }
 
   // 6.1 PIX Key and Receiver
@@ -288,6 +288,33 @@ export function formatClientMessageTemplate(
     msg = msg
       .replace(/\{\s*(pr[oó]ximo[\s_-]*vencimento|pr[oó]xima[\s_-]*data|proximo_vencimento|próximo_vencimento|vencimento[\s_-]*seguinte)\s*\}/gi, formattedNextDue)
       .replace(/\[\s*(pr[oó]ximo[\s_-]*vencimento|pr[oó]xima[\s_-]*data|proximo_vencimento|próximo_vencimento|vencimento[\s_-]*seguinte)\s*\]/gi, formattedNextDue);
+  }
+
+  // 6.5 Contract Adjustment variables (reajuste anual de contrato)
+  if (options?.newPrice) {
+    const npNum = Number(options.newPrice);
+    const npFormatted = !isNaN(npNum) ? npNum.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : String(options.newPrice);
+    msg = msg
+      .replace(/\{\s*(novo[\s_-]*valor|novo_valor|novo)\s*\}/gi, npFormatted)
+      .replace(/\[\s*(novo[\s_-]*valor|novo_valor|novo)\s*\]/gi, npFormatted);
+  }
+  if (options?.oldPrice) {
+    const opNum = Number(options.oldPrice);
+    const opFormatted = !isNaN(opNum) ? opNum.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : String(options.oldPrice);
+    msg = msg
+      .replace(/\{\s*(antigo[\s_-]*valor|antigo_valor|valor[\s_-]*anterior|antigo)\s*\}/gi, opFormatted)
+      .replace(/\[\s*(antigo[\s_-]*valor|antigo_valor|valor[\s_-]*anterior|antigo)\s*\]/gi, opFormatted);
+  }
+  if (options?.adjustmentPercent) {
+    const apVal = `${options.adjustmentPercent}%`;
+    msg = msg
+      .replace(/\{\s*(percentual|percentual_reajuste|taxa_reajuste|porcentagem)\s*\}/gi, apVal)
+      .replace(/\[\s*(percentual|percentual_reajuste|taxa_reajuste|porcentagem)\s*\]/gi, apVal);
+  }
+  if (options?.anniversaryMonth) {
+    msg = msg
+      .replace(/\{\s*(mes[\s_-]*aniversario|mes_aniversario)\s*\}/gi, options.anniversaryMonth)
+      .replace(/\[\s*(mes[\s_-]*aniversario|mes_aniversario)\s*\]/gi, options.anniversaryMonth);
   }
 
   // 7. Critical fallback for RAW phrases typed without braces by users

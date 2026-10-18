@@ -239,6 +239,18 @@ export default function Layout() {
               return { ...old, completed: next };
             });
           }
+
+          // Alerta instantâneo no navegador/app para o administrador
+          if (userProfile?.role === 'admin' && payload.new.employee_id !== userProfile.uid) {
+            let clientName = 'Cliente';
+            try {
+              if (payload.new.client_id) {
+                const { data: cli } = await supabase.from('clients').select('name').eq('id', payload.new.client_id).maybeSingle();
+                if (cli?.name) clientName = cli.name;
+              }
+            } catch (e) {}
+            showNotification('🏊 Atendimento Finalizado!', `O atendimento no cliente ${clientName} foi finalizado.`, 'atendimentos_v2');
+          }
         }
       }
     };
@@ -264,6 +276,11 @@ export default function Layout() {
               next.add(payload.new.id);
               return { ...old, completed: next };
             });
+          }
+
+          // Alerta instantâneo para o administrador
+          if (userProfile?.role === 'admin' && payload.new.employee_id !== userProfile.uid) {
+            showNotification('🏊 Serviço Avulso Concluído!', `O serviço de ${payload.new.client_name || 'cliente'} foi concluído com sucesso.`, 'atendimentos_v2');
           }
         }
       }

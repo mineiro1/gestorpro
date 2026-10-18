@@ -8,15 +8,17 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   Share2, FileText, Map, Camera, CheckCircle, MapPin, Image as ImageIcon, 
   ArrowUp, ArrowDown, Save, ListOrdered, Search, RefreshCw, Phone,
-  Clock, ShieldAlert, AlertTriangle, Key, Zap, ArrowRightLeft, Trash2, Edit2, Users, Check, X
+  Clock, ShieldAlert, AlertTriangle, Key, Zap, ArrowRightLeft, Trash2, Edit2, Users, Check, X,
+  Navigation, CloudSun
 } from 'lucide-react';
 import { useCall } from '../contexts/CallContext';
 import { openMap, openRouteMap, openWaze } from '../lib/maps';
-import { openWhatsApp, sendEvolutionMessage, sendMetaMessage, sendAstraCallsMessage, getEffectiveWhatsAppProvider } from '../lib/whatsapp';
+import { openWhatsApp, sendEvolutionMessage, sendMetaMessage, sendAstraCallsMessage, getEffectiveWhatsAppProvider, resolveAdminWhatsAppSettings, formatAstraCallsNumber } from '../lib/whatsapp';
 import { formatClientMessageTemplate } from '../lib/messageTemplates';
 import { notifyAdminAttendanceFinished } from '../lib/pushNotifications';
 import { getLocalDayUtcRange, checkDailyChatAvailability, evaluateSessionExpiry, markClientChatAsRead } from '../lib/chatSessionUtils';
 import { getApiUrl } from '../lib/apiConfig';
+import { fetchWeatherData, WeatherData } from '../lib/weatherService';
 import EmployeeMap from '../components/EmployeeMap';
 import exifr from 'exifr';
 
@@ -48,6 +50,97 @@ export default function RoutesPage() {
   });
   const activeChatClientRef = useRef<any>(null);
   const chatModalOpenRef = useRef<boolean>(false);
+
+  const [weatherData, setWeatherData] = useState<WeatherData | null>(null);
+  const [onTheWayNotified, setOnTheWayNotified] = useState<Record<string, string>>(() => {
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      return JSON.parse(localStorage.getItem(`on_the_way_${today}`) || '{}');
+    } catch {
+      return {};
+    }
+  });
+
+  useEffect(() => {
+    fetchWeatherData().then(w => {
+      if (w) setWeatherData(w);
+    });
+  }, []);
+
+  const handleSendOnTheWay = async (client: any) => {
+    if (!client.phone) {
+      alert(`O cliente ${client.name} não possui telefone cadastrado.`);
+      return;
+    }
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    const prevTime = onTheWayNotified[client.id];
+    if (prevTime) {
+      if (!window.confirm(`Você já avisou ${client.name} às ${prevTime} que estava a caminho. Deseja reenviar?`)) {
+        return;
+      }
+    } else {
+      if (!window.confirm(`Deseja avisar ${client.name} no WhatsApp que você já está a caminho da residência dele (~15 minutos)?`)) {
+        return;
+      }
+    }
+
+    const cleanPhone = client.phone.replace(/\D/g, '');
+    const currentAdminId = isAdmin ? userProfile?.uid : userProfile?.adminId;
+    const currentSettings = await resolveAdminWhatsAppSettings(currentAdminId, userProfile);
+    const techName = userProfile?.name || 'Renivaldo';
+
+    const defaultOnTheWay = 'Olá {nome}! Seu técnico {tecnico} já está a caminho da sua residência. Previsão de chegada: ~15 minutos.';
+    const templateToUse = currentSettings?.onTheWayMessage || defaultOnTheWay;
+
+    const message = formatClientMessageTemplate(templateToUse, {
+      name: client.name,
+      phone: client.phone,
+      techName
+    }, {
+      techName,
+      companyName: currentSettings?.companyName || 'RS Piscinas'
+    });
+
+    const msgId = `ontheway_${client.id}_${Date.now()}`;
+    const effectiveProvider = getEffectiveWhatsAppProvider(currentSettings);
+    const nowTimeStr = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+    const updateNotifiedState = () => {
+      setOnTheWayNotified(prev => {
+        const updated = { ...prev, [client.id]: nowTimeStr };
+        try {
+          localStorage.setItem(`on_the_way_${todayStr}`, JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
+    };
+
+    if (effectiveProvider === 'manual') {
+      openWhatsApp(`55${cleanPhone}`, message);
+      updateNotifiedState();
+      alert(`WhatsApp aberto com o aviso de deslocamento para ${client.name}.`);
+      return;
+    }
+
+    try {
+      if (effectiveProvider === 'astracalls') {
+        await sendAstraCallsMessage(client.phone, message, currentSettings, msgId);
+      } else if (effectiveProvider === 'meta') {
+        await sendMetaMessage(client.phone, message, currentSettings, msgId);
+      } else if (effectiveProvider === 'evolution') {
+        await sendEvolutionMessage(client.phone, message, currentSettings, msgId);
+      }
+      updateNotifiedState();
+      alert(`🚗 Aviso de deslocamento enviado com sucesso para ${client.name} via WhatsApp!`);
+    } catch (err: any) {
+      console.error(err);
+      if (confirm(`Falha no envio automático (${err.message}).\n\nDeseja abrir o WhatsApp no seu aparelho para enviar manualmente?`)) {
+        openWhatsApp(`55${cleanPhone}`, message);
+        updateNotifiedState();
+      }
+    }
+  };
 
   useEffect(() => {
     localStorage.setItem('unreadCounts', JSON.stringify(unreadCounts));
@@ -257,7 +350,7 @@ export default function RoutesPage() {
             clientId: payload.clientId,
             clientName: payload.clientName || 'Cliente',
             techName: payload.techName || userProfile?.name || 'Colaborador',
-            visitId: payload.clientId,
+            visitId: payload.visitId || `${payload.clientId}_${payload.date || Date.now()}`,
             type: payload.isOneOffJob ? 'job' : 'visit',
             notes: payload.notes
           }).catch(() => {});
@@ -1631,13 +1724,14 @@ useEffect(() => {
           console.warn('[WhatsApp Relatório] Erro ao buscar telefone em users:', uErr);
         }
 
+        const astraLoginNumber = formatAstraCallsNumber(userLoginPhone || targetClient.phone || targetClient.local_phone || cleanPhone) || cleanPhone;
         const rawTemplate = useMessage2 ? msg2 : msg1;
         const message = formatClientMessageTemplate(rawTemplate, {
           name: targetClient.name || 'Cliente',
           phone: cleanPhone || targetClient.phone || targetClient.local_phone || '',
           local_phone: targetClient.local_phone || '',
-          user_phone: userLoginPhone,
-          login_phone: userLoginPhone
+          user_phone: astraLoginNumber,
+          login_phone: astraLoginNumber
         }, {
           techName: userProfile?.name || 'Técnico',
           companyName: currentSettings.companyName || userProfile?.whatsappSettings?.companyName || 'GestãoPro',
@@ -1955,7 +2049,7 @@ useEffect(() => {
               clientId: targetClient.id,
               clientName: targetClient.name,
               techName: userProfile?.name || 'Colaborador',
-              visitId: recordedVisitId || targetClient.id,
+              visitId: recordedVisitId || `${targetClient.id}_${activeRouteDate || Date.now()}`,
               type: targetClient.isOneOffJob ? 'job' : 'visit',
               notes: reportNotes
             }).catch(e => console.warn('[Push] Error triggering admin push notification:', e));
@@ -2286,6 +2380,30 @@ useEffect(() => {
             </div>
           ) : (
             <div className="space-y-4">
+              {weatherData && (
+                <div className={`p-3.5 rounded-xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs shadow-sm transition-all ${
+                  weatherData.hasStormAlert
+                    ? 'bg-amber-50 border-amber-300 text-amber-950'
+                    : 'bg-sky-50 border-sky-200 text-sky-950'
+                }`}>
+                  <div className="flex items-center gap-3">
+                    <div className={`p-2 rounded-xl shrink-0 ${weatherData.hasStormAlert ? 'bg-amber-200/90 text-amber-900' : 'bg-sky-200/80 text-sky-900'}`}>
+                      {weatherData.hasStormAlert ? <AlertTriangle size={20} /> : <CloudSun size={20} />}
+                    </div>
+                    <div>
+                      <div className="font-bold flex items-center gap-2 flex-wrap">
+                        <span>{weatherData.city} · {weatherData.currentTemp}°C ({weatherData.condition.label})</span>
+                        <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/80 border border-slate-200/80 text-slate-700">
+                          Prob. Chuva: {weatherData.daily[0]?.rainProbability || 0}%
+                        </span>
+                      </div>
+                      <p className="mt-1 text-[11px] leading-relaxed opacity-90">
+                        {weatherData.hasStormAlert ? weatherData.stormAlertMessage : weatherData.poolAdvice}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
               {(() => {
                 const filteredRouteClients = routeClients.filter((client) => {
                   const isCompleted = completedVisitsOnRouteDate.has(client.id);
@@ -2399,6 +2517,12 @@ useEffect(() => {
                               {client.name}
                             </h3>
 
+                            {onTheWayNotified[client.id] && (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-teal-800 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-full" title={`Aviso enviado às ${onTheWayNotified[client.id]}`}>
+                                <Navigation size={10} className="rotate-45 text-teal-600" /> A caminho ({onTheWayNotified[client.id]})
+                              </span>
+                            )}
+
                             {/* Botão de Ligação */}
                             <button
                               type="button"
@@ -2429,8 +2553,29 @@ useEffect(() => {
                             >
                               <MapPin size={20} />
                             </button>
+
+                            {/* Botão Aviso Estou a Caminho */}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleSendOnTheWay(client);
+                              }}
+                              className={`p-1 rounded-md transition-colors ${
+                                onTheWayNotified[client.id]
+                                  ? 'text-teal-700 bg-teal-100 hover:bg-teal-200'
+                                  : 'text-amber-600 hover:bg-amber-100'
+                              }`}
+                              title={
+                                onTheWayNotified[client.id]
+                                  ? `Aviso de deslocamento enviado às ${onTheWayNotified[client.id]} (Clique para reenviar)`
+                                  : 'Avisar cliente no WhatsApp que estou a caminho (~15 min)'
+                              }
+                            >
+                              <Navigation size={20} className={onTheWayNotified[client.id] ? 'rotate-45' : ''} />
+                            </button>
                             
-                            {/* Botão Estou a caminho / Chat */}
+                            {/* Botão Chat */}
                             {(() => {
                               const chatStatus = chatStatusByClient[client.id];
                               const isChatInactive = isCompleted || (!isAdmin && !isManager && chatStatus?.isExpiredOrClosed && !chatStatus?.isActive);
