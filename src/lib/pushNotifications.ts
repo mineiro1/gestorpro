@@ -273,7 +273,7 @@ export async function initCapacitorPushNotifications(
                   body: notifBody,
                   channelId: targetChannel,
                   schedule: { at: new Date(Date.now() + 50) },
-                  sound: isChat ? 'chat_notification' : 'notificacao',
+                  sound: isChat ? 'chat_notification.mp3' : 'notificacao.mp3',
                   extra: {
                     url: targetUrl,
                     channelId: targetChannel,

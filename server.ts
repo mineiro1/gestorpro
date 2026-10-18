@@ -2975,13 +2975,21 @@ app.all("/api/sync-payment", async (req, res) => {
   // Helper específico para envio de push ao Administrador com fallback de alta disponibilidade
   async function sendPushToAdmin(adminId: string, title: string, body: string, data: Record<string, string> = {}) {
     let sent = false;
-    if (adminId) {
-      sent = await sendPushToUser(adminId, title, body, data);
+    const targetIds = new Set<string>();
+    if (adminId) targetIds.add(adminId);
+
+    // Sempre garante que os perfis de Renivaldo (admin e colaborador) sejam considerados
+    targetIds.add('698dfcdd-7c91-4df5-aaee-eae9e67f15ae'); // Admin principal
+    targetIds.add('81bb13fb-c0de-48c6-ad01-3019e9b48026'); // Colaborador Renivaldo
+
+    // Despacha para os perfis prioritários
+    for (const uid of targetIds) {
+      const ok = await sendPushToUser(uid, title, body, data);
+      if (ok) sent = true;
     }
 
-    // Se o admin vinculado ao colaborador/cliente não possui dispositivo cadastrado (ou se for diferente do principal),
-    // despacha para o administrador principal do sistema e outros admins ativos com dispositivo conectado
-    if (!sent || adminId !== '698dfcdd-7c91-4df5-aaee-eae9e67f15ae') {
+    // Se houver outros administradores cadastrados com token FCM ativo, despacha também
+    try {
       const { data: allAdmins } = await supabaseAdmin
         .from('users')
         .select('id, fcm_token')
@@ -2989,12 +2997,15 @@ app.all("/api/sync-payment", async (req, res) => {
         .not('fcm_token', 'is', null);
 
       for (const adm of (allAdmins || [])) {
-        if (adm.id !== adminId && adm.fcm_token) {
+        if (!targetIds.has(adm.id) && adm.fcm_token) {
           const ok = await sendPushToUser(adm.id, title, body, data);
           if (ok) sent = true;
         }
       }
+    } catch (e) {
+      console.warn('[Push Server] Erro ao buscar outros admins:', e);
     }
+
     return sent;
   }
 
@@ -3167,9 +3178,16 @@ app.all("/api/sync-payment", async (req, res) => {
         }
       );
 
+      // Se não conseguiu enviar, remove a chave para não bloquear retentativas do app
+      if (!sent) {
+        recentPushCache.delete(dedupeKey);
+      }
+
       return sent;
     } catch (err: any) {
       console.error('[Online Push Engine] Erro ao processar finalização de visita:', err);
+      const fallbackKey = isOneOffJob ? `job_${visitRecord?.id || visitRecord?.client_id}` : `visit_${visitRecord?.id || visitRecord?.client_id}`;
+      recentPushCache.delete(fallbackKey);
       return false;
     }
   }
@@ -3585,6 +3603,9 @@ app.all("/api/sync-payment", async (req, res) => {
     }, msUntil7AM);
   }
 
+  // Conjunto de chaves de atendimentos já notificados para prevenir notificações repetidas
+  const notifiedVisitKeys = new Set<string>();
+
   /**
    * Inicialização e carregamento histórico de atendimentos finalizados.
    * Evita disparar notificações em massa para visitas antigas já salvas no banco,
@@ -3644,6 +3665,7 @@ app.all("/api/sync-payment", async (req, res) => {
           const dedupeKey = `visit_${v.id}`;
           if (!notifiedVisitKeys.has(dedupeKey)) {
             console.log(`[Online Database Watcher] Nova visita finalizada detectada no banco: ${v.id}. Disparando notificação para o admin responsável...`);
+            notifiedVisitKeys.add(dedupeKey);
             await handleVisitCompleted(v, false);
           }
         }
@@ -3663,6 +3685,7 @@ app.all("/api/sync-payment", async (req, res) => {
           const dedupeKey = `job_${j.id}`;
           if (!notifiedVisitKeys.has(dedupeKey)) {
             console.log(`[Online Database Watcher] Novo serviço avulso concluído detectado no banco: ${j.id}. Disparando notificação para o admin responsável...`);
+            notifiedVisitKeys.add(dedupeKey);
             await handleVisitCompleted(j, true);
           }
         }

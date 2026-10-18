@@ -2041,18 +2041,23 @@ useEffect(() => {
             } catch (cleanupErr) {}
           }
 
-          // Trigger Push Notification alert to administrator
+          // Trigger Push Notification alert to administrator (garante entrega antes de abrir WhatsApp)
           if (adminId && savedToDb) {
-            notifyAdminAttendanceFinished({
-              adminId,
-              employeeId: payload.employeeId || userProfile?.uid,
-              clientId: targetClient.id,
-              clientName: targetClient.name,
-              techName: userProfile?.name || 'Colaborador',
-              visitId: recordedVisitId || `${targetClient.id}_${activeRouteDate || Date.now()}`,
-              type: targetClient.isOneOffJob ? 'job' : 'visit',
-              notes: reportNotes
-            }).catch(e => console.warn('[Push] Error triggering admin push notification:', e));
+            try {
+              await notifyAdminAttendanceFinished({
+                adminId,
+                employeeId: payload.employeeId || userProfile?.uid,
+                clientId: targetClient.id,
+                clientName: targetClient.name,
+                techName: userProfile?.name || 'Colaborador',
+                visitId: recordedVisitId || `${targetClient.id}_${activeRouteDate || Date.now()}`,
+                type: targetClient.isOneOffJob ? 'job' : 'visit',
+                notes: reportNotes
+              });
+              console.log('[Push] Notificação de atendimento despachada com sucesso para o admin.');
+            } catch (e) {
+              console.warn('[Push] Error triggering admin push notification:', e);
+            }
           }
 
           // Dispara envio do WhatsApp em segundo plano APÓS a visita estar salva e o push ter sido despachado

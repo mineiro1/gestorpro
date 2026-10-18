@@ -8,7 +8,7 @@ import {
   MessageCircle, Eye, EyeOff, RefreshCw, Send, Calendar, TrendingUp, 
   ShieldCheck, ArrowRight, Check, Sparkles, AlertTriangle,
   CloudSun, CloudRain, Sun, CloudLightning, Wind, Droplets, Percent, ChevronLeft, ChevronRight, X, ArrowUpRight, Award, FileCheck,
-  Crown, Gem, Gift, Star
+  Crown, Gem, Gift, Star, RotateCcw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -17,11 +17,12 @@ import {
   sendEvolutionMessage, 
   sendAstraCallsMessage, 
   getEffectiveWhatsAppProvider,
-  resolveAdminWhatsAppSettings
+  resolveAdminWhatsAppSettings,
+  formatWhatsAppNumber
 } from '../lib/whatsapp';
 import { formatClientMessageTemplate } from '../lib/messageTemplates';
 import { fetchWeatherData, WeatherData } from '../lib/weatherService';
-import { evaluateClientContract, loadContractsMetadata, saveContractAdjustment, ClientContractInfo } from '../lib/contractUtils';
+import { evaluateClientContract, loadContractsMetadata, saveContractAdjustment, keepContractPrice, ClientContractInfo } from '../lib/contractUtils';
 
 interface DashboardStats {
   totalClients: number;
@@ -134,8 +135,10 @@ export default function Dashboard() {
   const [contractClients, setContractClients] = useState<ClientContractInfo[]>([]);
   const [eligibleContractClients, setEligibleContractClients] = useState<ClientContractInfo[]>([]);
   const [selectedContractClient, setSelectedContractClient] = useState<ClientContractInfo | null>(null);
-  const [adjustmentPercent, setAdjustmentPercent] = useState<number>(8); // 8% standard
+  const [adjustmentPercent, setAdjustmentPercent] = useState<number>(8);
+  const [increaseAmountInput, setIncreaseAmountInput] = useState<string>('20.00'); // Valor de aumento manual (ex: R$ 20,00)
   const [customPriceInput, setCustomPriceInput] = useState<string>('');
+  const [contractMessagePreview, setContractMessagePreview] = useState<string>('');
   const [sendContractWhatsapp, setSendContractWhatsapp] = useState<boolean>(true);
   const [isApplyingAdjustment, setIsApplyingAdjustment] = useState<boolean>(false);
   const [contractModalOpen, setContractModalOpen] = useState<boolean>(false);
@@ -452,11 +455,23 @@ export default function Dashboard() {
       // 6. Gestão de Contratos e Alerta de Reajuste Anual Automático
       try {
         const contractsMeta = await loadContractsMetadata();
+        const paymentsByClientList = new Map<string, any[]>();
+        if (paymentsSnap?.data) {
+          paymentsSnap.data.forEach((p: any) => {
+            if (p.client_id) {
+              const list = paymentsByClientList.get(p.client_id) || [];
+              list.push(p);
+              paymentsByClientList.set(p.client_id, list);
+            }
+          });
+        }
+
         if (clientsSnap?.data) {
           const evaluated: ClientContractInfo[] = [];
           clientsSnap.data.forEach((client: any) => {
             if (client.active !== false) {
-              const info = evaluateClientContract(client, contractsMeta[client.id]);
+              const clientPayments = paymentsByClientList.get(client.id) || [];
+              const info = evaluateClientContract(client, contractsMeta[client.id], clientPayments);
               evaluated.push(info);
             }
           });
@@ -735,36 +750,176 @@ export default function Dashboard() {
     }
   };
 
+  // Mensagem oficial requerida pelo usuário para comunicado de reajuste
+  const generateContractMessage = (clientName: string, newPriceFormatted: string) => {
+    return `Olá, ${clientName}! Tudo bem?
+
+Passando primeiramente para agradecer pela confiança no meu trabalho com a RS Piscinas!
+
+Gostaria de informar que, devido ao aumento recente nos custos necessários para a realização do serviço, precisarei fazer um pequeno reajuste na sua mensalidade para continuar entregando o mesmo padrão de qualidade.
+
+Esse reajuste passará a valer a partir do seu próximo pagamento, e o novo valor da sua mensalidade será de R$ ${newPriceFormatted}.
+
+Agradeço muito a compreensão e sigo à disposição para manter a sua piscina sempre limpa e bem cuidada! Qualquer dúvida, é só me chamar.
+
+Um abraço,
+Renivaldo`;
+  };
+
   // Contract Adjustment Handlers
   const openAdjustmentModal = (clientInfo: ClientContractInfo) => {
     setSelectedContractClient(clientInfo);
-    setAdjustmentPercent(8);
-    const calculated = Math.round(clientInfo.currentPrice * 1.08);
+    // Valor padrão do aumento sugerido: R$ 20,00 conforme solicitado pelo usuário
+    const defaultIncrease = 20.0;
+    const calculated = clientInfo.currentPrice + defaultIncrease;
+    setIncreaseAmountInput(defaultIncrease.toFixed(2));
     setCustomPriceInput(calculated.toFixed(2));
+    const pct = clientInfo.currentPrice > 0 ? (defaultIncrease / clientInfo.currentPrice) * 100 : 8;
+    setAdjustmentPercent(Math.round(pct * 10) / 10);
+    setContractMessagePreview(generateContractMessage(clientInfo.clientName, calculated.toFixed(2).replace('.', ',')));
     setSendContractWhatsapp(true);
     setContractModalOpen(true);
+  };
+
+  const handleIncreaseAmountChange = (val: string) => {
+    setIncreaseAmountInput(val);
+    const inc = parseFloat(val.replace(',', '.'));
+    if (!isNaN(inc) && selectedContractClient) {
+      const newTotal = Math.max(0, selectedContractClient.currentPrice + inc);
+      setCustomPriceInput(newTotal.toFixed(2));
+      const pct = selectedContractClient.currentPrice > 0 ? (inc / selectedContractClient.currentPrice) * 100 : 0;
+      setAdjustmentPercent(Math.round(pct * 10) / 10);
+      setContractMessagePreview(generateContractMessage(selectedContractClient.clientName, newTotal.toFixed(2).replace('.', ',')));
+    }
+  };
+
+  const handlePresetIncrease = (amount: number) => {
+    setIncreaseAmountInput(amount.toFixed(2));
+    if (selectedContractClient) {
+      const newTotal = selectedContractClient.currentPrice + amount;
+      setCustomPriceInput(newTotal.toFixed(2));
+      const pct = selectedContractClient.currentPrice > 0 ? (amount / selectedContractClient.currentPrice) * 100 : 0;
+      setAdjustmentPercent(Math.round(pct * 10) / 10);
+      setContractMessagePreview(generateContractMessage(selectedContractClient.clientName, newTotal.toFixed(2).replace('.', ',')));
+    }
   };
 
   const handlePercentChange = (pct: number) => {
     setAdjustmentPercent(pct);
     if (selectedContractClient) {
-      const calculated = selectedContractClient.currentPrice * (1 + pct / 100);
+      const inc = selectedContractClient.currentPrice * (pct / 100);
+      const calculated = selectedContractClient.currentPrice + inc;
+      setIncreaseAmountInput(inc.toFixed(2));
       setCustomPriceInput(calculated.toFixed(2));
+      setContractMessagePreview(generateContractMessage(selectedContractClient.clientName, calculated.toFixed(2).replace('.', ',')));
     }
   };
 
   const handleCustomPriceChange = (val: string) => {
     setCustomPriceInput(val);
-    const num = parseFloat(val);
-    if (!isNaN(num) && selectedContractClient && selectedContractClient.currentPrice > 0) {
-      const diff = ((num - selectedContractClient.currentPrice) / selectedContractClient.currentPrice) * 100;
-      setAdjustmentPercent(Math.round(diff * 10) / 10);
+    const num = parseFloat(val.replace(',', '.'));
+    if (!isNaN(num) && selectedContractClient) {
+      const diff = num - selectedContractClient.currentPrice;
+      setIncreaseAmountInput(diff > 0 ? diff.toFixed(2) : '0.00');
+      const pct = selectedContractClient.currentPrice > 0 ? (diff / selectedContractClient.currentPrice) * 100 : 0;
+      setAdjustmentPercent(Math.round(pct * 10) / 10);
+      setContractMessagePreview(generateContractMessage(selectedContractClient.clientName, num.toFixed(2).replace('.', ',')));
     }
   };
 
+  const handleKeepContractPrice = async (clientInfo?: ClientContractInfo | null) => {
+    const target = clientInfo || selectedContractClient;
+    if (!target) return;
+
+    setIsApplyingAdjustment(true);
+    try {
+      const success = await keepContractPrice(target.clientId);
+      if (!success) {
+        throw new Error('Falha ao registrar manutenção do valor');
+      }
+
+      setFeedbackMessage({ text: `Valor mantido em R$ ${target.currentPrice.toFixed(2)} para ${target.clientName}. O contrato foi renovado para o próximo ciclo sem reajuste.` });
+      setContractModalOpen(false);
+      setSelectedContractClient(null);
+      await fetchStats(true);
+    } catch (err: any) {
+      console.error(err);
+      alert('Erro ao manter valor: ' + (err.message || ''));
+    } finally {
+      setIsApplyingAdjustment(false);
+      setTimeout(() => setFeedbackMessage(null), 5000);
+    }
+  };
+
+  const handleTestWithTeste2 = async () => {
+    setIsApplyingAdjustment(true);
+    try {
+      let teste2Id = 'f1e48b7c-a410-43a4-bdb9-ffc70dbd33e8';
+      const { data: existingClient } = await supabase
+        .from('clients')
+        .select('*')
+        .ilike('name', '%teste2%')
+        .maybeSingle();
+
+      if (existingClient) {
+        teste2Id = existingClient.id;
+        await supabase
+          .from('clients')
+          .update({
+            monthly_price: 200,
+            monthly_fee: 200,
+            active: true
+          })
+          .eq('id', teste2Id);
+      } else {
+        const { data: newClient } = await supabase
+          .from('clients')
+          .insert({
+            id: teste2Id,
+            name: 'teste2',
+            monthly_price: 200,
+            monthly_fee: 200,
+            active: true,
+            phone: '556791907236'
+          })
+          .select()
+          .single();
+        if (newClient) teste2Id = newClient.id;
+      }
+
+      localStorage.removeItem(`contract_meta_${teste2Id}`);
+      await supabase.from('settings').delete().like('id', `%${teste2Id}%`);
+
+      await fetchStats(true);
+
+      const targetClient: ClientContractInfo = {
+        clientId: teste2Id,
+        clientName: existingClient?.name || 'teste2',
+        clientPhone: existingClient?.phone || existingClient?.local_phone || '556791907236',
+        startDate: '2025-01-01',
+        monthsActive: 13,
+        yearsActive: 1,
+        isEligibleForAdjustment: true,
+        anniversaryMonthName: 'Janeiro',
+        currentPrice: 200
+      };
+
+      openAdjustmentModal(targetClient);
+      setFeedbackMessage({ text: 'Cliente teste2 pronto para teste! Modal aberto para simulação (+ R$ 20,00).' });
+    } catch (e: any) {
+      console.error('Erro ao testar com teste2:', e);
+      alert('Erro ao carregar teste com teste2: ' + (e.message || ''));
+    } finally {
+      setIsApplyingAdjustment(false);
+      setTimeout(() => setFeedbackMessage(null), 5000);
+    }
+  };
+
+  const handleResetTeste2 = handleTestWithTeste2;
+
   const executeContractAdjustment = async () => {
     if (!selectedContractClient) return;
-    const newPrice = parseFloat(customPriceInput);
+    const newPrice = parseFloat(customPriceInput.replace(',', '.'));
     if (isNaN(newPrice) || newPrice <= 0) {
       alert('Por favor, informe um valor de mensalidade válido.');
       return;
@@ -782,55 +937,43 @@ export default function Dashboard() {
         throw new Error('Falha ao salvar o reajuste no banco de dados');
       }
 
-      // Se solicitado, dispara o comunicado de reajuste no WhatsApp do cliente
+      const formattedNewPrice = newPrice.toFixed(2).replace('.', ',');
+
+      // Se solicitado, dispara o comunicado de reajuste oficial no WhatsApp do cliente
       if (sendContractWhatsapp && selectedContractClient.clientPhone) {
         const currentAdminId = userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId;
         const currentSettings = await resolveAdminWhatsAppSettings(currentAdminId, userProfile);
-        const companyName = currentSettings?.companyName || userProfile?.whatsappSettings?.companyName || 'RS Piscinas';
 
-        const template = 'Olá {nome}! Tudo bem? Seu contrato de manutenção preventiva de piscina com a {empresa} completou 1 ano neste mês de {mes_aniversario}. Informamos que, conforme nosso reajuste anual de {percentual}%, a sua mensalidade passará de R$ {antigo_valor} para R$ {novo_valor}. Agradecemos imensamente a sua parceria e confiança em nosso trabalho! 🏊‍♂️✨';
-
-        const message = formatClientMessageTemplate(template, {
-          name: selectedContractClient.clientName,
-          phone: selectedContractClient.clientPhone,
-          monthlyFee: newPrice,
-          monthly_price: newPrice
-        }, {
-          companyName,
-          newPrice,
-          oldPrice: selectedContractClient.currentPrice,
-          adjustmentPercent,
-          anniversaryMonth: selectedContractClient.anniversaryMonthName
-        });
+        const message = contractMessagePreview.trim() || generateContractMessage(selectedContractClient.clientName, formattedNewPrice);
 
         const effectiveProvider = getEffectiveWhatsAppProvider(currentSettings);
-        const cleanPhone = selectedContractClient.clientPhone.replace(/\D/g, '');
+        const formattedPhone = formatWhatsAppNumber(selectedContractClient.clientPhone);
         const msgId = `adj_${selectedContractClient.clientId}_${Date.now()}`;
 
         if (effectiveProvider === 'astracalls') {
           try {
-            await sendAstraCallsMessage(selectedContractClient.clientPhone, message, currentSettings, msgId);
+            await sendAstraCallsMessage(formattedPhone, message, currentSettings, msgId);
           } catch {
-            openWhatsApp(`55${cleanPhone}`, message);
+            openWhatsApp(formattedPhone, message);
           }
         } else if (effectiveProvider === 'meta') {
           try {
-            await sendMetaMessage(selectedContractClient.clientPhone, message, currentSettings, msgId);
+            await sendMetaMessage(formattedPhone, message, currentSettings, msgId);
           } catch {
-            openWhatsApp(`55${cleanPhone}`, message);
+            openWhatsApp(formattedPhone, message);
           }
         } else if (effectiveProvider === 'evolution') {
           try {
-            await sendEvolutionMessage(selectedContractClient.clientPhone, message, currentSettings, msgId);
+            await sendEvolutionMessage(formattedPhone, message, currentSettings, msgId);
           } catch {
-            openWhatsApp(`55${cleanPhone}`, message);
+            openWhatsApp(formattedPhone, message);
           }
         } else {
-          openWhatsApp(`55${cleanPhone}`, message);
+          openWhatsApp(formattedPhone, message);
         }
       }
 
-      setFeedbackMessage({ text: `Reajuste de ${adjustmentPercent}% aplicado com sucesso para ${selectedContractClient.clientName}!` });
+      setFeedbackMessage({ text: `Mensalidade atualizada para R$ ${formattedNewPrice} no cadastro de ${selectedContractClient.clientName} com sucesso!` });
       setContractModalOpen(false);
       setSelectedContractClient(null);
       await fetchStats(true);
@@ -1865,13 +2008,25 @@ Agradecemos imensamente pela parceria e por nos permitir cuidar da sua piscina p
                 )}
               </div>
               <p className="text-xs text-slate-500 mt-0.5">
-                Monitoramento inteligente de aniversário de contratos (11+ meses) com aplicação de índice de inflação (IPCA/IGP-M) e aviso automático no WhatsApp
+                Reajuste anual: clientes completam 1 ano a partir da baixa da mensalidade de Janeiro/2027 (ex.: vencimento em 02/01/2027 baixado libera o reajuste). O cliente teste2 já está ativo para testes.
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-3 self-start sm:self-auto">
-            <div className="text-xs text-slate-500">
+          <div className="flex flex-wrap items-center gap-2.5 self-start sm:self-auto">
+            {/* Botão de Teste com teste2 SEMPRE visível no topo da seção */}
+            <button
+              type="button"
+              onClick={handleTestWithTeste2}
+              disabled={isApplyingAdjustment}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 active:bg-purple-800 text-white font-bold text-xs shadow-sm hover:shadow-md transition-all cursor-pointer hover:scale-[1.02] active:scale-[0.98] shrink-0 disabled:opacity-50"
+              title="Abrir imediatamente simulação de reajuste com o cliente teste2"
+            >
+              <RotateCcw size={14} className={isApplyingAdjustment ? "animate-spin" : ""} />
+              <span>🧪 Testar com teste2</span>
+            </button>
+
+            <div className="text-xs text-slate-500 hidden sm:block">
               Total vigentes: <strong className="text-slate-800">{contractClients.length} contratos</strong>
             </div>
 
@@ -1903,12 +2058,12 @@ Agradecemos imensamente pela parceria e por nos permitir cuidar da sua piscina p
 
         {eligibleContractClients.length > 0 ? (
           <div className="space-y-3">
-            <div className="p-3 rounded-xl bg-purple-50/70 border border-purple-200 text-xs text-purple-950 flex items-center justify-between">
+            <div className="p-3 rounded-xl bg-purple-50/70 border border-purple-200 text-xs text-purple-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
               <span className="font-semibold text-purple-900">
-                🎉 Os seguintes clientes completaram 1 ano de vigência contratual e estão aptos para reajuste de valor:
+                🎉 Clientes aptos para reajuste de valor (1 ano completo atingido):
               </span>
-              <span className="text-[11px] text-purple-700 font-bold hidden sm:inline">
-                Sugestão padrão: +8% (IPCA acumulado)
+              <span className="text-[11px] text-purple-700 font-bold">
+                Defina o valor do aumento manual (ex: + R$ 20,00) ou clique em Manter Valor
               </span>
             </div>
 
@@ -1918,11 +2073,16 @@ Agradecemos imensamente pela parceria e por nos permitir cuidar da sua piscina p
             >
               {eligibleContractClients.map((client) => {
                 const suggestedNewPrice = Math.round(client.currentPrice * 1.08);
+                const isTeste = client.clientName.toLowerCase().includes('teste2');
 
                 return (
                   <div
                     key={client.clientId}
-                    className="w-[300px] sm:w-[320px] md:w-[340px] shrink-0 snap-start p-4 rounded-xl border border-purple-200/90 bg-gradient-to-br from-white to-purple-50/30 hover:border-purple-300 transition-all shadow-xs flex flex-col justify-between"
+                    className={`w-[300px] sm:w-[320px] md:w-[340px] shrink-0 snap-start p-4 rounded-xl transition-all shadow-xs flex flex-col justify-between ${
+                      isTeste
+                        ? 'border-2 border-purple-500 bg-gradient-to-br from-white via-purple-50/40 to-purple-100/30 ring-2 ring-purple-200 shadow-md'
+                        : 'border border-purple-200/90 bg-gradient-to-br from-white to-purple-50/30 hover:border-purple-300'
+                    }`}
                   >
                     <div>
                       <div className="flex items-start justify-between gap-2">
@@ -1935,9 +2095,15 @@ Agradecemos imensamente pela parceria e por nos permitir cuidar da sua piscina p
                           </p>
                         </div>
 
-                        <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 border border-purple-200 shrink-0">
-                          {client.monthsActive} meses ativos
-                        </span>
+                        {isTeste ? (
+                          <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-purple-600 text-white border border-purple-700 shrink-0 shadow-2xs">
+                            🧪 Teste (1 ano+)
+                          </span>
+                        ) : (
+                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 border border-purple-200 shrink-0">
+                            {client.monthsActive} meses ativos
+                          </span>
+                        )}
                       </div>
 
                       <div className="mt-3.5 pt-2.5 border-t border-purple-100 space-y-1.5 text-xs">
@@ -1957,13 +2123,41 @@ Agradecemos imensamente pela parceria e por nos permitir cuidar da sua piscina p
                     </div>
 
                     <div className="mt-4 pt-3 border-t border-purple-100">
-                      <button
-                        onClick={() => openAdjustmentModal(client)}
-                        className="w-full py-2 px-3 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs transition-all shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
-                      >
-                        <Percent size={14} />
-                        <span>Reajustar & Avisar no WhatsApp</span>
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleKeepContractPrice(client)}
+                          disabled={isApplyingAdjustment}
+                          className="flex-1 py-2 px-2.5 rounded-xl border border-slate-300 hover:bg-slate-100 text-slate-700 font-bold text-xs transition-all shadow-2xs flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50"
+                          title="Manter o mesmo valor sem aplicar reajuste para este ciclo"
+                        >
+                          <ShieldCheck size={14} className="text-slate-500" />
+                          <span>Manter Valor</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openAdjustmentModal(client)}
+                          disabled={isApplyingAdjustment}
+                          className="flex-1 py-2 px-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs transition-all shadow-xs flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50"
+                          title="Definir aumento manual (ex: + R$ 20,00) e avisar cliente no WhatsApp"
+                        >
+                          <Percent size={14} />
+                          <span>Atualizar Valor</span>
+                        </button>
+                      </div>
+
+                      {isTeste && (
+                        <button
+                          type="button"
+                          onClick={handleTestWithTeste2}
+                          disabled={isApplyingAdjustment}
+                          className="mt-2.5 w-full text-[11px] font-semibold text-purple-700 hover:text-purple-900 text-center flex items-center justify-center gap-1 cursor-pointer py-1 hover:underline"
+                          title="Reiniciar os dados do teste2 para novas simulações"
+                        >
+                          <RotateCcw size={11} className={isApplyingAdjustment ? "animate-spin" : ""} />
+                          <span>Resetar para novo teste</span>
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -1971,17 +2165,34 @@ Agradecemos imensamente pela parceria e por nos permitir cuidar da sua piscina p
             </div>
           </div>
         ) : (
-          <div className="p-4 rounded-xl border border-slate-200/80 bg-slate-50/60 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-600">
+          <div className="p-4 rounded-xl border border-purple-200 bg-gradient-to-r from-purple-50/70 to-slate-50 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-700 shadow-2xs">
             <div className="flex items-center gap-2.5">
-              <FileCheck size={18} className="text-emerald-600 shrink-0" />
-              <span>Nenhum cliente com 1 ano completo aguardando reajuste neste momento. Todos os contratos estão com valores atualizados.</span>
+              <div className="p-2 bg-purple-100 text-purple-700 rounded-lg shrink-0">
+                <FileCheck size={18} />
+              </div>
+              <div>
+                <strong className="block font-bold text-purple-950">Contratos de Janeiro/2027 em dia</strong>
+                <span className="text-slate-600 text-[11px]">Nenhum cliente com pagamento de Janeiro/2027 aguardando reajuste neste momento.</span>
+              </div>
             </div>
-            <button
-              onClick={() => navigate('/clients')}
-              className="text-purple-600 hover:text-purple-700 font-bold flex items-center gap-1 cursor-pointer shrink-0"
-            >
-              Ver todos os clientes <ArrowRight size={13} />
-            </button>
+            <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+              <button
+                type="button"
+                onClick={handleTestWithTeste2}
+                disabled={isApplyingAdjustment}
+                className="w-full sm:w-auto px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs shadow-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                title="Libera e abre imediatamente o cliente teste2 para testar o reajuste"
+              >
+                <RotateCcw size={13} className={isApplyingAdjustment ? "animate-spin" : ""} />
+                <span>🧪 Testar com teste2</span>
+              </button>
+              <button
+                onClick={() => navigate('/clients')}
+                className="text-purple-700 hover:text-purple-900 font-bold flex items-center gap-1 cursor-pointer shrink-0 px-2 py-1.5"
+              >
+                Ver clientes <ArrowRight size={13} />
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -2357,50 +2568,77 @@ Agradecemos imensamente pela parceria e por nos permitir cuidar da sua piscina p
               </div>
             </div>
 
-            {/* Seleção de Percentual de Reajuste */}
+            {/* Escolha do Valor do Aumento Manual (ex: R$ 20,00) */}
             <div className="space-y-3 mb-4">
-              <label className="block text-xs font-bold text-gray-700">
-                Índice de Reajuste:
-              </label>
-              
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-bold text-gray-800">
+                  Valor do Aumento Desejado (R$):
+                </label>
+                <span className="text-[11px] text-purple-700 font-bold">
+                  Soma direta ao valor atual
+                </span>
+              </div>
+
+              {/* Botões rápidos de valores pré-definidos */}
               <div className="grid grid-cols-4 gap-2">
-                {[5, 8, 10, 12].map(pct => (
+                {[10, 20, 30, 50].map(val => (
                   <button
-                    key={pct}
+                    key={val}
                     type="button"
-                    onClick={() => handlePercentChange(pct)}
+                    onClick={() => handlePresetIncrease(val)}
                     className={`py-2 px-3 rounded-xl text-xs font-bold transition-all border cursor-pointer ${
-                      adjustmentPercent === pct
+                      parseFloat(increaseAmountInput || '0') === val
                         ? 'bg-purple-600 border-purple-600 text-white shadow-xs'
-                        : 'bg-gray-50 hover:bg-gray-100 border-gray-200 text-gray-700'
+                        : 'bg-purple-50/60 hover:bg-purple-100/70 border-purple-200 text-purple-900'
                     }`}
                   >
-                    +{pct}% {pct === 8 ? '(IPCA)' : ''}
+                    + R$ {val},00
                   </button>
                 ))}
               </div>
 
               <div className="grid grid-cols-2 gap-3 pt-1">
                 <div>
-                  <label className="block text-[11px] font-semibold text-gray-600 mb-1">Porcentagem (%)</label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    value={adjustmentPercent}
-                    onChange={e => handlePercentChange(parseFloat(e.target.value) || 0)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-bold outline-none focus:ring-2 focus:ring-purple-500"
-                  />
+                  <label className="block text-[11px] font-semibold text-gray-600 mb-1">
+                    Valor do Aumento Manual (R$)
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-2.5 text-xs text-gray-400 font-bold">R$</span>
+                    <input
+                      type="number"
+                      step="1"
+                      value={increaseAmountInput}
+                      onChange={e => handleIncreaseAmountChange(e.target.value)}
+                      placeholder="20,00"
+                      className="w-full pl-9 pr-3 py-2 border border-purple-300 rounded-lg text-xs font-black text-purple-900 outline-none focus:ring-2 focus:ring-purple-500 bg-white"
+                    />
+                  </div>
                 </div>
+
                 <div>
-                  <label className="block text-[11px] font-semibold text-gray-600 mb-1">Novo Valor Mensal (R$)</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={customPriceInput}
-                    onChange={e => handleCustomPriceChange(e.target.value)}
-                    className="w-full px-3 py-2 border border-emerald-300 rounded-lg text-xs font-black text-emerald-800 outline-none focus:ring-2 focus:ring-emerald-500"
-                  />
+                  <label className="block text-[11px] font-semibold text-gray-600 mb-1">
+                    Novo Valor da Mensalidade (R$)
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-2.5 text-xs text-gray-400 font-bold">R$</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={customPriceInput}
+                      onChange={e => handleCustomPriceChange(e.target.value)}
+                      className="w-full pl-9 pr-3 py-2 border border-emerald-300 rounded-lg text-xs font-black text-emerald-800 outline-none focus:ring-2 focus:ring-emerald-500 bg-emerald-50/30"
+                    />
+                  </div>
                 </div>
+              </div>
+
+              <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs flex items-center justify-between text-slate-700">
+                <span>
+                  Mensalidade atual: <strong>R$ {selectedContractClient.currentPrice.toFixed(2)}</strong> + Aumento: <strong className="text-purple-700">R$ {parseFloat(increaseAmountInput || '0').toFixed(2)}</strong>
+                </span>
+                <span className="text-emerald-700 font-black">
+                  = R$ {parseFloat(customPriceInput || '0').toFixed(2)}
+                </span>
               </div>
             </div>
 
@@ -2419,7 +2657,7 @@ Agradecemos imensamente pela parceria e por nos permitir cuidar da sua piscina p
                     Enviar Notificação Formal no WhatsApp
                   </span>
                   <span className="text-[11px] text-emerald-800 block mt-0.5">
-                    Comunica cordialmente o reajuste anual de {adjustmentPercent}% e agradece pela fidelidade.
+                    Comunica cordialmente o reajuste e agradece pela confiança e parceria.
                   </span>
                 </div>
               </label>
@@ -2427,46 +2665,58 @@ Agradecemos imensamente pela parceria e por nos permitir cuidar da sua piscina p
               {sendContractWhatsapp && (
                 <div className="pt-2 border-t border-emerald-200/70">
                   <span className="text-[10px] font-semibold text-emerald-900 block mb-1">
-                    Prévia da mensagem que será enviada:
+                    Prévia da mensagem oficial que será enviada:
                   </span>
-                  <div className="p-2.5 bg-white rounded-lg border border-emerald-300 text-[11px] text-gray-800 font-mono whitespace-pre-wrap leading-relaxed max-h-24 overflow-y-auto">
-                    {`Olá ${selectedContractClient.clientName}! Tudo bem? Seu contrato de manutenção preventiva de piscina com a RS Piscinas completou 1 ano neste mês de ${selectedContractClient.anniversaryMonthName}. Informamos que, conforme nosso reajuste anual de ${adjustmentPercent}%, a sua mensalidade passará de R$ ${selectedContractClient.currentPrice.toFixed(2)} para R$ ${parseFloat(customPriceInput || '0').toFixed(2)}. Agradecemos imensamente a sua parceria e confiança em nosso trabalho! 🏊‍♂️✨`}
+                  <div className="p-2.5 bg-white rounded-lg border border-emerald-300 text-[11px] text-gray-800 font-sans whitespace-pre-wrap leading-relaxed max-h-36 overflow-y-auto shadow-2xs">
+                    {contractMessagePreview || generateContractMessage(selectedContractClient.clientName, parseFloat(customPriceInput || '0').toFixed(2).replace('.', ','))}
                   </div>
                 </div>
               )}
             </div>
 
             {/* Modal Actions */}
-            <div className="flex justify-end gap-2.5 pt-2 border-t border-gray-100">
+            <div className="flex flex-col-reverse sm:flex-row sm:justify-between items-stretch sm:items-center gap-2 pt-3 border-t border-gray-100">
               <button
+                type="button"
                 onClick={() => setContractModalOpen(false)}
                 disabled={isApplyingAdjustment}
-                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-xl transition-colors font-semibold text-xs cursor-pointer"
+                className="px-3.5 py-2 text-gray-600 hover:bg-gray-100 rounded-xl transition-colors font-semibold text-xs cursor-pointer text-center"
               >
                 Cancelar
               </button>
-              <button
-                onClick={executeContractAdjustment}
-                disabled={isApplyingAdjustment}
-                className="px-5 py-2 bg-purple-600 hover:bg-purple-500 active:bg-purple-700 text-white font-bold rounded-xl text-xs transition-all shadow-sm flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-              >
-                {isApplyingAdjustment ? (
-                  <>
-                    <RefreshCw size={14} className="animate-spin" />
-                    <span>Salvando...</span>
-                  </>
-                ) : sendContractWhatsapp ? (
-                  <>
-                    <Send size={14} />
-                    <span>Confirmar & Notificar Cliente</span>
-                  </>
-                ) : (
-                  <>
-                    <Check size={14} />
-                    <span>Confirmar Reajuste</span>
-                  </>
-                )}
-              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleKeepContractPrice(selectedContractClient)}
+                  disabled={isApplyingAdjustment}
+                  className="flex-1 sm:flex-none px-4 py-2 border border-slate-300 hover:bg-slate-100 text-slate-700 font-bold rounded-xl text-xs transition-all shadow-2xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  title="Não alterar o valor deste cliente e manter a mensalidade atual"
+                >
+                  <ShieldCheck size={14} className="text-slate-500" />
+                  <span>Manter Valor</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={executeContractAdjustment}
+                  disabled={isApplyingAdjustment}
+                  className="flex-1 sm:flex-none px-5 py-2 bg-purple-600 hover:bg-purple-500 active:bg-purple-700 text-white font-bold rounded-xl text-xs transition-all shadow-sm flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  title="Atualizar o valor no cadastro do cliente e enviar o aviso no WhatsApp"
+                >
+                  {isApplyingAdjustment ? (
+                    <>
+                      <RefreshCw size={14} className="animate-spin" />
+                      <span>Atualizando...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Check size={14} />
+                      <span>Atualizar Valor</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
 
           </div>

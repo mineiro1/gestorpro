@@ -241,7 +241,7 @@ export default function Layout() {
           }
 
           // Alerta instantâneo no navegador/app para o administrador
-          if (userProfile?.role === 'admin' && payload.new.employee_id !== userProfile.uid) {
+          if (userProfile?.role === 'admin') {
             let clientName = 'Cliente';
             try {
               if (payload.new.client_id) {
@@ -249,7 +249,12 @@ export default function Layout() {
                 if (cli?.name) clientName = cli.name;
               }
             } catch (e) {}
-            showNotification('🏊 Atendimento Finalizado!', `O atendimento no cliente ${clientName} foi finalizado.`, 'atendimentos_v2');
+            const isSelf = payload.new.employee_id === userProfile.uid;
+            showNotification(
+              '🏊 Atendimento Finalizado!',
+              isSelf ? `Atendimento no cliente ${clientName} registrado com sucesso.` : `O atendimento no cliente ${clientName} foi finalizado pelo colaborador.`,
+              'atendimentos_v2'
+            );
           }
         }
       }
@@ -279,8 +284,13 @@ export default function Layout() {
           }
 
           // Alerta instantâneo para o administrador
-          if (userProfile?.role === 'admin' && payload.new.employee_id !== userProfile.uid) {
-            showNotification('🏊 Serviço Avulso Concluído!', `O serviço de ${payload.new.client_name || 'cliente'} foi concluído com sucesso.`, 'atendimentos_v2');
+          if (userProfile?.role === 'admin') {
+            const isSelf = payload.new.employee_id === userProfile.uid;
+            showNotification(
+              '🏊 Serviço Avulso Concluído!',
+              isSelf ? `Serviço de ${payload.new.client_name || 'cliente'} concluído com sucesso.` : `O serviço de ${payload.new.client_name || 'cliente'} foi concluído pelo colaborador.`,
+              'atendimentos_v2'
+            );
           }
         }
       }
