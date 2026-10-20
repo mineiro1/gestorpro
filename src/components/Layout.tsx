@@ -13,7 +13,7 @@ import EmployeeLocationTracker from './EmployeeLocationTracker';
 import SmsGatewayListener from './SmsGatewayListener';
 import { evaluateSessionExpiry } from '../lib/chatSessionUtils';
 import { RS_LOGO_BASE64 } from '../assets/logoBase64';
-import { formatAstraCallsNumber } from '../lib/whatsapp';
+import { formatAstraCallsNumber, getBrazilianPhoneVariations } from '../lib/whatsapp';
 
 
 const NotificationBanner = () => {
@@ -127,7 +127,9 @@ export default function Layout() {
     const fetchAllClients = async () => {
       if (isClient || userProfile.role === 'client' || userProfile.clientId) {
         try {
-          const cleanedProfilePhone = (userProfile.phone || '').replace(/\D/g, '');
+          const rawProfilePhone = userProfile.phone || userProfile.email || '';
+          const profilePhoneVariations = getBrazilianPhoneVariations(rawProfilePhone).all;
+          const cleanedProfilePhone = rawProfilePhone.replace(/\D/g, '');
           const astraProfile = formatAstraCallsNumber(cleanedProfilePhone);
           const { data: clientsData } = await supabase.from('clients').select('id, name, phone, cpf_cnpj');
           
@@ -135,8 +137,14 @@ export default function Layout() {
             const matchedClients = clientsData.filter(c => {
               const cleanedClientPhone = (c.phone || '').replace(/\D/g, '');
               const cleanedClientCpf = (c.cpf_cnpj || '').replace(/\D/g, '');
+              const clientPhoneVariations = getBrazilianPhoneVariations(cleanedClientPhone).all;
               const astraClient = formatAstraCallsNumber(cleanedClientPhone);
+
+              const hasPhoneMatch = clientPhoneVariations.some(v => profilePhoneVariations.includes(v)) ||
+                                    profilePhoneVariations.some(v => clientPhoneVariations.includes(v));
+
               return c.id === userProfile.clientId ||
+                     hasPhoneMatch ||
                      (cleanedClientPhone && cleanedClientPhone === cleanedProfilePhone) || 
                      (cleanedClientCpf && cleanedClientCpf === cleanedProfilePhone) || 
                      (astraProfile && astraClient && astraProfile === astraClient) ||

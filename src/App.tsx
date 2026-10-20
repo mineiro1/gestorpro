@@ -31,21 +31,23 @@ import Layout from './components/Layout';
 const ProtectedRoute = ({ children, allowedRoles }: { children: React.ReactNode, allowedRoles?: ('admin' | 'employee' | 'manager' | 'client')[] }) => {
   const { currentUser, userProfile, loading, isSubscriptionExpired } = useAuth();
 
-  if (loading || (currentUser && !userProfile)) {
+  const hasStoredSession = typeof window !== 'undefined' && Object.keys(localStorage).some(k => k.startsWith('sb-') && k.endsWith('-auth-token'));
+
+  if (loading || (currentUser && !userProfile) || (hasStoredSession && !currentUser)) {
     return (
-      <div className="flex h-screen w-full flex-col items-center justify-center bg-gray-50/80 backdrop-blur-sm">
+      <div className="flex h-screen w-full flex-col items-center justify-center bg-slate-950 text-white">
         <div className="flex flex-col items-center space-y-6">
-          <div className="relative flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-500 text-white shadow-xl ring-8 ring-blue-50">
+          <div className="relative flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-tr from-sky-500 to-blue-600 text-white shadow-xl shadow-sky-500/20 ring-4 ring-sky-500/20">
             <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="animate-spin">
               <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
             </svg>
-            <div className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-indigo-400">
+            <div className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-sky-400">
               <span className="h-3 w-3 rounded-full bg-white animate-ping"></span>
             </div>
           </div>
           <div className="flex flex-col items-center space-y-2 text-center animate-pulse">
-            <h3 className="text-xl font-bold text-gray-900 tracking-tight">RS PISCINA</h3>
-            <p className="text-sm font-medium text-gray-500">Preparando painel...</p>
+            <h3 className="text-xl font-bold text-white tracking-tight">RS PISCINA</h3>
+            <p className="text-sm font-medium text-slate-400">Preparando painel...</p>
           </div>
         </div>
       </div>
@@ -58,21 +60,21 @@ const ProtectedRoute = ({ children, allowedRoles }: { children: React.ReactNode,
   }
 
   if (allowedRoles && !allowedRoles.includes(userProfile.role)) {
-    if (userProfile.role === 'client') return <Navigate to="/client-panel" />;
-    return <Navigate to="/routes" />;
+    if (userProfile.role === 'client') return <Navigate to="/client-panel" replace />;
+    return <Navigate to="/routes" replace />;
   }
 
   return <>{children}</>;
 };
 
 const RootRoute = () => {
-  const { currentUser, loading } = useAuth();
+  const { currentUser, userProfile, loading } = useAuth();
   
   if (loading) {
     return (
-      <div className="flex h-screen w-full flex-col items-center justify-center bg-gray-50/80 backdrop-blur-sm">
+      <div className="flex h-screen w-full flex-col items-center justify-center bg-slate-950 text-white">
         <div className="flex flex-col items-center space-y-6">
-          <div className="relative flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-500 text-white shadow-xl ring-8 ring-blue-50">
+          <div className="relative flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-tr from-sky-500 to-blue-600 text-white shadow-xl shadow-sky-500/20 ring-4 ring-sky-500/20">
             <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="animate-spin">
               <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
             </svg>
@@ -80,6 +82,12 @@ const RootRoute = () => {
         </div>
       </div>
     );
+  }
+
+  if (currentUser && userProfile) {
+    if (userProfile.role === 'client') return <Navigate to="/client-panel" replace />;
+    if (userProfile.role === 'employee') return <Navigate to="/routes" replace />;
+    return <Navigate to="/dashboard" replace />;
   }
   
   if (Capacitor.isNativePlatform()) {
@@ -91,7 +99,7 @@ const RootRoute = () => {
          });
       }
     } catch(e) {}
-    return currentUser ? <Navigate to="/dashboard" replace /> : <Navigate to="/login" replace />;
+    return <Navigate to="/login" replace />;
   }
   
   return <Landing />;

@@ -3,7 +3,7 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { RS_LOGO_BASE64 } from '../assets/logoBase64';
-import { formatAstraCallsNumber } from '../lib/whatsapp';
+import { getBrazilianPhoneVariations } from '../lib/phoneUtils';
 
 export default function Login() {
   const location = useLocation();
@@ -12,7 +12,7 @@ export default function Login() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
-  const { userProfile, loading: authLoading } = useAuth();
+  const { userProfile, loading: authLoading, handleUserChange } = useAuth();
 
   React.useEffect(() => {
     if (userProfile && !authLoading) {
@@ -32,81 +32,91 @@ export default function Login() {
     setLoading(true);
 
     try {
-      const trimmedPhone = phone.trim();
-      const rawClean = phone.replace(/\D/g, '');
-      const rawPass = password;
-      const cleanPass = password.replace(/\D/g, '');
-
-      // 1. Gera lista priorizada de emails a testar
-      const candidateEmails: string[] = [];
-      if (trimmedPhone.includes('@')) {
-        candidateEmails.push(trimmedPhone);
-      } else if (rawClean) {
-        // Formato AstraCalls (DDI 55 + DDD + 8 dígitos)
-        const astraNum = formatAstraCallsNumber(rawClean);
-        if (astraNum) candidateEmails.push(`${astraNum}@gestaopro.com`, `${astraNum}@serviplay.com`);
-
-        // Formato exato digitado
-        candidateEmails.push(`${rawClean}@gestaopro.com`, `${rawClean}@serviplay.com`);
-
-        // Com DDI 55
-        if (!rawClean.startsWith('55')) {
-          candidateEmails.push(`55${rawClean}@gestaopro.com`, `55${rawClean}@serviplay.com`);
-        } else {
-          // Sem DDI 55
-          const noDdi = rawClean.substring(2);
-          candidateEmails.push(`${noDdi}@gestaopro.com`, `${noDdi}@serviplay.com`);
-        }
-
-        // Variação com ou sem 9º dígito
-        if (rawClean.length === 11 && rawClean[2] === '9') {
-          const without9 = `${rawClean.substring(0, 2)}${rawClean.substring(3)}`;
-          candidateEmails.push(`${without9}@gestaopro.com`, `55${without9}@gestaopro.com`);
-        } else if (rawClean.length === 10) {
-          const with9 = `${rawClean.substring(0, 2)}9${rawClean.substring(2)}`;
-          candidateEmails.push(`${with9}@gestaopro.com`, `55${with9}@gestaopro.com`);
-        }
-      }
-
-      // Remove duplicatas
-      const uniqueEmails = [...new Set(candidateEmails)];
-
-      // 2. Gera lista de senhas a testar
-      const candidatePasswords: string[] = [rawPass.trim(), rawPass];
-      if (cleanPass && cleanPass.length >= 6) {
-        candidatePasswords.push(cleanPass);
-        const astraPass = formatAstraCallsNumber(cleanPass);
-        if (astraPass) candidatePasswords.push(astraPass);
-        if (!cleanPass.startsWith('55')) {
-          candidatePasswords.push(`55${cleanPass}`);
-        } else {
-          candidatePasswords.push(cleanPass.substring(2));
-        }
-      }
-      const uniquePasswords = [...new Set(candidatePasswords.filter(Boolean))];
+      const trimmedLogin = phone.trim();
+      const trimmedPass = password.trim();
 
       let authResult: any = null;
       let lastError: any = null;
 
-      // Executa tentativas otimizadas
-      for (const email of uniqueEmails) {
-        for (const pass of uniquePasswords) {
-          try {
-            const { data, error } = await supabase.auth.signInWithPassword({
-              email,
-              password: pass,
-            });
-            if (!error && data?.user) {
-              authResult = data;
-              break;
-            } else if (error) {
-              lastError = error;
+      // 1. Tentar resolução inteligente via API
+      // Suporta todos os 4 formatos de telefone (AstraCalls com 55, com 9, sem 9, com DDD)
+      const isClientPhoneInput = !trimmedLogin.includes('@') || trimmedLogin.endsWith('@gestaopro.com') || trimmedLogin.endsWith('@serviplay.com');
+
+      if (isClientPhoneInput) {
+        try {
+          const res = await fetch('/api/auth/client-resolve', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ login: trimmedLogin, password: trimmedPass })
+          });
+
+          if (res.ok) {
+            const data = await res.json();
+            if (data.success && data.email) {
+              const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
+                email: data.email,
+                password: data.password || trimmedPass
+              });
+
+              if (!signInErr && signInData?.user) {
+                authResult = signInData;
+              } else if (signInErr) {
+                lastError = signInErr;
+              }
+            } else if (data.error) {
+              throw new Error(data.error);
             }
-          } catch (err: any) {
-            lastError = err;
+          }
+        } catch (apiErr: any) {
+          console.warn('[client-resolve] Falha na resolução rápida, tentando fallback:', apiErr);
+          if (apiErr.message && !apiErr.message.includes('fetch')) {
+            throw apiErr;
           }
         }
-        if (authResult) break;
+      }
+
+      // 2. Fallback de autenticação direta com geração de todos os candidatos
+      if (!authResult || !authResult.user) {
+        const loginVariations = getBrazilianPhoneVariations(trimmedLogin);
+        const passVariations = getBrazilianPhoneVariations(trimmedPass);
+
+        const candidateEmails: string[] = [];
+        if (trimmedLogin.includes('@')) {
+          candidateEmails.push(trimmedLogin);
+        } else {
+          loginVariations.all.forEach(num => {
+            candidateEmails.push(`${num}@gestaopro.com`);
+            candidateEmails.push(`${num}@serviplay.com`);
+          });
+        }
+        const uniqueEmails = [...new Set(candidateEmails)];
+
+        const candidatePasswords: string[] = [trimmedPass, password];
+        passVariations.all.forEach(p => candidatePasswords.push(p));
+        // Para clientes a senha padrão é o telefone em qualquer formato
+        loginVariations.all.forEach(p => candidatePasswords.push(p));
+
+        const uniquePasswords = [...new Set(candidatePasswords.filter(Boolean))];
+
+        for (const email of uniqueEmails) {
+          for (const pass of uniquePasswords) {
+            try {
+              const { data, error } = await supabase.auth.signInWithPassword({
+                email,
+                password: pass,
+              });
+              if (!error && data?.user) {
+                authResult = data;
+                break;
+              } else if (error) {
+                lastError = error;
+              }
+            } catch (err: any) {
+              lastError = err;
+            }
+          }
+          if (authResult) break;
+        }
       }
 
       if (!authResult || !authResult.user) {
@@ -115,30 +125,19 @@ export default function Login() {
 
       const loggedUser = authResult.user;
 
-      // 3. Validação do perfil na tabela 'users'
-      const { data: userDoc } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', loggedUser.id)
-        .maybeSingle();
-
-      if (userDoc && userDoc.active === false) {
-        await supabase.auth.signOut();
-        setError("Esta conta está desativada no momento. Entre em contato com a empresa.");
-        setLoading(false);
-        return;
-      }
+      // 3. Sincroniza e aguarda o carregamento do perfil no AuthContext ANTES de navegar
+      // Isso é essencial para que o ProtectedRoute não pisque a tela e não expulse de volta para o login!
+      const freshProfile = await handleUserChange(loggedUser);
 
       // Validação de cliente ativo na tabela 'clients'
-      if (userDoc && userDoc.role === 'client' && userDoc.client_id) {
+      if (freshProfile?.clientId) {
         const { data: clientDoc } = await supabase
           .from('clients')
           .select('id, active, name')
-          .eq('id', userDoc.client_id)
+          .eq('id', freshProfile.clientId)
           .maybeSingle();
 
         if (clientDoc && clientDoc.active === false) {
-          // Se for cliente de testes (ex: teste2), reativa automaticamente para permitir testes
           if (clientDoc.name?.toLowerCase().includes('teste')) {
             await supabase.from('clients').update({ active: true, inactivated_at: null }).eq('id', clientDoc.id);
           } else {
@@ -150,8 +149,8 @@ export default function Login() {
         }
       }
 
-      // 4. Redirecionamento direto com base no papel do usuário
-      const userRole = userDoc?.role || 'admin';
+      // 4. Redirecionamento após perfil devidamente carregado
+      const userRole = freshProfile?.role || 'admin';
       if (userRole === 'client') {
         navigate('/client-panel', { replace: true });
       } else if (userRole === 'employee') {
@@ -215,7 +214,7 @@ export default function Login() {
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
               className="w-full px-4 py-3 border border-slate-700 rounded-xl focus:ring-2 focus:ring-sky-500/30 focus:border-sky-400 outline-none transition-all text-white placeholder-slate-500 bg-slate-950/80 focus:bg-slate-950 text-sm"
-              placeholder="(67) 99249-9469"
+              placeholder="Seu telefone"
             />
           </div>
 
@@ -229,7 +228,7 @@ export default function Login() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="w-full px-4 py-3 border border-slate-700 rounded-xl focus:ring-2 focus:ring-sky-500/30 focus:border-sky-400 outline-none transition-all text-white placeholder-slate-500 bg-slate-950/80 focus:bg-slate-950 text-sm"
-              placeholder="••••••••"
+              placeholder="Sua senha ou seu telefone"
             />
           </div>
 

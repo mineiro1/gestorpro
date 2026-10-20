@@ -9,6 +9,8 @@ import { createClient } from '@supabase/supabase-js';
 
 dotenv.config();
 
+import { getBrazilianPhoneVariations } from './src/lib/phoneUtils';
+
 const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
 
@@ -97,6 +99,157 @@ async function startServer() {
       return res.json({ status: "success", rows: data.length, usingServiceKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY });
     } catch(e) {
       return res.json({ status: "exception", message: e.message });
+    }
+  });
+
+  // Endpoint de Resolução de Login e Senha para o Portal do Cliente
+  // Suporta com precisão os 4 formatos de telefone do Brasil:
+  // 1. AstraCalls: DDI 55 + DDD + 8 dígitos (ex: 551187654321)
+  // 2. Com DDI e com 9: DDI 55 + DDD + 9 dígitos (ex: 5511987654321)
+  // 3. Sem DDI com 9: DDD + 9 dígitos (ex: 11987654321)
+  // 4. Sem DDI sem 9: DDD + 8 dígitos (ex: 1187654321)
+  app.post("/api/auth/client-resolve", async (req, res) => {
+    try {
+      const { login, password } = req.body;
+      if (!login) {
+        return res.status(400).json({ success: false, message: "Login não informado" });
+      }
+
+      const cleanLogin = String(login).trim();
+      // Se for email corporativo/pessoal que não é do portal do cliente (ex: servincg@gmail.com)
+      if (cleanLogin.includes('@') && !cleanLogin.endsWith('@gestaopro.com') && !cleanLogin.endsWith('@serviplay.com')) {
+        return res.json({ success: false, reason: "standard_email" });
+      }
+
+      const loginVariations = getBrazilianPhoneVariations(cleanLogin).all;
+      const passVariations = password ? getBrazilianPhoneVariations(String(password).trim()).all : [];
+
+      // 1. Procurar em 'users'
+      const { data: allUsers, error: uErr } = await supabaseAdmin
+        .from('users')
+        .select('id, name, email, phone, role, client_id, active, admin_id');
+
+      let matchedUser = allUsers?.find(u => {
+        const uPhone = (u.phone || '').replace(/\D/g, '');
+        const uEmailPrefix = (u.email || '').split('@')[0].replace(/\D/g, '');
+        return loginVariations.includes(uPhone) || loginVariations.includes(uEmailPrefix);
+      });
+
+      // 2. Se não encontrou em 'users', procurar em 'clients'
+      let matchedClient: any = null;
+      if (!matchedUser) {
+        const { data: allClients } = await supabaseAdmin
+          .from('clients')
+          .select('id, name, phone, email, active, admin_id');
+
+        matchedClient = allClients?.find(c => {
+          const cPhone = (c.phone || '').replace(/\D/g, '');
+          return loginVariations.includes(cPhone);
+        });
+
+        if (matchedClient) {
+          // Verifica se já tem usuário apontando para esse client_id
+          matchedUser = allUsers?.find(u => u.client_id === matchedClient.id);
+          
+          if (!matchedUser) {
+            // Cria o usuário para este cliente no auth e na tabela users
+            const primaryPhone = getBrazilianPhoneVariations(matchedClient.phone || cleanLogin).no55With9 || cleanLogin.replace(/\D/g, '');
+            const clientEmail = `${primaryPhone}@gestaopro.com`;
+            const defaultPassword = primaryPhone;
+
+            let authUser = null;
+            try {
+              const { data: newAuth, error: createAuthErr } = await supabaseAdmin.auth.admin.createUser({
+                email: clientEmail,
+                password: defaultPassword,
+                email_confirm: true,
+                user_metadata: { name: matchedClient.name, role: 'client' }
+              });
+              if (newAuth?.user) {
+                authUser = newAuth.user;
+              } else if (createAuthErr?.message?.includes('already registered')) {
+                const { data: existingList } = await supabaseAdmin.auth.admin.listUsers();
+                authUser = (existingList?.users as any[])?.find((u: any) => u.email === clientEmail);
+              }
+            } catch (e) {}
+
+            if (authUser) {
+              const { data: newUser } = await supabaseAdmin.from('users').upsert({
+                id: authUser.id,
+                name: matchedClient.name,
+                email: clientEmail,
+                phone: primaryPhone,
+                role: 'client',
+                client_id: matchedClient.id,
+                admin_id: matchedClient.admin_id,
+                active: true
+              }).select().single();
+              matchedUser = newUser;
+            }
+          }
+        }
+      }
+
+      if (!matchedUser) {
+        return res.json({ success: false, reason: "user_not_found" });
+      }
+
+      if (matchedUser.active === false) {
+        return res.status(403).json({ success: false, error: "Esta conta está desativada no momento. Entre em contato com a empresa." });
+      }
+
+      // Se for cliente (ou tiver client_id associado)
+      if (matchedUser.role === 'client' || matchedUser.client_id) {
+        const { data: authUserData } = await supabaseAdmin.auth.admin.getUserById(matchedUser.id);
+        const authEmail = authUserData?.user?.email || matchedUser.email || `${matchedUser.phone}@gestaopro.com`;
+
+        const userPhoneVariations = getBrazilianPhoneVariations(matchedUser.phone || '').all;
+        const targetPassword = password ? String(password).trim() : (matchedUser.phone || '123456');
+
+        // Se a senha informada corresponde a qualquer uma das 4 variações do telefone do cliente,
+        // ou às variações digitadas no login:
+        const isPhoneMatch = passVariations.some(p => userPhoneVariations.includes(p) || loginVariations.includes(p)) ||
+                             userPhoneVariations.some(p => passVariations.includes(p));
+
+        if (isPhoneMatch || !password) {
+          // Atualiza a senha no Supabase Auth para a senha que o cliente digitou,
+          // garantindo login imediato sem nenhuma falha de credenciais!
+          await supabaseAdmin.auth.admin.updateUserById(matchedUser.id, {
+            password: targetPassword,
+            email_confirm: true
+          });
+
+          return res.json({
+            success: true,
+            email: authEmail,
+            password: targetPassword,
+            role: 'client',
+            user: matchedUser
+          });
+        } else {
+          // Se for senha customizada, valida no Supabase
+          const testClient = createClient(supabaseUrl, process.env.VITE_SUPABASE_ANON_KEY || '');
+          const { data: testAuth, error: testErr } = await testClient.auth.signInWithPassword({
+            email: authEmail,
+            password: targetPassword
+          });
+
+          if (!testErr && testAuth?.user) {
+            return res.json({
+              success: true,
+              email: authEmail,
+              password: targetPassword,
+              role: 'client',
+              user: matchedUser
+            });
+          }
+        }
+      }
+
+      return res.json({ success: false, reason: "credentials_mismatch" });
+    } catch (err: any) {
+      console.error("[client-resolve] Erro:", err);
+      return res.status(500).json({ success: false, error: err.message });
     }
   });
 

@@ -47,6 +47,8 @@ export interface UserProfile {
   };
 }
 
+import { getBrazilianPhoneVariations } from '../lib/phoneUtils';
+
 interface AuthContextType {
   currentUser: User | null;
   userProfile: UserProfile | null;
@@ -56,6 +58,7 @@ interface AuthContextType {
   isManager: boolean;
   isClient: boolean;
   isSubscriptionExpired: boolean;
+  handleUserChange: (user: User | null) => Promise<UserProfile | null>;
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -67,6 +70,7 @@ const AuthContext = createContext<AuthContextType>({
   isManager: false,
   isClient: false,
   isSubscriptionExpired: false,
+  handleUserChange: async () => null,
 });
 
 export const useAuth = () => useContext(AuthContext);
@@ -103,25 +107,50 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, []);
 
-  const handleUserChange = async (user: User | null) => {
+  const handleUserChange = async (user: User | null): Promise<UserProfile | null> => {
     setCurrentUser(user);
     if (!user) {
       setUserProfile(null);
       setLoading(false);
-      return;
+      return null;
     }
     setLoading(true);
 
-    // Fetch user profile from Supabase
     try {
-      const { data: profileData, error } = await supabase
+      let { data: profileData } = await supabase
         .from('users')
         .select('*')
         .eq('id', user.id)
-        .single();
+        .maybeSingle();
 
-      if (error) {
-        throw error;
+      // Se não encontrou na tabela users, verifica se existe cliente correspondente na tabela clients
+      if (!profileData && user.email) {
+        const phoneCandidate = user.email.split('@')[0].replace(/\D/g, '');
+        if (phoneCandidate) {
+          const variations = getBrazilianPhoneVariations(phoneCandidate).all;
+          const { data: allClients } = await supabase.from('clients').select('*');
+          const matchedClient = allClients?.find(c => {
+            const cPhone = (c.phone || '').replace(/\D/g, '');
+            return variations.includes(cPhone);
+          });
+
+          if (matchedClient) {
+            profileData = {
+              id: user.id,
+              name: matchedClient.name,
+              email: user.email,
+              phone: matchedClient.phone,
+              role: 'client',
+              client_id: matchedClient.id,
+              admin_id: matchedClient.admin_id,
+              active: true,
+              created_at: matchedClient.created_at || new Date().toISOString()
+            };
+            try {
+              await supabase.from('users').upsert(profileData);
+            } catch (e) {}
+          }
+        }
       }
 
       if (profileData) {
@@ -130,7 +159,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
            setUserProfile(null);
            localStorage.removeItem('cachedUserProfile');
            setLoading(false);
-           return;
+           return null;
         }
 
         const mappedProfile: UserProfile = {
@@ -163,7 +192,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             .from('users')
             .select('*')
             .eq('id', mappedProfile.adminId)
-            .single();
+            .maybeSingle();
 
           if (adminData) {
             let adminExpired = false;
@@ -177,7 +206,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         }
 
-        
         setUserProfile((prev: UserProfile | null) => {
           if (!prev) return mappedProfile;
           const prevStr = JSON.stringify(prev);
@@ -186,24 +214,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         });
 
         localStorage.setItem('cachedUserProfile', JSON.stringify(mappedProfile));
+        setLoading(false);
+        return mappedProfile;
       } else {
          setUserProfile(null);
          localStorage.removeItem('cachedUserProfile');
+         setLoading(false);
+         return null;
       }
     } catch (err) {
       console.error('Error fetching user profile, attempting to use cached profile:', err);
+      let recovered: UserProfile | null = null;
       const cached = localStorage.getItem('cachedUserProfile');
       if (cached) {
         try {
-          setUserProfile(JSON.parse(cached));
+          recovered = JSON.parse(cached);
+          setUserProfile(recovered);
         } catch (e) {
           setUserProfile(null);
         }
       } else {
         setUserProfile(null);
       }
+      setLoading(false);
+      return recovered;
     }
-    setLoading(false);
   };
 
   let isExp = false;
@@ -227,7 +262,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     isManager: userProfile?.role === 'manager',
     isClient: userProfile?.role === 'client',
     isSubscriptionExpired: isExp,
+    handleUserChange,
   };
 
-  return <AuthContext.Provider value={value}>{!loading && children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };

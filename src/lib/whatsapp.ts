@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { getApiUrl } from './apiConfig';
+export { getBrazilianPhoneVariations, type PhoneVariations } from './phoneUtils';
 
 // Client-side idempotency cache to prevent duplicate dispatches within 30 seconds
 const clientRecentSends = new Map<string, { timestamp: number; result: any }>();
