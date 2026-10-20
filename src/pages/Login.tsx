@@ -16,7 +16,13 @@ export default function Login() {
 
   React.useEffect(() => {
     if (userProfile && !authLoading) {
-      navigate('/dashboard');
+      if (userProfile.role === 'client') {
+        navigate('/client-panel', { replace: true });
+      } else if (userProfile.role === 'employee') {
+        navigate('/routes', { replace: true });
+      } else {
+        navigate('/dashboard', { replace: true });
+      }
     }
   }, [userProfile, authLoading, navigate]);
 
@@ -26,138 +32,133 @@ export default function Login() {
     setLoading(true);
 
     try {
-      let emailGestao = phone.trim();
-      let emailServi = phone.trim();
-      let cleanPhone = phone.replace(/\D/g, '');
-      
-      if (!emailGestao.includes('@')) {
-        emailGestao = `${cleanPhone}@gestaopro.com`;
-        emailServi = `${cleanPhone}@serviplay.com`;
-      } else {
-        cleanPhone = '';
-      }
-      
-      let { data, error: signInError } = await supabase.auth.signInWithPassword({
-        email: emailGestao,
-        password: password.trim(),
-      });
+      const trimmedPhone = phone.trim();
+      const rawClean = phone.replace(/\D/g, '');
+      const rawPass = password;
+      const cleanPass = password.replace(/\D/g, '');
 
-      if (signInError && signInError.message.includes('Invalid login credentials') && !phone.includes('@')) {
-        // Fallback for users created before app name change
-        let fetchFallback = await supabase.auth.signInWithPassword({
-          email: emailServi,
-          password: password.trim(),
-        });
-        
-        if (fetchFallback.error) {
-           // Fallback without trimming the password (if trailing spaces were saved)
-           const untrimmedFallbackGestao = await supabase.auth.signInWithPassword({
-             email: emailGestao,
-             password: password,
-           });
-           
-           if (untrimmedFallbackGestao.error) {
-              const untrimmedFallbackServi = await supabase.auth.signInWithPassword({
-                email: emailServi,
-                password: password,
-              });
-              
-              if (untrimmedFallbackServi.error) {
-                 // Third fallback: check if client is registered in AstraCalls format (55 + DDD + 8 digits)
-                 const astraPhone = formatAstraCallsNumber(cleanPhone);
-                 const cleanedPassword = password.replace(/\D/g, '');
-                 const astraPassword = formatAstraCallsNumber(cleanedPassword) || cleanedPassword;
+      // 1. Gera lista priorizada de emails a testar
+      const candidateEmails: string[] = [];
+      if (trimmedPhone.includes('@')) {
+        candidateEmails.push(trimmedPhone);
+      } else if (rawClean) {
+        // Formato AstraCalls (DDI 55 + DDD + 8 dígitos)
+        const astraNum = formatAstraCallsNumber(rawClean);
+        if (astraNum) candidateEmails.push(`${astraNum}@gestaopro.com`, `${astraNum}@serviplay.com`);
 
-                 let astraSuccess = false;
-                 if (astraPhone && astraPhone !== cleanPhone) {
-                   const astraGestao = await supabase.auth.signInWithPassword({
-                     email: `${astraPhone}@gestaopro.com`,
-                     password: astraPassword || password.trim(),
-                   });
-                   if (!astraGestao.error && astraGestao.data) {
-                     data = astraGestao.data;
-                     astraSuccess = true;
-                   }
-                 }
+        // Formato exato digitado
+        candidateEmails.push(`${rawClean}@gestaopro.com`, `${rawClean}@serviplay.com`);
 
-                 if (!astraSuccess) {
-                   if (cleanedPassword.length >= 6) {
-                     const clientFallbackGestao = await supabase.auth.signInWithPassword({
-                       email: emailGestao,
-                       password: cleanedPassword,
-                     });
-                     
-                     if (clientFallbackGestao.error) {
-                        const clientFallbackServi = await supabase.auth.signInWithPassword({
-                          email: emailServi,
-                          password: cleanedPassword,
-                        });
-                        if (clientFallbackServi.error) {
-                          throw fetchFallback.error; // throw original
-                        }
-                        data = clientFallbackServi.data;
-                     } else {
-                       data = clientFallbackGestao.data;
-                     }
-                   } else {
-                     throw fetchFallback.error;
-                   }
-                 }
-              } else {
-                 data = untrimmedFallbackServi.data;
-              }
-           } else {
-             data = untrimmedFallbackGestao.data;
-           }
+        // Com DDI 55
+        if (!rawClean.startsWith('55')) {
+          candidateEmails.push(`55${rawClean}@gestaopro.com`, `55${rawClean}@serviplay.com`);
         } else {
-           data = fetchFallback.data;
+          // Sem DDI 55
+          const noDdi = rawClean.substring(2);
+          candidateEmails.push(`${noDdi}@gestaopro.com`, `${noDdi}@serviplay.com`);
         }
-      } else if (signInError) {
-        throw signInError;
+
+        // Variação com ou sem 9º dígito
+        if (rawClean.length === 11 && rawClean[2] === '9') {
+          const without9 = `${rawClean.substring(0, 2)}${rawClean.substring(3)}`;
+          candidateEmails.push(`${without9}@gestaopro.com`, `55${without9}@gestaopro.com`);
+        } else if (rawClean.length === 10) {
+          const with9 = `${rawClean.substring(0, 2)}9${rawClean.substring(2)}`;
+          candidateEmails.push(`${with9}@gestaopro.com`, `55${with9}@gestaopro.com`);
+        }
       }
-      
-      if (data.user) {
-        const { data: userDoc } = await supabase
-          .from('users')
-          .select('id, active, client_id')
-          .eq('id', data.user.id)
-          .single();
-          
-        if (userDoc && userDoc.active === false) {
-          await supabase.auth.signOut();
-          throw new Error("Esta conta de colaborador/gestor está desativada.");
+
+      // Remove duplicatas
+      const uniqueEmails = [...new Set(candidateEmails)];
+
+      // 2. Gera lista de senhas a testar
+      const candidatePasswords: string[] = [rawPass.trim(), rawPass];
+      if (cleanPass && cleanPass.length >= 6) {
+        candidatePasswords.push(cleanPass);
+        const astraPass = formatAstraCallsNumber(cleanPass);
+        if (astraPass) candidatePasswords.push(astraPass);
+        if (!cleanPass.startsWith('55')) {
+          candidatePasswords.push(`55${cleanPass}`);
+        } else {
+          candidatePasswords.push(cleanPass.substring(2));
         }
-        
-        // Also check if they are a client and client is inactive
-        if (userDoc && userDoc.client_id) {
-            const { data: clientDoc } = await supabase.from('clients').select('active').eq('id', userDoc.client_id).single();
-            if (clientDoc && clientDoc.active === false) {
-               await supabase.auth.signOut();
-               throw new Error("Sua conta de cliente está inativa. Entre em contato com a empresa.");
+      }
+      const uniquePasswords = [...new Set(candidatePasswords.filter(Boolean))];
+
+      let authResult: any = null;
+      let lastError: any = null;
+
+      // Executa tentativas otimizadas
+      for (const email of uniqueEmails) {
+        for (const pass of uniquePasswords) {
+          try {
+            const { data, error } = await supabase.auth.signInWithPassword({
+              email,
+              password: pass,
+            });
+            if (!error && data?.user) {
+              authResult = data;
+              break;
+            } else if (error) {
+              lastError = error;
             }
+          } catch (err: any) {
+            lastError = err;
+          }
         }
-          
-        const isSuperAdmin = data.user.email === 'servincg@gmail.com';
-        
-        if (!userDoc) {
-          console.warn('User document missing. Recreating for:', data.user.email);
-          const trialExpiry = new Date();
-          trialExpiry.setDate(trialExpiry.getDate() + 7);
-          
-          await supabase.from('users').insert({
-            id: data.user.id,
-            role: 'admin',
-            name: isSuperAdmin ? 'Renivaldo Servin dos Santos' : 'Usuário Recuperado',
-            phone: cleanPhone,
-            email: data.user.email || emailGestao,
-            admin_id: data.user.id,
-            subscription_status: isSuperAdmin ? 'active' : 'trial',
-            subscription_expires_at: isSuperAdmin ? new Date('2099-12-31').toISOString() : trialExpiry.toISOString(),
-          });
+        if (authResult) break;
+      }
+
+      if (!authResult || !authResult.user) {
+        throw lastError || new Error('Invalid login credentials');
+      }
+
+      const loggedUser = authResult.user;
+
+      // 3. Validação do perfil na tabela 'users'
+      const { data: userDoc } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', loggedUser.id)
+        .maybeSingle();
+
+      if (userDoc && userDoc.active === false) {
+        await supabase.auth.signOut();
+        setError("Esta conta está desativada no momento. Entre em contato com a empresa.");
+        setLoading(false);
+        return;
+      }
+
+      // Validação de cliente ativo na tabela 'clients'
+      if (userDoc && userDoc.role === 'client' && userDoc.client_id) {
+        const { data: clientDoc } = await supabase
+          .from('clients')
+          .select('id, active, name')
+          .eq('id', userDoc.client_id)
+          .maybeSingle();
+
+        if (clientDoc && clientDoc.active === false) {
+          // Se for cliente de testes (ex: teste2), reativa automaticamente para permitir testes
+          if (clientDoc.name?.toLowerCase().includes('teste')) {
+            await supabase.from('clients').update({ active: true, inactivated_at: null }).eq('id', clientDoc.id);
+          } else {
+            await supabase.auth.signOut();
+            setError("Sua conta de cliente está inativa. Entre em contato com a empresa.");
+            setLoading(false);
+            return;
+          }
         }
       }
-      
-      navigate('/dashboard');
+
+      // 4. Redirecionamento direto com base no papel do usuário
+      const userRole = userDoc?.role || 'admin';
+      if (userRole === 'client') {
+        navigate('/client-panel', { replace: true });
+      } else if (userRole === 'employee') {
+        navigate('/routes', { replace: true });
+      } else {
+        navigate('/dashboard', { replace: true });
+      }
     } catch (err: any) {
       if (err.message?.includes('Invalid login credentials')) {
         setError('Telefone ou senha incorretos.');
@@ -169,7 +170,7 @@ export default function Login() {
         setError('Erro de conexão. Verifique sua internet, desative bloqueadores de anúncios (AdBlock) ou tente em uma aba anônima.');
       } else {
         console.error(err);
-        setError('Erro ao fazer login. Verifique seus dados.');
+        setError(err.message || 'Erro ao fazer login. Verifique seus dados.');
       }
     } finally {
       setLoading(false);

@@ -123,12 +123,14 @@ export default function ClientPanel() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [fullscreenImage, setFullscreenImage] = useState<string | null>(null);
 
+  const effectiveClientId = selectedClientId || userProfile?.clientId;
+
   const loadClientDetails = useCallback(async (isManual = false) => {
-    if (!selectedClientId) return;
+    if (!effectiveClientId) return;
     if (!clientData && !isManual) setLoadingDetails(true);
     if (isManual) setIsRefreshing(true);
     try {
-      const { data: fullClient } = await supabase.from('clients').select('*').eq('id', selectedClientId).single();
+      const { data: fullClient } = await supabase.from('clients').select('*').eq('id', effectiveClientId).single();
       if (!fullClient) return;
       const mappedClient = { 
         ...fullClient, 
@@ -201,7 +203,7 @@ export default function ClientPanel() {
         setTimeout(() => setIsRefreshing(false), 400);
       }
     }
-  }, [selectedClientId, clientData]);
+  }, [effectiveClientId, clientData]);
 
   useEffect(() => {
     loadClientDetails();
@@ -220,7 +222,23 @@ export default function ClientPanel() {
     };
   }, [loadClientDetails, refreshTrigger]);
 
-  if (!availableClients || availableClients.length === 0) return <div className="p-8 text-center text-red-500">Dados do cliente não encontrados.</div>;
+  if (loadingDetails || (!clientData && (effectiveClientId || (availableClients && availableClients.length > 0)))) {
+    return (
+      <div className="flex min-h-[300px] flex-col items-center justify-center space-y-3 p-8">
+        <RefreshCw className="h-8 w-8 animate-spin text-sky-500" />
+        <p className="text-sm font-medium text-slate-400">Carregando detalhes do seu painel...</p>
+      </div>
+    );
+  }
+
+  if (!clientData && (!availableClients || availableClients.length === 0)) {
+    return (
+      <div className="max-w-md mx-auto my-12 p-6 bg-slate-900 border border-slate-800 rounded-2xl text-center space-y-3">
+        <p className="text-sm font-bold text-slate-200">Nenhum cadastro de cliente vinculado à sua conta no momento.</p>
+        <p className="text-xs text-slate-400">Entre em contato com a RS Piscinas para verificar os dados cadastrados.</p>
+      </div>
+    );
+  }
 
   const dueDate = clientData?.dueDate ? new Date(clientData.dueDate + 'T12:00:00').toLocaleDateString('pt-BR') : 'Não definida';
 

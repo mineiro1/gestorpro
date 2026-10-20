@@ -31,7 +31,7 @@ import Layout from './components/Layout';
 const ProtectedRoute = ({ children, allowedRoles }: { children: React.ReactNode, allowedRoles?: ('admin' | 'employee' | 'manager' | 'client')[] }) => {
   const { currentUser, userProfile, loading, isSubscriptionExpired } = useAuth();
 
-  if (loading) {
+  if (loading || (currentUser && !userProfile)) {
     return (
       <div className="flex h-screen w-full flex-col items-center justify-center bg-gray-50/80 backdrop-blur-sm">
         <div className="flex flex-col items-center space-y-6">
@@ -51,7 +51,7 @@ const ProtectedRoute = ({ children, allowedRoles }: { children: React.ReactNode,
       </div>
     );
   }
-  if (!currentUser || !userProfile) return <Navigate to="/login" />;
+  if (!currentUser || !userProfile) return <Navigate to="/login" replace />;
   
   if (isSubscriptionExpired && userProfile.role !== 'client') {
     return <SubscriptionWall />;

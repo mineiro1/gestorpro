@@ -13,6 +13,7 @@ import EmployeeLocationTracker from './EmployeeLocationTracker';
 import SmsGatewayListener from './SmsGatewayListener';
 import { evaluateSessionExpiry } from '../lib/chatSessionUtils';
 import { RS_LOGO_BASE64 } from '../assets/logoBase64';
+import { formatAstraCallsNumber } from '../lib/whatsapp';
 
 
 const NotificationBanner = () => {
@@ -119,24 +120,43 @@ export default function Layout() {
     // Fetch available clients if the user is a client
     if (!userProfile) return;
 
+    if (userProfile.clientId && !selectedClientId) {
+      setSelectedClientId(userProfile.clientId);
+    }
+
     const fetchAllClients = async () => {
       if (isClient || userProfile.role === 'client' || userProfile.clientId) {
         try {
           const cleanedProfilePhone = (userProfile.phone || '').replace(/\D/g, '');
+          const astraProfile = formatAstraCallsNumber(cleanedProfilePhone);
           const { data: clientsData } = await supabase.from('clients').select('id, name, phone, cpf_cnpj');
           
           if (clientsData) {
             const matchedClients = clientsData.filter(c => {
               const cleanedClientPhone = (c.phone || '').replace(/\D/g, '');
               const cleanedClientCpf = (c.cpf_cnpj || '').replace(/\D/g, '');
-              return cleanedClientPhone === cleanedProfilePhone || 
-                     cleanedClientCpf === cleanedProfilePhone || 
-                     c.id === userProfile.clientId;
+              const astraClient = formatAstraCallsNumber(cleanedClientPhone);
+              return c.id === userProfile.clientId ||
+                     (cleanedClientPhone && cleanedClientPhone === cleanedProfilePhone) || 
+                     (cleanedClientCpf && cleanedClientCpf === cleanedProfilePhone) || 
+                     (astraProfile && astraClient && astraProfile === astraClient) ||
+                     (cleanedClientPhone && cleanedProfilePhone && (cleanedClientPhone.endsWith(cleanedProfilePhone) || cleanedProfilePhone.endsWith(cleanedClientPhone)));
             });
+
+            // Se o usuário tem clientId direto mas não veio na busca inicial, busca diretamente pelo ID
+            if (matchedClients.length === 0 && userProfile.clientId) {
+              const { data: directClient } = await supabase
+                .from('clients')
+                .select('id, name, phone, cpf_cnpj')
+                .eq('id', userProfile.clientId)
+                .maybeSingle();
+              if (directClient) matchedClients.push(directClient);
+            }
             
             setAvailableClients(matchedClients);
             if (matchedClients.length > 0 && !selectedClientId) {
-              setSelectedClientId(matchedClients[0].id);
+              const initial = matchedClients.find(m => m.id === userProfile.clientId) || matchedClients[0];
+              setSelectedClientId(initial.id);
             }
           }
         } catch (err) {

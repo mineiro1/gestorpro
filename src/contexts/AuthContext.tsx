@@ -110,6 +110,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setLoading(false);
       return;
     }
+    setLoading(true);
 
     // Fetch user profile from Supabase
     try {
