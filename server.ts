@@ -3135,28 +3135,33 @@ app.all("/api/sync-payment", async (req, res) => {
     targetIds.add('698dfcdd-7c91-4df5-aaee-eae9e67f15ae'); // Admin principal
     targetIds.add('81bb13fb-c0de-48c6-ad01-3019e9b48026'); // Colaborador Renivaldo
 
-    // Despacha para os perfis prioritários
-    for (const uid of targetIds) {
-      const ok = await sendPushToUser(uid, title, body, data);
-      if (ok) sent = true;
-    }
+    // Busca usuário pelo e-mail do administrador
+    try {
+      const { data: renivaldoUsers } = await supabaseAdmin
+        .from('users')
+        .select('id')
+        .eq('email', 'servincg@gmail.com');
+      (renivaldoUsers || []).forEach(u => targetIds.add(u.id));
+    } catch (e) {}
 
-    // Se houver outros administradores cadastrados com token FCM ativo, despacha também
+    // Se houver outros administradores cadastrados com dispositivo ativo, despacha também
     try {
       const { data: allAdmins } = await supabaseAdmin
         .from('users')
-        .select('id, fcm_token')
-        .eq('role', 'admin')
-        .not('fcm_token', 'is', null);
+        .select('id, fcm_token, whatsapp_settings')
+        .eq('role', 'admin');
 
       for (const adm of (allAdmins || [])) {
-        if (!targetIds.has(adm.id) && adm.fcm_token) {
-          const ok = await sendPushToUser(adm.id, title, body, data);
-          if (ok) sent = true;
-        }
+        targetIds.add(adm.id);
       }
     } catch (e) {
-      console.warn('[Push Server] Erro ao buscar outros admins:', e);
+      console.warn('[Push Server] Erro ao buscar admins:', e);
+    }
+
+    // Despacha para todos os administradores identificados
+    for (const uid of targetIds) {
+      const ok = await sendPushToUser(uid, title, body, data);
+      if (ok) sent = true;
     }
 
     return sent;

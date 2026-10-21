@@ -138,30 +138,13 @@
     </script>
 
     <script>
-      // Fallback auto-recovery if JS bundle fails to load (PWA cache issue)
-      window.addEventListener('error', function(e) {
-        if (e.target.tagName === 'SCRIPT' && e.target.src.includes('/assets/')) {
-          console.error("Failed to load script, likely a stale cache. Forcing reload...");
-          if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.getRegistrations().then(function(registrations) {
-              for(let registration of registrations) {
-                registration.unregister();
-              }
-            });
-          }
-          if (!sessionStorage.getItem('reloaded_once')) {
-            sessionStorage.setItem('reloaded_once', 'true');
-            window.location.reload(true);
-          }
-        }
-      }, true);
-
+      // Safe offline service worker registration and sync
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
           navigator.serviceWorker.register('/sw.js').then((registration) => {
             console.log('ServiceWorker registration successful with scope: ', registration.scope);
-          }, (err) => {
-            console.log('ServiceWorker registration failed: ', err);
+          }).catch((err) => {
+            console.log('ServiceWorker registration note: ', err);
           });
         });
 

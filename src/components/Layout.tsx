@@ -212,6 +212,16 @@ export default function Layout() {
             importance: 5,
             visibility: 1,
             vibration: true,
+            sound: 'chat_notification.mp3'
+          });
+          await LocalNotifications.createChannel({
+            id: 'atendimentos_v2',
+            name: 'Atendimentos e Visitas',
+            description: 'Notificações de visitas finalizadas e serviços',
+            importance: 5,
+            visibility: 1,
+            vibration: true,
+            sound: 'notificacao.mp3'
           });
         } catch (e) {
           console.error("Local notifications permission error", e);
@@ -223,31 +233,60 @@ export default function Layout() {
     requestPerms();
 
     const showNotification = async (title: string, body: string, channelId: string = 'atendimentos') => {
-      // Play custom sound if app is foreground
+      const soundFile = channelId === 'chat_messages' ? 'chat_notification.mp3' : 'notificacao.mp3';
+      const soundSrc = `/${soundFile}`;
+      
+      // Play custom audio directly in app
       try {
-        const soundSrc = channelId === 'chat_messages' ? '/chat_notification.mp3' : '/notificacao.mp3';
         const audio = new Audio(soundSrc);
         audio.play().catch(e => console.log("Audio play blocked by browser policy:", e));
       } catch (err) {
         console.error("Audio error", err);
       }
 
-      // On native platform (Capacitor/Android), push notifications are handled directly by Firebase FCM.
-      // We only fire web notifications when running inside browser / web mode.
-      if (!Capacitor.isNativePlatform()) {
-        if (typeof Notification !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-          if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-            navigator.serviceWorker.ready.then(registration => {
-              registration.showNotification(title, {
+      // On native Android / iOS platform (Capacitor), trigger visual heads-up banner notification
+      if (Capacitor.isNativePlatform()) {
+        try {
+          const targetChannel = channelId === 'chat_messages' ? 'chat_messages' : 'atendimentos_v2';
+          await LocalNotifications.schedule({
+            notifications: [
+              {
+                title,
                 body,
-                icon: 'https://cdn-icons-png.flaticon.com/512/123/123382.png',
+                id: Math.floor(Date.now() % 1000000000),
+                schedule: { at: new Date(Date.now() + 100) },
+                sound: soundFile,
+                channelId: targetChannel,
+                actionTypeId: '',
+                extra: { url: channelId === 'chat_messages' ? '/messages' : '/routes' }
+              }
+            ]
+          });
+        } catch (localErr) {
+          console.warn('[Layout] Erro ao disparar notificação local no Capacitor:', localErr);
+        }
+      } else {
+        // Web / Browser mode
+        if (typeof Notification !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+          try {
+            if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+              navigator.serviceWorker.ready.then(registration => {
+                registration.showNotification(title, {
+                  body,
+                  icon: '/logo.png',
+                  badge: '/logo.png',
+                  vibrate: [200, 100, 200],
+                  tag: `vis_${Date.now()}`
+                } as any);
               });
-            });
-          } else {
-            new Notification(title, { 
-              body, 
-              icon: 'https://cdn-icons-png.flaticon.com/512/123/123382.png',
-            });
+            } else {
+              new Notification(title, { 
+                body, 
+                icon: '/logo.png',
+              });
+            }
+          } catch(notifErr) {
+            console.warn('[Layout] Erro ao disparar notificação no navegador:', notifErr);
           }
         }
       }
@@ -445,7 +484,7 @@ export default function Layout() {
       {/* Sidebar */}
       <aside
         className={clsx(
-          "fixed inset-y-0 left-0 z-50 w-72 h-screen bg-slate-950 text-slate-100 border-r border-slate-800 flex flex-col transform transition-transform duration-300 ease-in-out lg:translate-x-0 lg:static lg:h-screen lg:shrink-0 shadow-2xl lg:shadow-none overflow-hidden",
+          "fixed inset-y-0 left-0 z-50 w-72 h-[100dvh] max-h-[100dvh] bg-slate-950 text-slate-100 border-r border-slate-800 flex flex-col transform transition-transform duration-300 ease-in-out lg:translate-x-0 lg:static lg:h-screen lg:shrink-0 shadow-2xl lg:shadow-none overflow-hidden",
           isDrawerOpen ? "translate-x-0" : "-translate-x-full"
         )}
       >
@@ -556,12 +595,12 @@ export default function Layout() {
         </nav>
 
         {/* Footer / Logout */}
-        <div className="p-3 border-t border-slate-800 shrink-0">
+        <div className="p-3 pb-24 lg:pb-3 border-t border-slate-800 shrink-0 bg-slate-950">
           <button
             onClick={handleLogout}
-            className="flex items-center w-full px-3.5 py-2.5 text-slate-400 rounded-xl hover:bg-red-950/40 hover:text-red-300 border border-transparent hover:border-red-900/40 transition-all duration-200 group text-sm font-medium"
+            className="flex items-center w-full px-3.5 py-3 text-red-300 bg-red-950/30 hover:bg-red-900/50 rounded-xl border border-red-800/40 transition-all duration-200 group text-sm font-bold shadow-md cursor-pointer"
           >
-            <LogOut size={18} className="mr-3 text-slate-500 group-hover:text-red-400 transition-colors shrink-0" />
+            <LogOut size={18} className="mr-3 text-red-400 group-hover:text-red-200 transition-colors shrink-0" />
             <span>Sair do Sistema</span>
           </button>
         </div>
@@ -578,19 +617,28 @@ export default function Layout() {
               <Menu size={24} />
             </button>
             <div className="flex items-center space-x-2 ml-2">
-              <span className="text-lg font-bold text-white truncate max-w-[180px]">
+              <span className="text-lg font-bold text-white truncate max-w-[160px] sm:max-w-[200px]">
                 {userProfile?.whatsappSettings?.companyName || "RS Piscinas"}
               </span>
             </div>
           </div>
-          <button
-            onClick={handleGlobalRefresh}
-            disabled={isGlobalRefreshing}
-            className="flex items-center justify-center p-2 text-slate-300 hover:text-white active:bg-slate-800 rounded-xl transition-colors border border-slate-700 bg-slate-800/80 cursor-pointer"
-            title="Atualizar dados do aplicativo"
-          >
-            <RefreshCw size={19} className={clsx("text-sky-400", isGlobalRefreshing && "animate-spin")} />
-          </button>
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={handleGlobalRefresh}
+              disabled={isGlobalRefreshing}
+              className="flex items-center justify-center p-2 text-slate-300 hover:text-white active:bg-slate-800 rounded-xl transition-colors border border-slate-700 bg-slate-800/80 cursor-pointer"
+              title="Atualizar dados do aplicativo"
+            >
+              <RefreshCw size={19} className={clsx("text-sky-400", isGlobalRefreshing && "animate-spin")} />
+            </button>
+            <button
+              onClick={handleLogout}
+              className="flex items-center justify-center p-2 text-red-400 hover:text-red-300 hover:bg-red-950/50 active:bg-red-950/80 rounded-xl transition-colors border border-red-900/40 bg-red-950/20 cursor-pointer"
+              title="Sair do Sistema"
+            >
+              <LogOut size={19} />
+            </button>
+          </div>
         </header>
 
         <NotificationBanner />

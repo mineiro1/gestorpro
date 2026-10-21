@@ -1,12 +1,15 @@
-const CACHE_NAME = 'gestao-pro-v4';
-const DATA_CACHE_NAME = 'gestao-pro-data-v4';
+const CACHE_NAME = 'gestao-pro-v5';
+const DATA_CACHE_NAME = 'gestao-pro-data-v5';
 const SYNC_STORE_NAME = 'sync-queue';
 const DB_NAME = 'gestao-pro-sync-db';
 
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
-  '/manifest.json'
+  '/manifest.json',
+  '/logo.png',
+  '/notificacao.mp3',
+  '/chat_notification.mp3'
 ];
 
 function openDB() {

@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { Calendar, CheckCircle, X, Download, Star, RefreshCw, Store, Wrench, MessageCircle, Phone } from 'lucide-react';
-import { useOutletContext } from 'react-router-dom';
+import { Calendar, CheckCircle, X, Download, Star, RefreshCw, Store, Wrench, MessageCircle, Phone, LogOut } from 'lucide-react';
+import { useOutletContext, useNavigate } from 'react-router-dom';
 import { useRealtimeUpdates } from '../hooks/useRealtimeUpdates';
 import { openWhatsApp, normalizePhoneNumber } from '../lib/whatsapp';
 
@@ -104,6 +104,18 @@ const renderNotes = (notes: string) => {
 
 export default function ClientPanel() {
   const { userProfile } = useAuth();
+  const navigate = useNavigate();
+
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+      localStorage.removeItem('cachedUserProfile');
+      navigate('/login');
+    } catch (e) {
+      console.error(e);
+      window.location.href = '/login';
+    }
+  };
   
   const adminId = userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId;
   const refreshTrigger = useRealtimeUpdates(['clients', 'visits', 'payments'], 'admin_id', adminId);
@@ -253,15 +265,25 @@ export default function ClientPanel() {
               <h1 className="text-2xl sm:text-3xl font-black mb-1 text-white">Olá, {(clientData.name || 'Cliente').split(' ')[0]}!</h1>
               <p className="text-xs sm:text-sm text-sky-300">Bem-vindo(a) ao seu painel RS Piscinas.</p>
             </div>
-            <button
-              onClick={() => loadClientDetails(true)}
-              disabled={isRefreshing}
-              className="bg-slate-800 hover:bg-slate-700 active:bg-slate-600 border border-slate-700 text-slate-200 px-4 py-2 rounded-xl flex items-center transition-all text-xs sm:text-sm font-bold disabled:opacity-60 shadow-sm cursor-pointer"
-              title="Atualizar painel"
-            >
-              <RefreshCw size={16} className={`mr-2 text-sky-400 ${isRefreshing ? 'animate-spin' : ''}`} />
-              <span>{isRefreshing ? 'Atualizando...' : 'Atualizar'}</span>
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => loadClientDetails(true)}
+                disabled={isRefreshing}
+                className="bg-slate-800 hover:bg-slate-700 active:bg-slate-600 border border-slate-700 text-slate-200 px-3.5 py-2 rounded-xl flex items-center transition-all text-xs sm:text-sm font-bold disabled:opacity-60 shadow-sm cursor-pointer"
+                title="Atualizar painel"
+              >
+                <RefreshCw size={16} className={`mr-2 text-sky-400 ${isRefreshing ? 'animate-spin' : ''}`} />
+                <span>{isRefreshing ? 'Atualizando...' : 'Atualizar'}</span>
+              </button>
+              <button
+                onClick={handleLogout}
+                className="bg-red-950/40 hover:bg-red-900/60 active:bg-red-900/80 border border-red-800/50 text-red-300 px-3.5 py-2 rounded-xl flex items-center transition-all text-xs sm:text-sm font-bold shadow-sm cursor-pointer"
+                title="Sair do Sistema"
+              >
+                <LogOut size={16} className="mr-1.5 text-red-400" />
+                <span>Sair</span>
+              </button>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">

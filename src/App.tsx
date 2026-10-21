@@ -33,7 +33,7 @@ const ProtectedRoute = ({ children, allowedRoles }: { children: React.ReactNode,
 
   const hasStoredSession = typeof window !== 'undefined' && Object.keys(localStorage).some(k => k.startsWith('sb-') && k.endsWith('-auth-token'));
 
-  if (loading || (currentUser && !userProfile) || (hasStoredSession && !currentUser)) {
+  if (loading && (!userProfile || !currentUser)) {
     return (
       <div className="flex h-screen w-full flex-col items-center justify-center bg-slate-950 text-white">
         <div className="flex flex-col items-center space-y-6">

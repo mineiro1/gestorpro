@@ -83,7 +83,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const refreshTrigger = useRealtimeUpdates(['users'], 'id', currentUser?.id);
   useEffect(() => {
     if (currentUser && refreshTrigger > 0) {
-      handleUserChange(currentUser);
+      handleUserChange(currentUser, true);
     }
   }, [refreshTrigger]);
 
@@ -91,15 +91,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Check active sessions and sets the user
     supabase.auth.getSession().then(({ data: { session }, error }) => {
       if (error) console.error('Error getting session:', error.message);
-      handleUserChange(session?.user ?? null);
+      handleUserChange(session?.user ?? null, false);
     }).catch(err => {
       console.error('Session fetch error:', err);
-      handleUserChange(null);
+      handleUserChange(null, false);
     });
 
     // Listen for changes on auth state (logged in, signed out, etc.)
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      handleUserChange(session?.user ?? null);
+      handleUserChange(session?.user ?? null, true);
     });
 
     return () => {
@@ -107,21 +107,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, []);
 
-  const handleUserChange = async (user: User | null): Promise<UserProfile | null> => {
+  const handleUserChange = async (user: User | null, silent = false): Promise<UserProfile | null> => {
     setCurrentUser(user);
     if (!user) {
       setUserProfile(null);
+      localStorage.removeItem('cachedUserProfile');
       setLoading(false);
       return null;
     }
-    setLoading(true);
+
+    // Only activate blocking full-screen loading state on initial load when userProfile is null
+    if (!silent && !userProfile) {
+      setLoading(true);
+    }
 
     try {
-      let { data: profileData } = await supabase
+      let { data: profileData, error: profileErr } = await supabase
         .from('users')
         .select('*')
         .eq('id', user.id)
         .maybeSingle();
+
+      // If offline or request failed, fallback directly to cached user profile
+      if ((!profileData || profileErr) && (!navigator.onLine || profileErr)) {
+        const cached = localStorage.getItem('cachedUserProfile');
+        if (cached) {
+          try {
+            const parsed = JSON.parse(cached);
+            if (parsed && (parsed.uid === user.id || parsed.email === user.email)) {
+              console.log('[Auth] Usuário autenticado com sucesso via cache local (Modo Offline)');
+              setUserProfile(parsed);
+              setLoading(false);
+              return parsed;
+            }
+          } catch (e) {}
+        }
+      }
 
       // Se não encontrou na tabela users, verifica se existe cliente correspondente na tabela clients
       if (!profileData && user.email) {
@@ -217,6 +238,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setLoading(false);
         return mappedProfile;
       } else {
+         // Se não há dados no servidor mas o dispositivo está offline ou falhou a rede, preserva perfil em cache
+         const cached = localStorage.getItem('cachedUserProfile');
+         if (cached && (!navigator.onLine || profileErr)) {
+           try {
+             const parsed = JSON.parse(cached);
+             setUserProfile(parsed);
+             setLoading(false);
+             return parsed;
+           } catch(e) {}
+         }
          setUserProfile(null);
          localStorage.removeItem('cachedUserProfile');
          setLoading(false);

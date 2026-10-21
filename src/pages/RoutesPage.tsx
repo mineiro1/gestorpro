@@ -8,7 +8,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   Share2, FileText, Map, Camera, CheckCircle, MapPin, Image as ImageIcon, 
   ArrowUp, ArrowDown, Save, ListOrdered, Search, RefreshCw, Phone,
-  Clock, ShieldAlert, AlertTriangle, Key, Zap, ArrowRightLeft, Trash2, Edit2, Users, Check, X,
+  Clock, ShieldAlert, AlertTriangle, AlertCircle, Key, Zap, ArrowRightLeft, Trash2, Edit2, Users, Check, X,
   Navigation, CloudSun
 } from 'lucide-react';
 import { useCall } from '../contexts/CallContext';
@@ -201,6 +201,9 @@ export default function RoutesPage() {
   // Report Modal State
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [selectedClientForReport, setSelectedClientForReport] = useState<any>(null);
+  const [fixedWarningModalOpen, setFixedWarningModalOpen] = useState(false);
+  const [clientPendingReport, setClientPendingReport] = useState<any>(null);
+  const [activeFixedNoticeText, setActiveFixedNoticeText] = useState<string>('');
   const cachedLocationRef = useRef<{ lat: number; lng: number } | null>(null);
 
   // Pre-fetch location as soon as report modal opens
@@ -409,12 +412,36 @@ export default function RoutesPage() {
     enabled: generated && !!userProfile && !!routeDate && !!selectedEmployee,
     staleTime: 0,
     refetchOnWindowFocus: true,
-    refetchInterval: 4000,
+    refetchInterval: () => (navigator.onLine ? 8000 : false),
     refetchIntervalInBackground: false,
     queryFn: async () => {
       const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
-      
-      const { data: clientsDataAPI, error: cErr } = await supabase.from('clients')
+      const cacheKey = `cached_routes_${adminId}_${selectedEmployee}_${routeDate}`;
+
+      const restoreFromLocalCache = () => {
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+          try {
+            const parsed = JSON.parse(cached);
+            return {
+              ...parsed,
+              completed: new Set(parsed.completed || [])
+            };
+          } catch(e) {}
+        }
+        return null;
+      };
+
+      if (!navigator.onLine) {
+        const cachedData = restoreFromLocalCache();
+        if (cachedData) {
+          console.log('[Routes] Rota carregada com sucesso do cache local offline.');
+          return cachedData;
+        }
+      }
+
+      try {
+        const { data: clientsDataAPI, error: cErr } = await supabase.from('clients')
         .select('*')
         .eq('admin_id', adminId)
         .eq('employee_id', selectedEmployee);
@@ -771,7 +798,7 @@ export default function RoutesPage() {
           console.warn('[Avisos Fixos] Erro ao buscar avisos de segurança:', secErr);
         }
 
-        return { 
+        const finalResult = { 
           clients: mergedClients, 
           completed: completedIds, 
           chatStatusByClient, 
@@ -779,8 +806,23 @@ export default function RoutesPage() {
           lastVisitByClient,
           securityNotesByClient
         };
+
+        try {
+          localStorage.setItem(cacheKey, JSON.stringify({
+            ...finalResult,
+            completed: Array.from(completedIds)
+          }));
+        } catch(e) {}
+
+        return finalResult;
+      } catch (err) {
+        console.warn('[Routes] Falha de conexão ao carregar rota, buscando cache offline:', err);
+        const cachedData = restoreFromLocalCache();
+        if (cachedData) return cachedData;
+        throw err;
       }
-    });
+    }
+  });
 
   const routeClients = queryData?.clients || [];
   const completedVisitsOnRouteDate = queryData?.completed || new Set();
@@ -1528,6 +1570,27 @@ useEffect(() => {
 
   const handleOpenReport = (client: any) => {
     if (completedVisitsOnRouteDate.has(client.id)) return;
+
+    // Verificar se existe aviso fixo de segurança ou nota do admin para este imóvel
+    const rawNotice = (
+      localSecurityNotes[client.id] ||
+      securityNotesByClient[client.id] ||
+      client.security_notes ||
+      client.notes ||
+      ''
+    ).trim();
+
+    if (rawNotice) {
+      setClientPendingReport(client);
+      setActiveFixedNoticeText(rawNotice);
+      setFixedWarningModalOpen(true);
+      return;
+    }
+
+    proceedToReportModal(client);
+  };
+
+  const proceedToReportModal = (client: any) => {
     setSelectedClientForReport(client);
     setReportNotes('');
     setReportPhotos([]);
@@ -2751,6 +2814,73 @@ useEffect(() => {
                <EmployeeMap clients={routeClients} highlightedClientId={highlightedClientId} />
             </div>
           )}
+        </div>
+      )}
+
+      {/* Popup de Aviso Fixo Obrigatório com Título *AVISO* em Vermelho Piscando Centralizado */}
+      {fixedWarningModalOpen && clientPendingReport && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-slate-900 border-2 border-red-500 rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl shadow-red-500/20 relative overflow-hidden flex flex-col items-center text-center">
+            {/* Elementos visuais de alerta */}
+            <div className="absolute -top-16 -right-16 w-36 h-36 bg-red-600/20 rounded-full blur-2xl pointer-events-none" />
+            <div className="absolute -bottom-16 -left-16 w-36 h-36 bg-red-600/20 rounded-full blur-2xl pointer-events-none" />
+
+            <div className="w-16 h-16 rounded-2xl bg-red-500/20 text-red-500 flex items-center justify-center mb-4 border border-red-500/40 shadow-inner">
+              <AlertTriangle size={36} className="animate-pulse" />
+            </div>
+
+            {/* Título *AVISO* em vermelho centralizado e piscando para chamar atenção */}
+            <h2 className="text-3xl sm:text-4xl font-black text-red-500 tracking-wider text-center animate-pulse mb-1">
+              *AVISO*
+            </h2>
+            <p className="text-xs font-bold text-red-300 uppercase tracking-widest mb-4">
+              Atenção Obrigatória do Imóvel
+            </p>
+
+            <div className="text-xs text-slate-300 mb-4 bg-slate-950/60 py-1.5 px-3 rounded-lg border border-slate-800">
+              <span className="font-bold text-white">{clientPendingReport.name}</span>
+              {clientPendingReport.address && (
+                <span className="text-slate-400 block truncate max-w-xs">{clientPendingReport.address}</span>
+              )}
+            </div>
+
+            {/* Conteúdo do aviso deixado pelo admin */}
+            <div className="w-full bg-red-950/40 border border-red-500/60 rounded-2xl p-4 sm:p-5 text-left mb-6 shadow-inner">
+              <div className="text-[11px] font-bold text-red-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                <AlertCircle size={14} />
+                Aviso Deixado pelo Administrador:
+              </div>
+              <p className="text-base sm:text-lg font-bold text-white whitespace-pre-wrap leading-relaxed">
+                {activeFixedNoticeText}
+              </p>
+            </div>
+
+            {/* Botões de Ação */}
+            <div className="flex flex-col sm:flex-row w-full gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setFixedWarningModalOpen(false);
+                  setClientPendingReport(null);
+                }}
+                className="w-full sm:w-1/3 py-3 px-4 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm transition-colors cursor-pointer"
+              >
+                Voltar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setFixedWarningModalOpen(false);
+                  const target = clientPendingReport;
+                  setClientPendingReport(null);
+                  proceedToReportModal(target);
+                }}
+                className="w-full sm:w-2/3 py-3 px-4 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white font-black text-sm shadow-lg shadow-red-600/30 transition-all cursor-pointer flex items-center justify-center gap-2"
+              >
+                <span>Entendido, Continuar</span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

@@ -31,6 +31,7 @@ interface DashboardStats {
   delayedClients: number;
   delayedTotalAmount: number;
   receivedThisMonth: number;
+  receivedToday: number;
   pendingThisMonth: number;
   totalActiveContracts: number;
   ticketMedio: number;
@@ -79,6 +80,7 @@ export default function Dashboard() {
     delayedClients: 0,
     delayedTotalAmount: 0,
     receivedThisMonth: 0,
+    receivedToday: 0,
     pendingThisMonth: 0,
     totalActiveContracts: 0,
     ticketMedio: 0,
@@ -185,6 +187,23 @@ export default function Dashboard() {
       const currentYear = currentDate.getFullYear();
       const currentAdminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
 
+      const getFormattedLocalDate = (d: any) => {
+        if (!d) return '';
+        try {
+          if (typeof d === 'string' && d.includes('-')) {
+            return d.split('T')[0];
+          }
+          const dt = new Date(d);
+          const y = dt.getFullYear();
+          const m = String(dt.getMonth() + 1).padStart(2, '0');
+          const day = String(dt.getDate()).padStart(2, '0');
+          return `${y}-${m}-${day}`;
+        } catch(e) {
+          return '';
+        }
+      };
+      const todayStr = getFormattedLocalDate(new Date());
+
       let totalClients = 0;
       let inactiveClients = 0;
       let totalToReceive = 0;
@@ -192,6 +211,7 @@ export default function Dashboard() {
       let delayedTotalAmount = 0;
       let pendingThisMonth = 0;
       let receivedThisMonth = 0;
+      let receivedToday = 0;
       let totalActiveContracts = 0;
 
       const clientsNoVisit: any[] = [];
@@ -223,6 +243,10 @@ export default function Dashboard() {
             if (pm === currentMonth && py === currentYear) {
               receivedThisMonth += Number(data.amount || 0);
               clientsWhoPaidThisMonth.add(data.client_id);
+            }
+
+            if (getFormattedLocalDate(paymentDate) === todayStr) {
+              receivedToday += Number(data.amount || 0);
             }
           }
         });
@@ -421,8 +445,14 @@ export default function Dashboard() {
           if (isPendingThisMonth) {
             pendingThisMonth += Number(data.price || 0);
           }
-          if (data.status === 'concluido' && isCompletedThisMonth) {
-            receivedThisMonth += Number(data.price || 0);
+          if (data.status === 'concluido') {
+            if (isCompletedThisMonth) {
+              receivedThisMonth += Number(data.price || 0);
+            }
+            const jobDoneDate = data.completed_at || data.updated_at || data.created_at || data.date;
+            if (getFormattedLocalDate(jobDoneDate) === todayStr) {
+              receivedToday += Number(data.price || 0);
+            }
           }
         });
       }
@@ -438,6 +468,7 @@ export default function Dashboard() {
         delayedClients: actualDelayedClients,
         delayedTotalAmount,
         receivedThisMonth,
+        receivedToday,
         pendingThisMonth,
         totalActiveContracts,
         ticketMedio,
@@ -1491,7 +1522,14 @@ Agradecemos imensamente pela parceria e por nos permitir cuidar da sua piscina p
               </div>
 
               {/* Sub-Cards Row */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="p-3 bg-sky-950/30 rounded-xl border border-sky-500/30 relative overflow-hidden">
+                  <span className="text-[11px] text-sky-400 block font-medium">Recebidos Hoje</span>
+                  <span className="text-base sm:text-lg font-black text-sky-300 tracking-tight">
+                    {formatCurrency(stats.receivedToday)}
+                  </span>
+                </div>
+
                 <div className="p-3 bg-slate-950/40 rounded-xl border border-slate-800/60">
                   <span className="text-[11px] text-slate-400 block font-medium">Já Recebido</span>
                   <span className="text-base sm:text-lg font-black text-emerald-400 tracking-tight">
@@ -1506,7 +1544,7 @@ Agradecemos imensamente pela parceria e por nos permitir cuidar da sua piscina p
                   </span>
                 </div>
 
-                <div className="p-3 bg-slate-950/40 rounded-xl border border-slate-800/60 col-span-2 sm:col-span-1">
+                <div className="p-3 bg-slate-950/40 rounded-xl border border-slate-800/60">
                   <span className="text-[11px] text-slate-400 block font-medium">Em Atraso ({stats.delayedClients})</span>
                   <span className={`text-base sm:text-lg font-black tracking-tight ${stats.delayedClients > 0 ? 'text-red-400' : 'text-slate-300'}`}>
                     {formatCurrency(stats.delayedTotalAmount)}

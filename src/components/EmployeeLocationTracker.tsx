@@ -11,52 +11,49 @@ export default function EmployeeLocationTracker() {
 
     let watchId: number;
 
+    let lastSentTime = 0;
+
+    const sendLocation = async (coords: GeolocationCoordinates) => {
+      const now = Date.now();
+      if (now - lastSentTime < 45000) return; // Envia no máximo a cada 45 segundos
+      lastSentTime = now;
+
+      if (!navigator.onLine) return; // Não tenta salvar se offline
+
+      try {
+        await supabase.from('users').update({
+          last_location: {
+            lat: coords.latitude,
+            lng: coords.longitude,
+            accuracy: coords.accuracy,
+          },
+          location_updated_at: new Date().toISOString(),
+        }).eq('id', userProfile.uid);
+      } catch (error) {
+        // Silently ignore
+      }
+    };
+
     if ('geolocation' in navigator) {
-      // First, let's get the current position manually once to ensure fast first load
       navigator.geolocation.getCurrentPosition(
-        async (position) => {
-             try {
-               await supabase.from('users').update({
-                 last_location: {
-                   lat: position.coords.latitude,
-                   lng: position.coords.longitude,
-                   accuracy: position.coords.accuracy,
-                 },
-                 location_updated_at: new Date().toISOString(),
-               }).eq('id', userProfile.uid);
-             } catch (error) {}
+        (position) => {
+          sendLocation(position.coords);
         },
         () => {},
-        { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
+        { enableHighAccuracy: true, maximumAge: 30000, timeout: 15000 }
       );
 
       watchId = navigator.geolocation.watchPosition(
-        async (position) => {
-          try {
-            const { error } = await supabase.from('users').update({
-              last_location: {
-                lat: position.coords.latitude,
-                lng: position.coords.longitude,
-                accuracy: position.coords.accuracy,
-              },
-              location_updated_at: new Date().toISOString(),
-            }).eq('id', userProfile.uid);
-            
-            if (error) {
-              // Silently ignore to avoid console errors if columns are missing
-              // console.error('Error updating location in Supabase:', error);
-            }
-          } catch (error) {
-            console.error('Error in location update process:', error);
-          }
+        (position) => {
+          sendLocation(position.coords);
         },
         (error) => {
-          console.error('Error watching location:', error);
+          console.warn('Geolocation watch notice:', error?.message);
         },
         {
           enableHighAccuracy: true,
-          maximumAge: 10000,
-          timeout: 10000,
+          maximumAge: 30000,
+          timeout: 20000,
         }
       );
     }
