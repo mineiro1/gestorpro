@@ -3053,7 +3053,7 @@ app.all("/api/sync-payment", async (req, res) => {
             const soundFile = isChat ? 'chat_notification.mp3' : 'notificacao.mp3';
             const channelTarget = data?.channelId || (isChat ? 'chat_messages' : 'atendimentos_v2');
 
-            await getMessaging().send({
+await getMessaging().send({
               token,
               notification: {
                 title,
@@ -3079,8 +3079,7 @@ app.all("/api/sync-payment", async (req, res) => {
                   body,
                   sound: soundName,
                   priority: 'max',
-                  visibility: 'public',
-                  defaultSound: true,
+                  visibility: 'PUBLIC', // <-- OBRIGATÓRIO EM MAIÚSCULAS PARA TELA BLOQUEADA
                   defaultVibrateTimings: true,
                   localOnly: false,
                   notificationCount: 1,
@@ -3125,47 +3124,59 @@ app.all("/api/sync-payment", async (req, res) => {
     }
   }
 
-  // Helper específico para envio de push ao Administrador com fallback de alta disponibilidade
+// Helper específico para envio de push EXCLUSIVAMENTE ao Administrador responsável
   async function sendPushToAdmin(adminId: string, title: string, body: string, data: Record<string, string> = {}) {
     let sent = false;
     const targetIds = new Set<string>();
-    if (adminId) targetIds.add(adminId);
 
-    // Sempre garante que os perfis de Renivaldo (admin e colaborador) sejam considerados
-    targetIds.add('698dfcdd-7c91-4df5-aaee-eae9e67f15ae'); // Admin principal
-    targetIds.add('81bb13fb-c0de-48c6-ad01-3019e9b48026'); // Colaborador Renivaldo
-
-    // Busca usuário pelo e-mail do administrador
-    try {
-      const { data: renivaldoUsers } = await supabaseAdmin
-        .from('users')
-        .select('id')
-        .eq('email', 'servincg@gmail.com');
-      (renivaldoUsers || []).forEach(u => targetIds.add(u.id));
-    } catch (e) {}
-
-    // Se houver outros administradores cadastrados com dispositivo ativo, despacha também
-    try {
-      const { data: allAdmins } = await supabaseAdmin
-        .from('users')
-        .select('id, fcm_token, whatsapp_settings')
-        .eq('role', 'admin');
-
-      for (const adm of (allAdmins || [])) {
-        targetIds.add(adm.id);
-      }
-    } catch (e) {
-      console.warn('[Push Server] Erro ao buscar admins:', e);
+    // 1. Define o Administrador Responsável
+    if (adminId) {
+      targetIds.add(adminId);
+    } else {
+      // Fallback seguro apenas para o Administrador principal caso o ID venha vazio
+      targetIds.add('698dfcdd-7c91-4df5-aaee-eae9e67f15ae');
     }
 
-    // Despacha para todos os administradores identificados
+    // 2. REGRA DE SEGURANÇA: NUNCA enviar para o colaborador que acabou de finalizar a visita
+    const currentEmployeeId = data.employeeId || data.employee_id;
+    if (currentEmployeeId) {
+      targetIds.delete(currentEmployeeId);
+    }
+    // Remove explicitamente a conta de colaborador do Renivaldo para nunca receber push de admin
+    targetIds.delete('81bb13fb-c0de-48c6-ad01-3019e9b48026');
+
+    // 3. Validação rigorosa: Garante que NENHUM usuário com cargo de 'employee' ou 'client' receba esta notificação
+    const validatedAdminIds: string[] = [];
     for (const uid of targetIds) {
+      try {
+        const { data: userRow } = await supabaseAdmin
+          .from('users')
+          .select('id, role')
+          .eq('id', uid)
+          .maybeSingle();
+
+        // Só envia se for confirmado como administrador
+        if (userRow && (userRow.role === 'admin' || userRow.role === 'manager')) {
+          validatedAdminIds.push(uid);
+        }
+      } catch (err) {
+        console.warn(`[Push Server] Falha ao validar permissão do usuário ${uid}:`, err);
+      }
+    }
+
+    if (validatedAdminIds.length === 0) {
+      console.log(`[Push Server] Nenhum administrador destinatário válido para o push.`);
+      return false;
+    }
+
+    // 4. Despacha o push unicamente para o(s) administrador(es) responsável(is)
+    for (const uid of validatedAdminIds) {
       const ok = await sendPushToUser(uid, title, body, data);
       if (ok) sent = true;
     }
 
     return sent;
-  }
+  } 
 
   // Helper específico para envio de push ao Colaborador
   async function sendPushToEmployee(employeeId: string, title: string, body: string, data: Record<string, string> = {}) {
@@ -3284,17 +3295,26 @@ app.all("/api/sync-payment", async (req, res) => {
         return false;
       }
 
-      // 1. Identificar o colaborador
-      let empName = 'Colaborador';
+      // 1. Identificar o colaborador com prioridade ao techName enviado
+      let empName = (visitRecord.techName || visitRecord.employee_name || '').trim();
       let employeeAdminId: string | null = null;
-      if (visitRecord.employee_id) {
-        const { data: empUser } = await supabaseAdmin
-          .from('users')
-          .select('id, name, admin_id')
-          .eq('id', visitRecord.employee_id)
-          .maybeSingle();
-        if (empUser?.name) empName = empUser.name;
-        if (empUser?.admin_id) employeeAdminId = empUser.admin_id;
+
+      if (!empName && visitRecord.employee_id) {
+        try {
+          const { data: empUser } = await supabaseAdmin
+            .from('users')
+            .select('id, name, admin_id')
+            .eq('id', visitRecord.employee_id)
+            .maybeSingle();
+          if (empUser?.name) empName = empUser.name.trim();
+          if (empUser?.admin_id) employeeAdminId = empUser.admin_id;
+        } catch (e) {
+          console.warn('[Push Server] Erro ao buscar dados do colaborador:', e);
+        }
+      }
+
+      if (!empName) {
+        empName = 'Colaborador';
       }
 
       // 2. Identificar o cliente
@@ -3361,6 +3381,7 @@ app.all("/api/sync-payment", async (req, res) => {
         employee_id: employeeId,
         client_id: clientId,
         client_name: clientName,
+        techName: techName || null, // <-- ADICIONADO PARA PRESERVAR O NOME DO TÉCNICO
         status: isJob ? 'concluido' : 'finalizada'
       };
 

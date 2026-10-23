@@ -307,19 +307,43 @@ export default function Layout() {
             });
           }
 
-          // Alerta instantâneo no navegador/app para o administrador
+// Alerta instantâneo no navegador/app para o administrador
           if (userProfile?.role === 'admin') {
             let clientName = 'Cliente';
+            let employeeName = 'Colaborador';
+
             try {
               if (payload.new.client_id) {
-                const { data: cli } = await supabase.from('clients').select('name').eq('id', payload.new.client_id).maybeSingle();
+                const { data: cli } = await supabase
+                  .from('clients')
+                  .select('name')
+                  .eq('id', payload.new.client_id)
+                  .maybeSingle();
                 if (cli?.name) clientName = cli.name;
               }
             } catch (e) {}
-            const isSelf = payload.new.employee_id === userProfile.uid;
+
+            try {
+              if (payload.new.employee_id) {
+                const { data: emp } = await supabase
+                  .from('users')
+                  .select('name')
+                  .eq('id', payload.new.employee_id)
+                  .maybeSingle();
+                if (emp?.name) employeeName = emp.name;
+              }
+            } catch (e) {}
+
+const isSelf = payload.new.employee_id === userProfile.uid;
+
+            // Se quem finalizou o atendimento foi o próprio usuário logado, NÃO emite notificação para ele mesmo
+            if (isSelf) {
+              return;
+            }
+
             showNotification(
               '🏊 Atendimento Finalizado!',
-              isSelf ? `Atendimento no cliente ${clientName} registrado com sucesso.` : `O atendimento no cliente ${clientName} foi finalizado pelo colaborador.`,
+              `O colaborador ${employeeName} finalizou o atendimento no cliente ${clientName}.`,
               'atendimentos_v2'
             );
           }
