@@ -278,7 +278,7 @@ export default function Dashboard() {
 
       if (clientsSnap.data) {
         clientsSnap.data.forEach((data: any) => {
-          const clientPrice = Number(data.monthly_price || data.monthly_fee || 0);
+          const clientPrice = Number(data.monthly_price ?? data.monthly_fee ?? 0);
           const extraPrice = Number(data.extra_amount || 0);
           const fullPrice = clientPrice + extraPrice;
 
@@ -538,7 +538,7 @@ export default function Dashboard() {
             // Clientes VIP priorizam pontualidade e fidelidade (sem débitos em atraso)
             if (isDelayed) return;
 
-            const currentPrice = Number(client.monthly_price || client.monthly_fee || 0);
+            const currentPrice = Number(client.monthly_price ?? client.monthly_fee ?? 0);
             if (currentPrice <= 0) return;
 
             const rawStartDate = contractsMeta[client.id]?.customStartDate || client.created_at || new Date().toISOString();
