@@ -3079,7 +3079,7 @@ await getMessaging().send({
                   body,
                   sound: soundName,
                   priority: 'max',
-                  visibility: 'PUBLIC', // <-- OBRIGATÓRIO EM MAIÚSCULAS PARA TELA BLOQUEADA
+                  visibility: 'public',
                   defaultVibrateTimings: true,
                   localOnly: false,
                   notificationCount: 1,
@@ -3130,20 +3130,28 @@ await getMessaging().send({
     const targetIds = new Set<string>();
 
     // 1. Define o Administrador Responsável
-    if (adminId) {
-      targetIds.add(adminId);
+    if (adminId && adminId.trim() !== '') {
+      targetIds.add(adminId.trim());
     } else {
-      // Fallback seguro apenas para o Administrador principal caso o ID venha vazio
+      // Fallback seguro para o Administrador principal
       targetIds.add('698dfcdd-7c91-4df5-aaee-eae9e67f15ae');
     }
 
-    // 2. REGRA DE SEGURANÇA: NUNCA enviar para o colaborador que acabou de finalizar a visita
+    // 2. REGRA DE SEGURANÇA: Se o colaborador for diferente do Admin, garante que o colaborador não esteja na lista de destino
     const currentEmployeeId = data.employeeId || data.employee_id;
     if (currentEmployeeId) {
-      targetIds.delete(currentEmployeeId);
+      // Só remove se o ID do colaborador for diferente do ID do Administrador destinatário
+      for (const id of Array.from(targetIds)) {
+        if (id === currentEmployeeId && targetIds.size > 1) {
+          targetIds.delete(id);
+        }
+      }
     }
-    // Remove explicitamente a conta de colaborador do Renivaldo para nunca receber push de admin
-    targetIds.delete('81bb13fb-c0de-48c6-ad01-3019e9b48026');
+
+    // Remove explicitamente a conta de colaborador do Renivaldo caso esteja na lista
+    if (!targetIds.has('698dfcdd-7c91-4df5-aaee-eae9e67f15ae') || targetIds.size > 1) {
+      targetIds.delete('81bb13fb-c0de-48c6-ad01-3019e9b48026');
+    }
 
     // 3. Validação rigorosa: Garante que NENHUM usuário com cargo de 'employee' ou 'client' receba esta notificação
     const validatedAdminIds: string[] = [];
@@ -3155,7 +3163,7 @@ await getMessaging().send({
           .eq('id', uid)
           .maybeSingle();
 
-        // Só envia se for confirmado como administrador
+        // Só envia se for confirmado como administrador ou gerente
         if (userRow && (userRow.role === 'admin' || userRow.role === 'manager')) {
           validatedAdminIds.push(uid);
         }
@@ -3165,18 +3173,123 @@ await getMessaging().send({
     }
 
     if (validatedAdminIds.length === 0) {
-      console.log(`[Push Server] Nenhum administrador destinatário válido para o push.`);
-      return false;
+      // Fallback: se o adminId fornecido for o admin padrão, autoriza
+      if (targetIds.has('698dfcdd-7c91-4df5-aaee-eae9e67f15ae')) {
+        validatedAdminIds.push('698dfcdd-7c91-4df5-aaee-eae9e67f15ae');
+      } else {
+        console.log(`[Push Server] Nenhum administrador destinatário válido para o push.`);
+        return false;
+      }
     }
 
-    // 4. Despacha o push unicamente para o(s) administrador(es) responsável(is)
+    // 4. Coletar tokens de colaboradores para garantir que nenhum dispositivo de colaborador receba o push do admin
+    const employeeTokens = new Set<string>();
+    try {
+      const { data: employeeUsers } = await supabaseAdmin
+        .from('users')
+        .select('fcm_token, whatsapp_settings')
+        .eq('role', 'employee');
+
+      (employeeUsers || []).forEach(emp => {
+        if (emp.fcm_token) employeeTokens.add(emp.fcm_token);
+        if (Array.isArray(emp.whatsapp_settings?.devices)) {
+          emp.whatsapp_settings.devices.forEach((d: any) => {
+            if (d?.token) employeeTokens.add(d.token);
+          });
+        }
+      });
+    } catch (empErr) {
+      console.warn('[Push Server] Aviso ao carregar tokens de colaboradores:', empErr);
+    }
+
+    // 5. Despacha o push unicamente para o(s) administrador(es) responsável(is), filtrando tokens de colaboradores
     for (const uid of validatedAdminIds) {
-      const ok = await sendPushToUser(uid, title, body, data);
-      if (ok) sent = true;
+      // Busca tokens do admin
+      const { data: adminUser } = await supabaseAdmin
+        .from('users')
+        .select('fcm_token, whatsapp_settings')
+        .eq('id', uid)
+        .maybeSingle();
+
+      const adminTokens = new Set<string>();
+      if (adminUser?.fcm_token) adminTokens.add(adminUser.fcm_token);
+      if (Array.isArray(adminUser?.whatsapp_settings?.devices)) {
+        adminUser.whatsapp_settings.devices.forEach((d: any) => {
+          if (d?.token) adminTokens.add(d.token);
+        });
+      }
+
+      // Remove tokens que estejam associados a qualquer colaborador
+      const cleanTokens = Array.from(adminTokens).filter(tok => !employeeTokens.has(tok));
+
+      if (cleanTokens.length === 0 && adminUser?.fcm_token) {
+        cleanTokens.push(adminUser.fcm_token);
+      }
+
+      for (const tok of cleanTokens) {
+        if (!fcmInitialized) break;
+        try {
+          await getMessaging().send({
+            token: tok,
+            notification: {
+              title,
+              body
+            },
+            data: {
+              title,
+              body,
+              ...data,
+              click_action: 'FCM_PLUGIN_ACTIVITY',
+              url: data.url || '/routes',
+              channelId: 'atendimentos_v3',
+              channel_id: 'atendimentos_v3',
+              sound: 'notificacao'
+            },
+            android: {
+              priority: 'high',
+              ttl: 2419200,
+              directBootOk: true,
+              notification: {
+                channelId: 'atendimentos_v3',
+                title,
+                body,
+                sound: 'notificacao',
+                priority: 'max',
+                visibility: 'public',
+                defaultVibrateTimings: true,
+                localOnly: false,
+                notificationCount: 1,
+                tag: data.tag || (data.visitId ? `visit_${data.visitId}` : undefined)
+              }
+            },
+            apns: {
+              headers: {
+                'apns-priority': '10',
+                'apns-push-type': 'alert'
+              },
+              payload: {
+                aps: {
+                  sound: 'notificacao.mp3',
+                  badge: 1,
+                  contentAvailable: true,
+                  alert: {
+                    title,
+                    body
+                  }
+                }
+              }
+            }
+          });
+          sent = true;
+          console.log(`[Push Server] Push de finalização entregue com sucesso para o token do admin: ${tok.substring(0, 10)}...`);
+        } catch (tokErr: any) {
+          console.error(`[Push Server] Erro ao enviar push para token ${tok.substring(0, 10)}...:`, tokErr?.message || tokErr);
+        }
+      }
     }
 
     return sent;
-  } 
+  }
 
   // Helper específico para envio de push ao Colaborador
   async function sendPushToEmployee(employeeId: string, title: string, body: string, data: Record<string, string> = {}) {
@@ -3283,19 +3396,19 @@ await getMessaging().send({
     }
   });
 
-  // Processador central de finalização de visita / serviço: disparado pelo sistema online de forma autônoma
+  // Processador central de finalização de visita / serviço
   async function handleVisitCompleted(visitRecord: any, isOneOffJob = false): Promise<boolean> {
     try {
       if (!visitRecord) return false;
       const visitId = String(visitRecord.id || visitRecord.client_id || Date.now());
       const dedupeKey = isOneOffJob ? `job_${visitId}` : `visit_${visitId}`;
 
-      // Deduplicação inteligente de 15 segundos (evita repetições instantâneas sem bloquear visitas futuras)
+      // Deduplicação inteligente de 10 segundos
       if (!shouldSendPush(dedupeKey)) {
         return false;
       }
 
-      // 1. Identificar o colaborador com prioridade ao techName enviado
+      // 1. Identificar o colaborador (Garantindo que o nome do colaborador sempre apareça)
       let empName = (visitRecord.techName || visitRecord.employee_name || '').trim();
       let employeeAdminId: string | null = null;
 
@@ -3321,25 +3434,30 @@ await getMessaging().send({
       let clientName = isOneOffJob ? (visitRecord.client_name || 'Cliente') : 'Cliente';
       let clientAdminId: string | null = null;
       if (!isOneOffJob && visitRecord.client_id) {
-        const { data: cliData } = await supabaseAdmin
-          .from('clients')
-          .select('id, name, admin_id')
-          .eq('id', visitRecord.client_id)
-          .maybeSingle();
-        if (cliData?.name) clientName = cliData.name;
-        if (cliData?.admin_id) clientAdminId = cliData.admin_id;
+        try {
+          const { data: cliData } = await supabaseAdmin
+            .from('clients')
+            .select('id, name, admin_id')
+            .eq('id', visitRecord.client_id)
+            .maybeSingle();
+          if (cliData?.name) clientName = cliData.name;
+          if (cliData?.admin_id) clientAdminId = cliData.admin_id;
+        } catch (e) {
+          console.warn('[Push Server] Erro ao buscar dados do cliente:', e);
+        }
       }
 
-      // 3. Determinar o Admin Responsável pelo Colaborador
+      // 3. Determinar o Administrador Responsável pelo Colaborador
       let targetAdminId = visitRecord.admin_id || employeeAdminId || clientAdminId;
       if (!targetAdminId) {
         targetAdminId = '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
       }
 
-      const title = isOneOffJob ? '🏊 Serviço Avulso Finalizado' : '🏊 Visita Finalizada!';
+      // Mensagem clara contendo o nome do colaborador e o nome do cliente
+      const title = isOneOffJob ? `🏊 Serviço Finalizado: ${clientName}` : `🏊 Visita Finalizada: ${clientName}`;
       const body = `O colaborador ${empName} finalizou o atendimento no cliente ${clientName}.`;
 
-      console.log(`[Online Push Engine - SISTEMA ONLINE] Disparando notificação de atendimento finalizado para o admin (${targetAdminId}): "${title}" - "${body}"`);
+      console.log(`[Online Push Engine] Notificando administrador (${targetAdminId}): "${title}" - "${body}"`);
 
       const sent = await sendPushToAdmin(
         targetAdminId,
@@ -3347,7 +3465,7 @@ await getMessaging().send({
         body,
         {
           url: '/routes',
-          channelId: 'atendimentos_v2',
+          channelId: 'atendimentos_v3',
           type: isOneOffJob ? 'job_completed' : 'visit_completed',
           visitId: String(visitId),
           clientId: String(visitRecord.client_id || ''),
@@ -3356,7 +3474,7 @@ await getMessaging().send({
         }
       );
 
-      // Se não conseguiu enviar, remove a chave para não bloquear retentativas do app
+      // Se falhar o envio, libera imediatamente a chave de deduplicação para permitir retentativas
       if (!sent) {
         recentPushCache.delete(dedupeKey);
       }

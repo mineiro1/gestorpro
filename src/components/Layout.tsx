@@ -215,6 +215,15 @@ export default function Layout() {
             sound: 'chat_notification.mp3'
           });
           await LocalNotifications.createChannel({
+            id: 'atendimentos_v3',
+            name: 'Atendimentos e Visitas (Prioritário)',
+            description: 'Notificações de visitas finalizadas e serviços com tela bloqueada',
+            importance: 5,
+            visibility: 1,
+            vibration: true,
+            sound: 'notificacao.mp3'
+          });
+          await LocalNotifications.createChannel({
             id: 'atendimentos_v2',
             name: 'Atendimentos e Visitas',
             description: 'Notificações de visitas finalizadas e serviços',
@@ -232,7 +241,7 @@ export default function Layout() {
     };
     requestPerms();
 
-    const showNotification = async (title: string, body: string, channelId: string = 'atendimentos') => {
+    const showNotification = async (title: string, body: string, channelId: string = 'atendimentos_v3') => {
       const soundFile = channelId === 'chat_messages' ? 'chat_notification.mp3' : 'notificacao.mp3';
       const soundSrc = `/${soundFile}`;
       
@@ -247,7 +256,7 @@ export default function Layout() {
       // On native Android / iOS platform (Capacitor), trigger visual heads-up banner notification
       if (Capacitor.isNativePlatform()) {
         try {
-          const targetChannel = channelId === 'chat_messages' ? 'chat_messages' : 'atendimentos_v2';
+          const targetChannel = channelId === 'chat_messages' ? 'chat_messages' : 'atendimentos_v3';
           await LocalNotifications.schedule({
             notifications: [
               {

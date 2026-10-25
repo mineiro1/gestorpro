@@ -21,9 +21,9 @@ export async function setupPushNotificationChannels(): Promise<void> {
   try {
     const channels = [
       {
-        id: 'atendimentos_v2',
-        name: 'Atendimentos das Rotas (Alerta Sonoro)',
-        description: 'Notificações em tempo real com som personalizado quando um colaborador finalizar um atendimento',
+        id: 'atendimentos_v3',
+        name: 'Atendimentos das Rotas (Alerta Prioritário)',
+        description: 'Notificações em tempo real com som personalizado e tela bloqueada quando um colaborador finalizar um atendimento',
         importance: 5 as const, // High / Max importance (heads-up banner)
         visibility: 1 as const, // Public on lockscreen
         sound: 'notificacao',
@@ -32,8 +32,8 @@ export async function setupPushNotificationChannels(): Promise<void> {
         lightColor: '#10b981',
       },
       {
-        id: 'atendimentos',
-        name: 'Atendimentos Gerais',
+        id: 'atendimentos_v2',
+        name: 'Atendimentos das Rotas (Legado)',
         description: 'Notificações de atendimento',
         importance: 5 as const,
         visibility: 1 as const,
@@ -59,7 +59,7 @@ export async function setupPushNotificationChannels(): Promise<void> {
         description: 'Notificações de mensagens recebidas de clientes',
         importance: 5 as const,
         visibility: 1 as const,
-        sound: 'chat_notification.mp3',
+        sound: 'chat_notification',
         vibration: true,
         lights: true,
         lightColor: '#2563eb',
@@ -67,22 +67,43 @@ export async function setupPushNotificationChannels(): Promise<void> {
       {
         id: 'cobrancas',
         name: 'Cobranças e Vencimentos',
-        description: 'Notificações de clientes com mensalidades vencendo hoje ou em atraso',
+        description: 'Alertas diários de mensalidades a vencer e cobranças automáticas',
         importance: 5 as const,
         visibility: 1 as const,
         sound: 'notificacao',
         vibration: true,
         lights: true,
-        lightColor: '#eab308',
+        lightColor: '#f59e0b',
       }
     ];
 
     for (const ch of channels) {
-      await PushNotifications.createChannel(ch).catch(() => {});
-      await LocalNotifications.createChannel(ch).catch(() => {});
+      try {
+        await PushNotifications.createChannel(ch);
+      } catch (err) {
+        console.warn(`[Capacitor Push] Erro ao criar canal Push ${ch.id}:`, err);
+      }
+
+      try {
+        await LocalNotifications.createChannel({
+          id: ch.id,
+          name: ch.name,
+          description: ch.description,
+          importance: ch.importance,
+          visibility: ch.visibility,
+          sound: `${ch.sound}.mp3`,
+          vibration: ch.vibration,
+          lights: ch.lights,
+          lightColor: ch.lightColor
+        });
+      } catch (err) {
+        console.warn(`[Capacitor Push] Erro ao criar canal Local ${ch.id}:`, err);
+      }
     }
+
+    console.log('[Capacitor Push] Todos os canais de alta prioridade (atendimentos_v3) foram configurados.');
   } catch (err) {
-    console.warn('[Push] Notification channel creation warning:', err);
+    console.error('[Capacitor Push] Falha global ao configurar canais:', err);
   }
 }
 
@@ -248,11 +269,18 @@ export async function initCapacitorPushNotifications(
       async (notification: PushNotificationSchema) => {
         console.log('[Capacitor Push] Notificação recebida em primeiro plano:', notification);
 
+        // Se quem está logado for o colaborador que acabou de concluir o atendimento, NÃO exibe o alerta
+        const notificationEmployeeId = notification.data?.employeeId || notification.data?.employee_id;
+        if (userProfile?.role === 'employee' && notificationEmployeeId === userProfile.uid) {
+          console.log('[Capacitor Push] Notificação ignorada: colaborador é o autor da finalização.');
+          return;
+        }
+
         const isChat = notification.data?.channelId === 'chat_messages' || notification.data?.type === 'chat_message';
         const isBilling = notification.data?.channelId === 'cobrancas' || (typeof notification.data?.type === 'string' && notification.data.type.startsWith('billing'));
         const notifTitle = notification.title || notification.data?.title || (isChat ? '💬 Nova Mensagem' : (isBilling ? '💰 Aviso de Cobrança' : '✅ Atendimento Finalizado'));
         const notifBody = notification.body || notification.data?.body || '';
-        const targetChannel = notification.data?.channelId || (isChat ? 'chat_messages' : (isBilling ? 'cobrancas' : 'atendimentos_v2'));
+        const targetChannel = notification.data?.channelId || (isChat ? 'chat_messages' : (isBilling ? 'cobrancas' : 'atendimentos_v3'));
         const targetUrl = notification.data?.url || (isChat ? '/messages' : (isBilling ? '/billing' : '/routes'));
 
         // Play audio alert (differentiates chat messages from visit completions)

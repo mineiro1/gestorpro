@@ -284,8 +284,9 @@ export default function Dashboard() {
 
           if (data.active === false) {
             inactiveClients++;
-            // Se inativo, só somamos para o mês se ele pagou
-            if (!clientsWhoPaidThisMonth.has(data.id)) {
+            // Se inativo, só somamos para o mês se ele pagou ou se tem fatura em atraso
+            const isOverdueDate = data.due_date && data.due_date < todayStr;
+            if (!clientsWhoPaidThisMonth.has(data.id) && !isOverdueDate) {
               return;
             }
           } else {
@@ -294,7 +295,10 @@ export default function Dashboard() {
             totalActiveClientsList.push(data);
           }
 
-          totalToReceive += fullPrice;
+          // Contabiliza no total a receber se estiver ativo ou se tiver débitos/pagamentos no mês
+          if (data.active !== false || clientsWhoPaidThisMonth.has(data.id)) {
+            totalToReceive += fullPrice;
+          }
 
           if (data.due_date) {
             const [year, month, day] = data.due_date.split('-').map(Number);
@@ -304,20 +308,14 @@ export default function Dashboard() {
             const diffTime = due.getTime() - today.getTime();
             const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
 
-            // Atrasados
+            // Atrasados: se a data de vencimento é anterior a hoje, a parcela atual está vencida e não quitada
             if (due.getTime() < today.getTime()) {
-              if (!clientsWhoPaidThisMonth.has(data.id)) {
-                actualDelayedClients++;
-                delayedTotalAmount += fullPrice;
-                delayedClientIds.add(data.id);
-              }
-            }
-
-            // Pendente neste mês
-            if (due.getFullYear() < currentYear || (due.getFullYear() === currentYear && due.getMonth() + 1 <= currentMonth)) {
-              if (!clientsWhoPaidThisMonth.has(data.id)) {
-                pendingThisMonth += fullPrice;
-              }
+              actualDelayedClients++;
+              delayedTotalAmount += fullPrice;
+              delayedClientIds.add(data.id);
+            } else if (due.getFullYear() < currentYear || (due.getFullYear() === currentYear && due.getMonth() + 1 <= currentMonth)) {
+              // Pendente neste mês (vence hoje ou nos próximos dias do mês corrente)
+              pendingThisMonth += fullPrice;
             }
 
             // Próximos Vencimentos (somente se ainda não pagou no mês atual e estiver ativo)
