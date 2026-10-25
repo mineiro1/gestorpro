@@ -1909,17 +1909,35 @@ useEffect(() => {
       if (checklist.ausente) checkedItems.push('Cliente ausente, não foi possivel executar o serviço.');
       
       
-    // Fechamento Automático do Chat (Por Ação)
+    // Fechamento Automático do Chat e Exclusão Total das Mensagens do Banco de Dados
     try {
-      const { error: chatUpdateErr } = await supabase.from('chat_sessions')
-        .update({ 
-          status: 'closed',
-          closed_at: new Date().toISOString() 
-        })
-        .eq('client_id', targetClient.id)
-        .eq('status', 'open');
-      if (chatUpdateErr) console.error("Error updating chat session:", chatUpdateErr);
-    } catch(e) {}
+      fetch(getApiUrl('/api/chat/close'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientId: targetClient.id })
+      }).catch(() => {});
+
+      const { data: clientSessions } = await supabase
+        .from('chat_sessions')
+        .select('id')
+        .eq('client_id', targetClient.id);
+
+      if (clientSessions && clientSessions.length > 0) {
+        const sIds = clientSessions.map((s: any) => s.id);
+        await supabase.from('chat_messages').delete().in('session_id', sIds);
+        await supabase.from('chat_sessions')
+          .update({ 
+            status: 'closed',
+            closed_at: new Date().toISOString() 
+          })
+          .in('id', sIds);
+      }
+      queryClient.setQueryData(['chat-messages', targetClient.id], []);
+      queryClient.invalidateQueries({ queryKey: ['chat-messages', targetClient.id] });
+      queryClient.invalidateQueries({ queryKey: ['chat-session', targetClient.id] });
+    } catch(e) {
+      console.error("Error closing chat session and deleting messages:", e);
+    }
 
             const checklistText = checkedItems.length > 0 ? `\n\nTarefas realizadas:\n- ${checkedItems.join('\n- ')}` : '';
       

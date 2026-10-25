@@ -169,14 +169,17 @@ export async function checkDailyChatAvailability(
           dailyLimitReached: false
         };
       } else {
-        // Sessão passou dos 30 minutos: fechar no banco
-        await supabase
-          .from('chat_sessions')
-          .update({
-            status: 'closed',
-            closed_at: sess.closed_at || new Date().toISOString()
-          })
-          .eq('id', sess.id);
+        // Sessão passou dos 30 minutos: deletar mensagens do chat/banco e fechar
+        try {
+          await supabase.from('chat_messages').delete().eq('session_id', sess.id);
+          await supabase
+            .from('chat_sessions')
+            .update({
+              status: 'closed',
+              closed_at: sess.closed_at || new Date().toISOString()
+            })
+            .eq('id', sess.id);
+        } catch (e) {}
         sess.status = 'closed';
       }
     }

@@ -11,6 +11,7 @@ import {
   resolveAdminWhatsAppSettings 
 } from '../lib/whatsapp';
 import { formatClientMessageTemplate } from '../lib/messageTemplates';
+import { generateReceiptImageBase64, copyReceiptImageToClipboard } from '../lib/receiptGenerator';
 import { 
   Edit, Trash2, Plus, DollarSign, RotateCcw, Package, Search, 
   MessageCircle, PlusCircle, Phone, RefreshCw, X, Send, Check, 
@@ -399,54 +400,69 @@ export default function Clients() {
       pixReceiverName: currentSettings.pixReceiverName
     });
 
+    // 1. Gera a imagem do recibo de pagamento conforme o modelo solicitado
+    let receiptImageBase64: string | undefined;
+    try {
+      receiptImageBase64 = await generateReceiptImageBase64({
+        clientName: client.name,
+        clientPhone: client.phone,
+        amount: paymentData.amount,
+        paymentDate: paymentData.paymentDate,
+        dueDate: (client as any).dueDate || (client as any).due_date || paymentData.paymentDate,
+        companyName: currentSettings?.companyName || userProfile?.whatsappSettings?.companyName || 'RS PISCINA'
+      });
+    } catch (imgErr) {
+      console.warn('[Receipt] Erro ao gerar imagem do recibo:', imgErr);
+    }
+
     const receiptMsgId = `receipt_${client.id}_${paymentData.refYear}_${paymentData.refMonth}_${Date.now()}`;
     const effectiveProvider = getEffectiveWhatsAppProvider(currentSettings);
 
-    if (effectiveProvider === 'manual') {
-      openWhatsApp(`55${cleanPhone}`, message);
-      setReceiptToast({ text: `WhatsApp aberto com o recibo para ${client.name}.` });
-      return true;
-    }
-
     if (effectiveProvider === 'astracalls') {
       try {
-        await sendAstraCallsMessage(client.phone, message, currentSettings, receiptMsgId);
-        setReceiptToast({ text: `Recibo de pagamento enviado com sucesso para ${client.name} via AstraCalls!` });
+        await sendAstraCallsMessage(client.phone, message, currentSettings, receiptMsgId, receiptImageBase64, 'image/png');
+        setReceiptToast({ text: `Recibo com imagem enviado com sucesso para ${client.name} via AstraCalls!` });
         return true;
       } catch (err: any) {
         console.error(err);
         if (confirm(`Falha no AstraCalls (${err.message}).\n\nDeseja abrir o WhatsApp no seu aparelho para enviar o recibo manualmente?`)) {
+          if (receiptImageBase64) copyReceiptImageToClipboard(receiptImageBase64);
           openWhatsApp(`55${cleanPhone}`, message);
         }
         return false;
       }
     } else if (effectiveProvider === 'meta') {
       try {
-        await sendMetaMessage(client.phone, message, currentSettings, receiptMsgId);
-        setReceiptToast({ text: `Recibo de pagamento enviado com sucesso para ${client.name} via WhatsApp Meta!` });
+        await sendMetaMessage(client.phone, message, currentSettings, receiptMsgId, receiptImageBase64, 'image/png');
+        setReceiptToast({ text: `Recibo com imagem enviado com sucesso para ${client.name} via WhatsApp Meta!` });
         return true;
       } catch (err: any) {
         console.error(err);
         if (confirm(`Falha na API Meta (${err.message}).\n\nDeseja abrir o WhatsApp no seu aparelho para enviar o recibo manualmente?`)) {
+          if (receiptImageBase64) copyReceiptImageToClipboard(receiptImageBase64);
           openWhatsApp(`55${cleanPhone}`, message);
         }
         return false;
       }
     } else if (effectiveProvider === 'evolution') {
       try {
-        await sendEvolutionMessage(client.phone, message, currentSettings, receiptMsgId);
-        setReceiptToast({ text: `Recibo de pagamento enviado com sucesso para ${client.name} via Evolution API!` });
+        await sendEvolutionMessage(client.phone, message, currentSettings, receiptMsgId, receiptImageBase64, 'image/png');
+        setReceiptToast({ text: `Recibo com imagem enviado com sucesso para ${client.name} via Evolution API!` });
         return true;
       } catch (err: any) {
         console.error(err);
         if (confirm(`Falha na Evolution API (${err.message}).\n\nDeseja abrir o WhatsApp no seu aparelho para enviar o recibo manualmente?`)) {
+          if (receiptImageBase64) copyReceiptImageToClipboard(receiptImageBase64);
           openWhatsApp(`55${cleanPhone}`, message);
         }
         return false;
       }
     } else {
+      if (receiptImageBase64) {
+        copyReceiptImageToClipboard(receiptImageBase64);
+      }
       openWhatsApp(`55${cleanPhone}`, message);
-      setReceiptToast({ text: `WhatsApp aberto com o recibo para ${client.name}.` });
+      setReceiptToast({ text: `WhatsApp aberto! A imagem do recibo foi copiada para sua área de transferência (basta colar).` });
       return true;
     }
   };

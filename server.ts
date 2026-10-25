@@ -382,208 +382,83 @@ setInterval(() => {
   }
 }, 60000);
 
-  const lidToClientIdCache = new Map<string, string>();
-
-  // Sincronização direta e bidirecional de mensagens e status com AstraCalls
-  async function syncAstraCallsMessagesForClient(clientId: string, clientPhone?: string, waSettings?: any) {
-    if (!clientId) return;
+  // Rotina contínua de expurgo de mensagens e sessões expiradas (> 30 min) ou encerradas
+  async function cleanupExpiredAndClosedChatMessages() {
     try {
-      if (!waSettings?.astracallsUrl && !waSettings?.useAstracalls) {
-        const { data: adminUsers } = await supabaseAdmin.from('users').select('whatsapp_settings').not('whatsapp_settings', 'is', null);
-        const validAdmin = adminUsers?.find(u => u.whatsapp_settings?.useAstracalls || u.whatsapp_settings?.astracallsUrl);
-        if (validAdmin?.whatsapp_settings) waSettings = validAdmin.whatsapp_settings;
-      }
+      const now = Date.now();
+      const thirtyMinutesAgo = new Date(now - 30 * 60 * 1000).toISOString();
 
-      const astracallsUrl = (waSettings?.astracallsUrl || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
-      const astracallsApiKey = waSettings?.astracallsApiKey || 'rs_piscinas_segredo_2026';
-      let sessionId = waSettings?.astracallsSessionId || '8090cca3add0b8eb3e41efb9eec363e4';
-
-      let targetPhone = clientPhone;
-      let matchedClient: any = null;
-      if (!targetPhone) {
-        const { data: clientRow } = await supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id, employee_id').eq('id', clientId).maybeSingle();
-        if (clientRow) {
-          matchedClient = clientRow;
-          targetPhone = clientRow.local_phone || clientRow.phone;
-        }
-      } else {
-        const { data: clientRow } = await supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id, employee_id').eq('id', clientId).maybeSingle();
-        matchedClient = clientRow;
-      }
-
-      let fallbackAdminId = matchedClient?.admin_id;
-      let fallbackEmpId = matchedClient?.employee_id || fallbackAdminId;
-      if (!fallbackAdminId) {
-        const { data: anyAdmin } = await supabaseAdmin.from('users').select('id').eq('role', 'admin').limit(1).maybeSingle();
-        fallbackAdminId = anyAdmin?.id;
-        fallbackEmpId = fallbackAdminId;
-      }
-
-      if (!targetPhone) return;
-      const cleanDigits = String(targetPhone).replace(/\D/g, '');
-      if (cleanDigits.length < 8) return;
-
-      const { data: sessions } = await supabaseAdmin
+      // 1. Fechar sessões 'open' com mais de 30 minutos e deletar suas mensagens
+      const { data: expiredOpenSessions } = await supabaseAdmin
         .from('chat_sessions')
-        .select('*')
-        .eq('client_id', clientId)
-        .order('created_at', { ascending: false });
+        .select('id, client_id')
+        .eq('status', 'open')
+        .lt('created_at', thirtyMinutesAgo);
 
-      let activeSession = (sessions || []).find((s: any) => s.status === 'open');
-      if (!activeSession && sessions && sessions.length > 0) {
-        activeSession = sessions[0];
+      if (expiredOpenSessions && expiredOpenSessions.length > 0) {
+        const expiredIds = expiredOpenSessions.map(s => s.id);
+        console.log(`[Chat Expiry Cleaner] Expurgando ${expiredIds.length} sessões abertas há mais de 30 minutos...`);
+        await supabaseAdmin.from('chat_messages').delete().in('session_id', expiredIds);
+        await supabaseAdmin.from('chat_sessions').update({ 
+          status: 'closed', 
+          closed_at: new Date().toISOString() 
+        }).in('id', expiredIds);
       }
 
-      const chatIds = new Set<string>();
-      const ddd = cleanDigits.length >= 10 ? cleanDigits.slice(-10, -8) : '67';
-      const num8 = cleanDigits.slice(-8);
-      chatIds.add(`55${ddd}${num8}@s.whatsapp.net`);
-      chatIds.add(`55${ddd}9${num8}@s.whatsapp.net`);
-      chatIds.add(`${cleanDigits}@s.whatsapp.net`);
+      // 2. Deletar mensagens de sessões que já possuem status 'closed'
+      const { data: closedSessions } = await supabaseAdmin
+        .from('chat_sessions')
+        .select('id')
+        .eq('status', 'closed');
 
-      // Se já temos um LID mapeado para este cliente
-      for (const [lidKey, mappedCId] of lidToClientIdCache.entries()) {
-        if (mappedCId === clientId) {
-          chatIds.add(`${lidKey}@lid`);
-        }
+      if (closedSessions && closedSessions.length > 0) {
+        const closedIds = closedSessions.map(s => s.id);
+        await supabaseAdmin.from('chat_messages').delete().in('session_id', closedIds);
       }
-
-      // Buscar os chats mais recentes no AstraCalls para descobrir LIDs recentes
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 1200);
-        const chatsRes = await fetch(`${astracallsUrl}/api/sessions/${sessionId}/chats`, {
-          headers: { 'X-Api-Key': astracallsApiKey },
-          signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-        if (chatsRes.ok) {
-          const chatsList = await chatsRes.json();
-          if (Array.isArray(chatsList)) {
-            const recentChats = chatsList.sort((a: any, b: any) => (b.timestamp || 0) - (a.timestamp || 0)).slice(0, 5);
-            for (const rc of recentChats) {
-              const chatIdStr = rc.chat || rc.id || '';
-              if (chatIdStr.includes('@lid')) {
-                chatIds.add(chatIdStr);
-                const rawLid = chatIdStr.replace('@lid', '').replace(/\D/g, '');
-                if (rawLid) lidToClientIdCache.set(rawLid, clientId);
-              }
-            }
-          }
-        }
-      } catch(e) {}
-
-      await Promise.all(
-        Array.from(chatIds).map(async (cId) => {
-          try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 1500);
-            const astraRes = await fetch(`${astracallsUrl}/api/sessions/${sessionId}/messages?chatId=${encodeURIComponent(cId)}&limit=25`, {
-              headers: { 'X-Api-Key': astracallsApiKey },
-              signal: controller.signal
-            });
-            clearTimeout(timeoutId);
-
-            if (astraRes.ok) {
-              const msgsList = await astraRes.json();
-              if (Array.isArray(msgsList) && msgsList.length > 0) {
-                for (const aMsg of msgsList) {
-                  if (!aMsg || !aMsg.id) continue;
-                  const aMsgId = String(aMsg.id);
-                  const isFromMe = aMsg.fromMe === true;
-                  const content = aMsg.body || aMsg.message || (aMsg.type === 'audio' ? '🎵 Mensagem de Áudio' : (aMsg.type === 'image' ? '📸 Imagem' : (aMsg.type === 'video' ? '🎥 Vídeo' : '')));
-                  const aTimestamp = aMsg.timestamp ? new Date(Number(aMsg.timestamp)).toISOString() : new Date().toISOString();
-
-                  if (!content && aMsg.type !== 'audio' && aMsg.type !== 'image' && aMsg.type !== 'video') continue;
-
-                  // Verificar se esta mensagem já existe no banco
-                  const { data: existing } = await supabaseAdmin
-                    .from('chat_messages')
-                    .select('id, media_url, sender_type')
-                    .ilike('media_url', `%${aMsgId}%`)
-                    .limit(1);
-
-                  if (!existing || existing.length === 0) {
-                    if (!activeSession) {
-                      const { data: newSess } = await supabaseAdmin
-                        .from('chat_sessions')
-                        .insert({
-                          client_id: clientId,
-                          admin_id: fallbackAdminId,
-                          employee_id: fallbackEmpId,
-                          status: 'open',
-                          created_at: new Date().toISOString()
-                        })
-                        .select()
-                        .single();
-                      activeSession = newSess;
-                    }
-
-                    if (activeSession) {
-                      await supabaseAdmin.from('chat_messages').insert({
-                        session_id: activeSession.id,
-                        sender_type: isFromMe ? 'tech' : 'client',
-                        content: String(content),
-                        media_url: JSON.stringify({ external_id: aMsgId, astra_id: aMsgId, status: isFromMe ? 'delivered' : 'read' }),
-                        created_at: aTimestamp
-                      });
-
-                      // Se foi resposta do cliente, marcar mensagens anteriores do tech como lidas
-                      if (!isFromMe) {
-                        const { data: unreadTech } = await supabaseAdmin
-                          .from('chat_messages')
-                          .select('id, media_url')
-                          .eq('session_id', activeSession.id)
-                          .eq('sender_type', 'tech');
-
-                        if (unreadTech) {
-                          for (const utm of unreadTech) {
-                            let mMeta: any = {};
-                            try { mMeta = JSON.parse(utm.media_url); } catch(e) {}
-                            if (mMeta.status !== 'read') {
-                              await supabaseAdmin.from('chat_messages').update({
-                                media_url: JSON.stringify({ ...mMeta, status: 'read' })
-                              }).eq('id', utm.id);
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          } catch(e) {}
-        })
-      );
-    } catch(err) {
-      console.warn('[syncAstraCallsMessagesForClient] Erro:', err);
+    } catch (e: any) {
+      console.warn('[Chat Expiry Cleaner] Erro na limpeza periódica:', e.message);
     }
   }
+
+  // Executar limpeza contínua a cada 30 segundos
+  setInterval(cleanupExpiredAndClosedChatMessages, 30000);
 
   app.get("/api/chat/messages/:clientId", async (req, res) => {
     try {
       const { clientId } = req.params;
       if (!clientId) return res.status(400).json({ error: "Missing clientId" });
 
-      // Sincroniza em segundo plano/tempo real com AstraCalls caso o cliente tenha novas mensagens
-      await syncAstraCallsMessagesForClient(clientId);
+      // Expurgar mensagens de sessões expiradas ou encerradas
+      await cleanupExpiredAndClosedChatMessages();
 
-      const { data: sData } = await supabaseAdmin
+      // Buscar APENAS sessão aberta ('open') do cliente
+      const { data: openSessions } = await supabaseAdmin
         .from('chat_sessions')
-        .select('id')
-        .eq('client_id', clientId);
+        .select('id, created_at, status')
+        .eq('client_id', clientId)
+        .eq('status', 'open')
+        .order('created_at', { ascending: false });
 
-      if (!sData || sData.length === 0) {
+      if (!openSessions || openSessions.length === 0) {
         return res.json({ success: true, messages: [] });
       }
 
-      const sessionIds = sData.map((s) => s.id);
+      const activeSession = openSessions[0];
+      const now = Date.now();
+      const createdMs = activeSession.created_at ? new Date(activeSession.created_at).getTime() : 0;
 
+      // Se a sessão expirou (> 30 min), deleta as mensagens do chat/banco e fecha a sessão
+      if (createdMs > 0 && now - createdMs > 30 * 60 * 1000) {
+        await supabaseAdmin.from('chat_messages').delete().eq('session_id', activeSession.id);
+        await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
+        return res.json({ success: true, messages: [] });
+      }
+
+      // Retorna APENAS as mensagens da sessão aberta ativa atual
       const { data: loadedMsgs, error } = await supabaseAdmin
         .from('chat_messages')
         .select('*')
-        .in('session_id', sessionIds)
+        .eq('session_id', activeSession.id)
         .order('created_at', { ascending: true });
 
       if (error) {
@@ -624,11 +499,32 @@ setInterval(() => {
 
   app.post("/api/chat/close", async (req, res) => {
     try {
-      const { clientId } = req.body;
-      if (!clientId) return res.status(400).json({ error: "Missing clientId" });
-      await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('client_id', clientId).eq('status', 'open');
-      return res.json({ success: true });
+      const { clientId, sessionId } = req.body;
+      if (!clientId && !sessionId) return res.status(400).json({ error: "Missing clientId or sessionId" });
+
+      let query = supabaseAdmin.from('chat_sessions').select('id');
+      if (sessionId) {
+        query = query.eq('id', sessionId);
+      } else {
+        query = query.eq('client_id', clientId);
+      }
+
+      const { data: targetSessions } = await query;
+      if (targetSessions && targetSessions.length > 0) {
+        const sIds = targetSessions.map((s: any) => s.id);
+        console.log(`[/api/chat/close] Encerrando chat e excluindo todas as mensagens de ${sIds.length} sessões...`);
+        // Deleta todas as mensagens do chat no banco de dados
+        await supabaseAdmin.from('chat_messages').delete().in('session_id', sIds);
+        // Atualiza status da sessão para closed
+        await supabaseAdmin.from('chat_sessions').update({ 
+          status: 'closed', 
+          closed_at: new Date().toISOString() 
+        }).in('id', sIds);
+      }
+
+      return res.json({ success: true, closed: true, deleted: true });
     } catch(e: any) {
+      console.error("[/api/chat/close] Erro:", e);
       return res.status(500).json({ error: e.message });
     }
   });
@@ -637,6 +533,8 @@ setInterval(() => {
     try {
       const { clientId, adminId, employeeId, visitId } = req.body;
       if (!clientId) return res.status(400).json({ error: "Missing clientId" });
+
+      const now = Date.now();
 
       // 1. Procurar sessão open existente
       const { data: openSessions } = await supabaseAdmin
@@ -648,11 +546,23 @@ setInterval(() => {
 
       if (openSessions && openSessions.length > 0) {
         const currentSession = openSessions[0];
-        if (openSessions.length > 1) {
-          const extraIds = openSessions.slice(1).map(s => s.id);
-          await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).in('id', extraIds);
+        const createdMs = currentSession.created_at ? new Date(currentSession.created_at).getTime() : 0;
+
+        // Se a sessão existente ainda estiver dentro do limite de 30 minutos, reutiliza
+        if (createdMs > 0 && now - createdMs <= 30 * 60 * 1000) {
+          if (openSessions.length > 1) {
+            const extraIds = openSessions.slice(1).map((s: any) => s.id);
+            await supabaseAdmin.from('chat_messages').delete().in('session_id', extraIds);
+            await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).in('id', extraIds);
+          }
+          return res.json({ success: true, session: currentSession });
+        } else {
+          // Sessão existente expirou (> 30 min): deletar mensagens e fechar
+          console.log(`[/api/chat/session/ensure] Sessão existente expirou (>30min). Deletando mensagens e fechando...`);
+          const expiredIds = openSessions.map((s: any) => s.id);
+          await supabaseAdmin.from('chat_messages').delete().in('session_id', expiredIds);
+          await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).in('id', expiredIds);
         }
-        return res.json({ success: true, session: currentSession });
       }
 
       // 2. Descobrir dados do cliente se adminId ou employeeId não foram passados
@@ -674,7 +584,7 @@ setInterval(() => {
         }
       }
 
-      // 3. Criar nova sessão de atendimento (somente colunas válidas no schema)
+      // 3. Criar nova sessão de atendimento de 30 minutos
       const { data: newSession, error: createErr } = await supabaseAdmin
         .from('chat_sessions')
         .insert({
@@ -1190,37 +1100,39 @@ setInterval(() => {
         } catch (dbErr) {
           console.error("[/api/chat/send] Erro ao atualizar external_id no banco:", dbErr);
         }
-      } else if (sessionId) {
-        try {
-          const { data: created } = await supabaseAdmin
-            .from('chat_messages')
-            .insert({
-              session_id: sessionId,
-              sender_type: 'tech',
-              content: text,
-              media_url: JSON.stringify(mediaPayload)
-            })
-            .select()
-            .single();
-          if (created) {
-            messageId = created.id;
-            insertedRow = created;
+      } else {
+        let validSessionId: string | null = null;
+        const nowTime = Date.now();
+
+        if (sessionId) {
+          const { data: sessCheck } = await supabaseAdmin
+            .from('chat_sessions')
+            .select('id, status, created_at')
+            .eq('id', sessionId)
+            .maybeSingle();
+
+          const sessAge = sessCheck?.created_at ? (nowTime - new Date(sessCheck.created_at).getTime()) : 9999999;
+          if (sessCheck && sessCheck.status === 'open' && sessAge <= 30 * 60 * 1000) {
+            validSessionId = sessCheck.id;
           }
-        } catch (dbErr) {
-          console.error("[/api/chat/send] Erro ao inserir mensagem no banco:", dbErr);
         }
-      } else if (req.body.clientId) {
-        try {
+
+        const targetClientId = req.body.clientId;
+        if (!validSessionId && targetClientId) {
           const { data: existingSessions } = await supabaseAdmin
             .from('chat_sessions')
-            .select('id, status')
-            .eq('client_id', req.body.clientId)
-            .order('created_at', { ascending: false })
-            .limit(5);
+            .select('id, status, created_at')
+            .eq('client_id', targetClientId)
+            .eq('status', 'open')
+            .order('created_at', { ascending: false });
 
-          let sessId = existingSessions?.find(s => s.status === 'open')?.id || existingSessions?.[0]?.id;
-          if (!sessId) {
-            const { data: clientRow } = await supabaseAdmin.from('clients').select('admin_id, employee_id').eq('id', req.body.clientId).maybeSingle();
+          validSessionId = (existingSessions || []).find((s: any) => {
+            const cTime = s.created_at ? new Date(s.created_at).getTime() : 0;
+            return cTime > 0 && nowTime - cTime <= 30 * 60 * 1000;
+          })?.id || null;
+
+          if (!validSessionId) {
+            const { data: clientRow } = await supabaseAdmin.from('clients').select('admin_id, employee_id').eq('id', targetClientId).maybeSingle();
             let adminId = clientRow?.admin_id;
             let employeeId = clientRow?.employee_id || adminId;
 
@@ -1231,20 +1143,22 @@ setInterval(() => {
             }
 
             const { data: createdSess } = await supabaseAdmin.from('chat_sessions').insert({
-              client_id: req.body.clientId,
+              client_id: targetClientId,
               admin_id: adminId || null,
               employee_id: employeeId || null,
               status: 'open',
               created_at: new Date().toISOString()
             }).select('id').single();
-            sessId = createdSess?.id;
+            validSessionId = createdSess?.id || null;
           }
+        }
 
-          if (sessId) {
+        if (validSessionId) {
+          try {
             const { data: created } = await supabaseAdmin
               .from('chat_messages')
               .insert({
-                session_id: sessId,
+                session_id: validSessionId,
                 sender_type: 'tech',
                 content: text,
                 media_url: JSON.stringify(mediaPayload)
@@ -1255,9 +1169,9 @@ setInterval(() => {
               messageId = created.id;
               insertedRow = created;
             }
+          } catch (dbErr) {
+            console.error("[/api/chat/send] Erro ao inserir mensagem no banco:", dbErr);
           }
-        } catch (dbErr) {
-          console.error("[/api/chat/send] Erro ao associar sessão/mensagem de relatório no banco:", dbErr);
         }
       }
 
@@ -2234,6 +2148,119 @@ setInterval(() => {
     return withoutDevice.replace(/\D/g, '');
   }
 
+  // Cache bidirecional de LIDs (Linked Identity Device) do WhatsApp Web/Multi-Device para telefones reais
+  const lidToRealPhoneCache = new Map<string, string>();
+  let lastAstraContactsFetch = 0;
+
+  async function refreshAstraContactsCache(force = false) {
+    const now = Date.now();
+    if (!force && lastAstraContactsFetch > 0 && now - lastAstraContactsFetch < 10 * 60 * 1000) {
+      return;
+    }
+    try {
+      const astracallsUrl = (process.env.ASTRACALLS_URL || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
+      const astracallsApiKey = process.env.ASTRACALLS_API_KEY || 'rs_piscinas_segredo_2026';
+      const sessionId = '8090cca3add0b8eb3e41efb9eec363e4';
+
+      const res = await fetch(`${astracallsUrl}/api/sessions/${sessionId}/contacts`, {
+        headers: { 'X-Api-Key': astracallsApiKey }
+      });
+      if (!res.ok) return;
+      const contacts = await res.json();
+      if (!Array.isArray(contacts)) return;
+
+      lastAstraContactsFetch = now;
+      const nonLidContacts = contacts.filter((c: any) => !c.id?.includes('@lid') && (c.number || c.id));
+      const lidContacts = contacts.filter((c: any) => c.id?.includes('@lid') || (c.number && c.number.length > 13));
+
+      for (const lid of lidContacts) {
+        const cleanLid = cleanJidToPhone(lid.id || lid.number);
+        if (!cleanLid) continue;
+        const lidName = (lid.name || lid.pushName || lid.pushname || lid.fullName || '').trim().toLowerCase();
+        if (!lidName) continue;
+
+        const phoneMatch = nonLidContacts.find((c: any) => {
+          const cName = (c.name || c.pushName || c.pushname || c.fullName || '').trim().toLowerCase();
+          return cName && cName === lidName;
+        });
+
+        if (phoneMatch) {
+          const realPhone = cleanJidToPhone(phoneMatch.number || phoneMatch.id);
+          if (realPhone) {
+            lidToRealPhoneCache.set(cleanLid, realPhone);
+          }
+        }
+      }
+      console.log(`[AstraCalls Cache] Mapeamento de LIDs atualizado: ${lidToRealPhoneCache.size} LIDs mapeados para números de telefone.`);
+    } catch (err: any) {
+      console.warn('[AstraCalls Cache] Erro ao carregar contatos AstraCalls:', err.message);
+    }
+  }
+
+  async function resolveLidToRealPhone(
+    cleanLid: string,
+    rawRemote: string,
+    msgData: any = {},
+    body: any = {},
+    allTargets: any[] = []
+  ): Promise<string | null> {
+    if (!cleanLid) return null;
+
+    // 1. Verificar cache em memória
+    if (lidToRealPhoneCache.has(cleanLid)) {
+      return lidToRealPhoneCache.get(cleanLid)!;
+    }
+
+    // 2. Se não está no cache, atualizar cache forçadamente de contatos
+    await refreshAstraContactsCache(true);
+    if (lidToRealPhoneCache.has(cleanLid)) {
+      return lidToRealPhoneCache.get(cleanLid)!;
+    }
+
+    // 3. Tentar resolução via pushName do webhook com os contatos ou clientes cadastrados
+    const pushName = String(msgData?.pushName || body?.pushName || msgData?.verifiedName || body?.verifiedName || '').trim().toLowerCase();
+    if (pushName && pushName.length >= 3) {
+      const targetByName = allTargets.find((t: any) => {
+        const tName = String(t.name || '').trim().toLowerCase();
+        return tName && (tName === pushName || tName.includes(pushName) || pushName.includes(tName));
+      });
+
+      if (targetByName?.phone) {
+        const resolved = cleanJidToPhone(targetByName.phone);
+        if (resolved) {
+          lidToRealPhoneCache.set(cleanLid, resolved);
+          return resolved;
+        }
+      }
+    }
+
+    // 4. Se houver apenas uma sessão ativa aberta no momento no app, associar o LID a essa sessão
+    try {
+      const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+      const { data: openSess } = await supabaseAdmin
+        .from('chat_sessions')
+        .select('id, client_id')
+        .eq('status', 'open')
+        .gte('created_at', thirtyMinAgo);
+
+      if (openSess && openSess.length === 1) {
+        const singleClientId = openSess[0].client_id;
+        const cli = allTargets.find((t: any) => t.id === singleClientId);
+        if (cli?.phone) {
+          const resolved = cleanJidToPhone(cli.phone);
+          if (resolved) {
+            console.log(`[LID Resolver] Associado LID ${cleanLid} ao cliente da única sessão ativa em andamento: ${cli.name} (${resolved})`);
+            lidToRealPhoneCache.set(cleanLid, resolved);
+            return resolved;
+          }
+        }
+      }
+    } catch (e) {}
+
+    return null;
+  }
+
+
   function extractMessageData(rawMsg: any): { content: string; mediaUrl: string } {
     if (!rawMsg) return { content: '', mediaUrl: '' };
     if (typeof rawMsg === 'string') return { content: rawMsg, mediaUrl: '' };
@@ -2425,12 +2452,23 @@ setInterval(() => {
         ...(agendaContacts || []).map((a: any) => ({ ...a, local_phone: '', employee_id: a.admin_id, is_agenda: true }))
       ];
 
+      let candidatePhones = [cleanIncoming];
+      const isLid = phone.includes('@lid') || cleanIncoming.length > 13;
+      if (isLid) {
+        const resolved = await resolveLidToRealPhone(cleanIncoming, phone, rawItem, body, allTargets);
+        if (resolved) {
+          candidatePhones.push(resolved);
+        }
+      }
+
       const matchedClient = allTargets.find((c: any) => {
-         return isMatchingClientPhone(c.phone || '', cleanIncoming) || isMatchingClientPhone(c.local_phone || '', cleanIncoming);
+         return candidatePhones.some(cand => 
+           isMatchingClientPhone(c.phone || '', cand) || isMatchingClientPhone(c.local_phone || '', cand)
+         );
       });
       
       if (!matchedClient) {
-        console.log("[Webhook WAME] Nenhum cliente ou contato da agenda correspondente encontrado para o número:", phone, cleanIncoming);
+        console.log("[Webhook WAME] Nenhum cliente ou contato da agenda correspondente encontrado para o número:", phone, cleanIncoming, "Candidatos:", candidatePhones);
         return res.status(200).send("EVENT_RECEIVED");
       }
 
@@ -2445,41 +2483,32 @@ setInterval(() => {
       const now = new Date().getTime();
       let activeSession: any = null;
 
-      // Localiza sessões abertas e consolida duplicadas
+      // Localiza sessões abertas válidas criadas nos últimos 30 minutos
       const openSessions = (sessions || []).filter((s: any) => s.status === 'open');
       if (openSessions.length > 0) {
-        activeSession = openSessions[0];
-        const createdTime = new Date(activeSession.created_at).getTime();
-        
-        // Se a sessão expirou (> 30 min), fecha ela
-        if (now - createdTime > 30 * 60 * 1000) {
-          await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
-          activeSession = null;
-        }
-
-        // Fecha qualquer outra sessão aberta duplicada para manter apenas 1 sessão ativa
-        if (openSessions.length > 1) {
-          const extraIds = openSessions.slice(1).map((s: any) => s.id);
-          await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).in('id', extraIds);
+        for (const sess of openSessions) {
+          const createdTime = new Date(sess.created_at).getTime();
+          if (now - createdTime <= 30 * 60 * 1000) {
+            if (!activeSession) {
+              activeSession = sess;
+            } else {
+              // Fecha duplicada e deleta mensagens
+              await supabaseAdmin.from('chat_messages').delete().eq('session_id', sess.id);
+              await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', sess.id);
+            }
+          } else {
+            // Se a sessão expirou (> 30 min), deleta as mensagens do chat/banco e fecha
+            console.log(`[Webhook WAME] Sessão expirou (>30 min). Deletando mensagens da sessão ${sess.id}...`);
+            await supabaseAdmin.from('chat_messages').delete().eq('session_id', sess.id);
+            await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', sess.id);
+          }
         }
       }
 
+      // REGRA ESTRITA: Se não houver sessão aberta nos últimos 30 minutos pelo colaborador/admin,
+      // as mensagens NÃO devem aparecer no chat e devem ser descartadas do banco de dados!
       if (!activeSession) {
-        const { data: newSess } = await supabaseAdmin
-          .from('chat_sessions')
-          .insert({
-            client_id: matchedClient.id,
-            admin_id: matchedClient.admin_id,
-            employee_id: matchedClient.employee_id || matchedClient.admin_id,
-            status: 'open',
-            created_at: new Date().toISOString()
-          })
-          .select()
-          .single();
-        activeSession = newSess;
-      }
-
-      if (!activeSession) {
+        console.log(`[Webhook WAME] Mensagem descartada de ${matchedClient.name} (${cleanIncoming}): Nenhuma conversa ativa de 30 minutos em andamento iniciada pelo colaborador.`);
         return res.status(200).send("EVENT_RECEIVED");
       }
 
@@ -2590,12 +2619,23 @@ setInterval(() => {
         ...(agendaContacts || []).map((a: any) => ({ ...a, local_phone: '', employee_id: a.admin_id, is_agenda: true }))
       ];
 
+      let candidatePhones = [cleanIncoming];
+      const isLid = remoteJid.includes('@lid') || cleanIncoming.length > 13;
+      if (isLid) {
+        const resolved = await resolveLidToRealPhone(cleanIncoming, remoteJid, msgData, body, allTargets);
+        if (resolved) {
+          candidatePhones.push(resolved);
+        }
+      }
+
       const matchedClient = allTargets.find((c: any) => {
-         return isMatchingClientPhone(c.phone || '', cleanIncoming) || isMatchingClientPhone(c.local_phone || '', cleanIncoming);
+         return candidatePhones.some(cand => 
+           isMatchingClientPhone(c.phone || '', cand) || isMatchingClientPhone(c.local_phone || '', cand)
+         );
       });
       
       if (!matchedClient) {
-        console.log("[Webhook Evolution] Nenhum cliente ou contato da agenda correspondente encontrado para o número:", cleanIncoming);
+        console.log("[Webhook Evolution] Nenhum cliente ou contato da agenda correspondente encontrado para o número:", cleanIncoming, "Candidatos:", candidatePhones);
         return res.status(200).send("OK");
       }
 
@@ -2608,41 +2648,32 @@ setInterval(() => {
       const now = new Date().getTime();
       let activeSession: any = null;
 
-      // Localiza sessões abertas e consolida duplicadas
+      // Localiza sessões abertas válidas criadas nos últimos 30 minutos
       const openSessions = (sessions || []).filter((s: any) => s.status === 'open');
       if (openSessions.length > 0) {
-        activeSession = openSessions[0];
-        const createdTime = new Date(activeSession.created_at).getTime();
-        
-        // Se a sessão expirou (> 30 min), fecha ela
-        if (now - createdTime > 30 * 60 * 1000) {
-          await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
-          activeSession = null;
-        }
-
-        // Fecha qualquer outra sessão aberta duplicada para manter apenas 1 sessão ativa
-        if (openSessions.length > 1) {
-          const extraIds = openSessions.slice(1).map((s: any) => s.id);
-          await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).in('id', extraIds);
+        for (const sess of openSessions) {
+          const createdTime = new Date(sess.created_at).getTime();
+          if (now - createdTime <= 30 * 60 * 1000) {
+            if (!activeSession) {
+              activeSession = sess;
+            } else {
+              // Fecha duplicada e deleta mensagens
+              await supabaseAdmin.from('chat_messages').delete().eq('session_id', sess.id);
+              await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', sess.id);
+            }
+          } else {
+            // Se a sessão expirou (> 30 min), deleta as mensagens do chat/banco e fecha
+            console.log(`[Webhook Evolution] Sessão expirou (>30 min). Deletando mensagens da sessão ${sess.id}...`);
+            await supabaseAdmin.from('chat_messages').delete().eq('session_id', sess.id);
+            await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', sess.id);
+          }
         }
       }
 
+      // REGRA ESTRITA: Se não houver sessão aberta nos últimos 30 minutos pelo colaborador/admin,
+      // as mensagens NÃO devem aparecer no chat e devem ser descartadas do banco de dados!
       if (!activeSession) {
-        const { data: newSess } = await supabaseAdmin
-          .from('chat_sessions')
-          .insert({
-            client_id: matchedClient.id,
-            admin_id: matchedClient.admin_id,
-            employee_id: matchedClient.employee_id || matchedClient.admin_id,
-            status: 'open',
-            created_at: new Date().toISOString()
-          })
-          .select()
-          .single();
-        activeSession = newSess;
-      }
-
-      if (!activeSession) {
+        console.log(`[Webhook Evolution] Mensagem descartada de ${matchedClient.name} (${cleanIncoming}): Nenhuma conversa ativa de 30 minutos em andamento iniciada pelo colaborador.`);
         return res.status(200).send("OK");
       }
 
@@ -2763,39 +2794,24 @@ setInterval(() => {
         ...(agendaContacts || []).map((a: any) => ({ ...a, local_phone: '', employee_id: a.admin_id, is_agenda: true }))
       ];
 
-      // 1. Tentar por telefone direto
-      let matchedClient = allTargets.find((c: any) => {
-         return isMatchingClientPhone(c.phone || '', cleanIncoming) || isMatchingClientPhone(c.local_phone || '', cleanIncoming);
-      });
-
-      // 2. Se for um LID do WhatsApp, checar cache ou sessão ativa recente
-      if (!matchedClient && (rawRemote.includes('@lid') || cleanIncoming.length > 13)) {
-        const cachedCId = lidToClientIdCache.get(cleanIncoming);
-        if (cachedCId) {
-          matchedClient = allTargets.find((c: any) => c.id === cachedCId);
-        }
-
-        if (!matchedClient) {
-          // Checar se há uma sessão de chat aberta nos últimos 30 minutos
-          const { data: recentOpenSessions } = await supabaseAdmin
-            .from('chat_sessions')
-            .select('client_id, created_at')
-            .eq('status', 'open')
-            .order('created_at', { ascending: false })
-            .limit(1);
-
-          if (recentOpenSessions && recentOpenSessions.length > 0) {
-            const candidateId = recentOpenSessions[0].client_id;
-            matchedClient = allTargets.find((c: any) => c.id === candidateId);
-            if (matchedClient) {
-              lidToClientIdCache.set(cleanIncoming, candidateId);
-            }
-          }
+      // 1. Resolver candidato a telefone real (incluindo resolução precisa de LID)
+      let candidatePhones = [cleanIncoming];
+      const isLid = rawRemote.includes('@lid') || cleanIncoming.length > 13;
+      if (isLid) {
+        const resolved = await resolveLidToRealPhone(cleanIncoming, rawRemote, msgData, body, allTargets);
+        if (resolved) {
+          candidatePhones.push(resolved);
         }
       }
 
+      const matchedClient = allTargets.find((c: any) => {
+         return candidatePhones.some(cand => 
+           isMatchingClientPhone(c.phone || '', cand) || isMatchingClientPhone(c.local_phone || '', cand)
+         );
+      });
+
       if (!matchedClient) {
-        console.log("[Webhook AstraCalls] Nenhum cliente encontrado para:", cleanIncoming, rawRemote);
+        console.log("[Webhook AstraCalls] Mensagem ignorada (número não pertence a cliente cadastrado):", cleanIncoming, rawRemote, "Candidatos:", candidatePhones);
         return res.status(200).json({ success: true, matched: false });
       }
 
@@ -2805,28 +2821,36 @@ setInterval(() => {
         .eq('client_id', matchedClient.id)
         .order('created_at', { ascending: false });
 
-      let fallbackAdminId = matchedClient.admin_id;
-      let fallbackEmpId = matchedClient.employee_id || fallbackAdminId;
-      if (!fallbackAdminId) {
-        const { data: anyAdmin } = await supabaseAdmin.from('users').select('id').eq('role', 'admin').limit(1).maybeSingle();
-        fallbackAdminId = anyAdmin?.id;
-        fallbackEmpId = fallbackAdminId;
+      const now = new Date().getTime();
+      let activeSession: any = null;
+
+      // Localiza sessões abertas válidas criadas nos últimos 30 minutos
+      const openSessions = (sessions || []).filter((s: any) => s.status === 'open');
+      if (openSessions.length > 0) {
+        for (const sess of openSessions) {
+          const createdTime = new Date(sess.created_at).getTime();
+          if (now - createdTime <= 30 * 60 * 1000) {
+            if (!activeSession) {
+              activeSession = sess;
+            } else {
+              // Fecha duplicada e deleta mensagens
+              await supabaseAdmin.from('chat_messages').delete().eq('session_id', sess.id);
+              await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', sess.id);
+            }
+          } else {
+            // Se a sessão expirou (> 30 min), deleta as mensagens do chat/banco e fecha
+            console.log(`[Webhook AstraCalls] Sessão expirou (>30 min). Deletando mensagens da sessão ${sess.id}...`);
+            await supabaseAdmin.from('chat_messages').delete().eq('session_id', sess.id);
+            await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', sess.id);
+          }
+        }
       }
 
-      let activeSession: any = (sessions || []).find((s: any) => s.status === 'open');
+      // REGRA ESTRITA: Se não houver sessão aberta nos últimos 30 minutos pelo colaborador/admin,
+      // as mensagens NÃO devem aparecer no chat e devem ser descartadas do banco de dados!
       if (!activeSession) {
-        const { data: newSess } = await supabaseAdmin
-          .from('chat_sessions')
-          .insert({
-            client_id: matchedClient.id,
-            admin_id: fallbackAdminId,
-            employee_id: fallbackEmpId,
-            status: 'open',
-            created_at: new Date().toISOString()
-          })
-          .select()
-          .single();
-        activeSession = newSess;
+        console.log(`[Webhook AstraCalls] Mensagem descartada de ${matchedClient.name} (${cleanIncoming}): Nenhuma conversa ativa de 30 minutos em andamento iniciada pelo colaborador.`);
+        return res.status(200).json({ success: true, activeSession: false });
       }
 
       if (activeSession) {
@@ -3474,6 +3498,28 @@ await getMessaging().send({
         }
       );
 
+      // REGRA ESTRITA DO USUÁRIO: Ao finalizar a visita, fechar o chat e DELETAR todas as mensagens trocadas do banco de dados
+      if (visitRecord.client_id) {
+        try {
+          const { data: clientSessions } = await supabaseAdmin
+            .from('chat_sessions')
+            .select('id')
+            .eq('client_id', visitRecord.client_id);
+
+          if (clientSessions && clientSessions.length > 0) {
+            const sIds = clientSessions.map((s: any) => s.id);
+            console.log(`[Visit Completed] Finalizando atendimento e deletando mensagens de ${sIds.length} sessões do cliente ${visitRecord.client_id}...`);
+            await supabaseAdmin.from('chat_messages').delete().in('session_id', sIds);
+            await supabaseAdmin.from('chat_sessions').update({ 
+              status: 'closed', 
+              closed_at: new Date().toISOString() 
+            }).in('id', sIds);
+          }
+        } catch (chatDelErr) {
+          console.warn('[Visit Completed] Erro ao deletar mensagens de chat da visita:', chatDelErr);
+        }
+      }
+
       // Se falhar o envio, libera imediatamente a chave de deduplicação para permitir retentativas
       if (!sent) {
         recentPushCache.delete(dedupeKey);
@@ -3668,6 +3714,7 @@ await getMessaging().send({
           const now = Date.now();
           const createdMs = session.created_at ? new Date(session.created_at).getTime() : 0;
           if (createdMs > 0 && now - createdMs > 30 * 60 * 1000) {
+            await supabaseAdmin.from('chat_messages').delete().eq('session_id', session.id);
             await supabaseAdmin.from('chat_sessions')
               .update({ status: 'closed', closed_at: new Date().toISOString() })
               .eq('id', session.id);
@@ -3757,8 +3804,10 @@ await getMessaging().send({
   }
 
   // Executa uma limpeza ao inicializar para expurgar mensagens órfãs anteriores e agenda para 00:00
+  cleanupExpiredAndClosedChatMessages();
   purgeOldChatMessages();
   scheduleMidnightPurge();
+  refreshAstraContactsCache();
 
   /**
    * Rotina Diária das 07:00 da manhã (Horário de Brasília):

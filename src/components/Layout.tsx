@@ -413,7 +413,8 @@ const isSelf = payload.new.employee_id === userProfile.uid;
               }
               const expiry = evaluateSessionExpiry(sessionData);
               if (expiry.isExpired) {
-                // Atualiza para closed se ainda não estava
+                // Atualiza para closed e deleta mensagens do banco de dados
+                await supabase.from('chat_messages').delete().eq('session_id', sessionData.id);
                 await supabase.from('chat_sessions')
                   .update({ status: 'closed', closed_at: new Date().toISOString() })
                   .eq('id', sessionData.id);

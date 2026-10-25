@@ -6,8 +6,9 @@ import { formatClientMessageTemplate } from '../lib/messageTemplates';
 import { 
   MessageCircle, AlertCircle, Clock, History, Settings, X, Play, MessageSquare, 
   Calendar, CheckCircle, XCircle, DollarSign, RefreshCw, Bell, QrCode, Copy, 
-  Check, Send, FileText, Share2 
+  Check, Send, FileText, Share2, Download
 } from 'lucide-react';
+import { generateReceiptImageBase64, downloadReceiptImage, copyReceiptImageToClipboard } from '../lib/receiptGenerator';
 
 interface ClientBilling {
   id: string;
@@ -42,10 +43,13 @@ export default function Billing() {
   const [isSubmittingPayment, setIsSubmittingPayment] = useState(false);
   const [sendReceiptOnConfirm, setSendReceiptOnConfirm] = useState(true);
   const [customReceiptMessage, setCustomReceiptMessage] = useState('');
+  const [paymentReceiptImage, setPaymentReceiptImage] = useState<string | null>(null);
+  const [copiedImageFeedback, setCopiedImageFeedback] = useState(false);
   
   // Historical payment receipt modal
   const [historyReceiptModalOpen, setHistoryReceiptModalOpen] = useState(false);
   const [selectedPaymentForReceipt, setSelectedPaymentForReceipt] = useState<any>(null);
+  const [historyReceiptImage, setHistoryReceiptImage] = useState<string | null>(null);
   const [isSendingHistoryReceipt, setIsSendingHistoryReceipt] = useState(false);
   const [pixCopiedFeedback, setPixCopiedFeedback] = useState(false);
   const [receiptToast, setReceiptToast] = useState<{ text: string; isError?: boolean } | null>(null);
@@ -229,10 +233,72 @@ export default function Billing() {
     return message;
   };
 
-  // Helper de envio do recibo digital via WhatsApp
+  // Gera a prévia da imagem do recibo quando clientToPay é selecionado
+  useEffect(() => {
+    if (!clientToPay) {
+      setPaymentReceiptImage(null);
+      return;
+    }
+
+    let isMounted = true;
+    const totalAmount = Number(clientToPay.monthlyFee || 0) + Number(clientToPay.extraAmount || 0);
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    generateReceiptImageBase64({
+      clientName: clientToPay.name || 'Cliente',
+      clientPhone: clientToPay.phone || '',
+      amount: totalAmount,
+      paymentDate: todayStr,
+      dueDate: clientToPay.dueDate || todayStr,
+      companyName: waSettings.companyName || userProfile?.whatsappSettings?.companyName || 'RS PISCINA'
+    }).then(img => {
+      if (isMounted) setPaymentReceiptImage(img);
+    }).catch(err => {
+      console.warn('Erro ao gerar imagem de prévia do recibo:', err);
+    });
+
+    return () => { isMounted = false; };
+  }, [clientToPay, waSettings.companyName, userProfile]);
+
+  // Gera a imagem do recibo para pagamentos históricos
+  useEffect(() => {
+    if (!selectedPaymentForReceipt) {
+      setHistoryReceiptImage(null);
+      return;
+    }
+
+    let isMounted = true;
+    const client = allClients.find(c => c.id === selectedPaymentForReceipt.client_id) || {
+      id: selectedPaymentForReceipt.client_id,
+      name: 'Cliente',
+      phone: '',
+      dueDate: ''
+    };
+
+    const dateStr = selectedPaymentForReceipt.paid_date || selectedPaymentForReceipt.created_at;
+    const cleanDate = dateStr ? dateStr.split('T')[0] : new Date().toISOString().split('T')[0];
+    const origDue = selectedPaymentForReceipt.due_date || client.dueDate || cleanDate;
+
+    generateReceiptImageBase64({
+      clientName: client.name || 'Cliente',
+      clientPhone: client.phone || '',
+      amount: Number(selectedPaymentForReceipt.amount || 0),
+      paymentDate: cleanDate,
+      dueDate: origDue,
+      companyName: waSettings.companyName || userProfile?.whatsappSettings?.companyName || 'RS PISCINA'
+    }).then(img => {
+      if (isMounted) setHistoryReceiptImage(img);
+    }).catch(err => {
+      console.warn('Erro ao gerar imagem de recibo histórico:', err);
+    });
+
+    return () => { isMounted = false; };
+  }, [selectedPaymentForReceipt, allClients, waSettings.companyName, userProfile]);
+
+  // Helper de envio do recibo digital via WhatsApp (Texto + Imagem de Alta Resolução)
   const sendReceiptToClient = async (
-    client: { id: string; name: string; phone: string },
-    paymentData: { amount: number; paymentDate: string; refMonth: number; refYear: number; nextDueDate?: string },
+    client: { id: string; name: string; phone: string; dueDate?: string; rawClient?: any },
+    paymentData: { amount: number; paymentDate: string; refMonth: number; refYear: number; nextDueDate?: string; originalDueDate?: string },
     customMessage?: string
   ): Promise<boolean> => {
     let currentSettings = waSettings;
@@ -286,54 +352,69 @@ export default function Billing() {
       pixReceiverName: currentSettings.pixReceiverName
     });
 
+    // 1. Gera a imagem do recibo de pagamento conforme o modelo solicitado
+    let receiptImageBase64: string | undefined;
+    try {
+      receiptImageBase64 = await generateReceiptImageBase64({
+        clientName: client.name,
+        clientPhone: client.phone,
+        amount: paymentData.amount,
+        paymentDate: paymentData.paymentDate,
+        dueDate: paymentData.originalDueDate || client.dueDate || client.rawClient?.due_date || paymentData.paymentDate,
+        companyName: currentSettings?.companyName || userProfile?.whatsappSettings?.companyName || 'RS PISCINA'
+      });
+    } catch (imgErr) {
+      console.warn('[Receipt] Erro ao gerar imagem do recibo:', imgErr);
+    }
+
     const receiptMsgId = `receipt_${client.id}_${paymentData.refYear}_${paymentData.refMonth}_${Date.now()}`;
     const effectiveProvider = getEffectiveWhatsAppProvider(currentSettings);
 
-    if (effectiveProvider === 'manual') {
-      openWhatsApp(`55${cleanPhone}`, message);
-      setReceiptToast({ text: `WhatsApp aberto com o recibo para ${client.name}.` });
-      return true;
-    }
-
     if (effectiveProvider === 'astracalls') {
       try {
-        await sendAstraCallsMessage(client.phone, message, currentSettings, receiptMsgId);
-        setReceiptToast({ text: `Recibo de pagamento enviado com sucesso para ${client.name} via AstraCalls!` });
+        await sendAstraCallsMessage(client.phone, message, currentSettings, receiptMsgId, receiptImageBase64, 'image/png');
+        setReceiptToast({ text: `Recibo com imagem enviado com sucesso para ${client.name} via AstraCalls!` });
         return true;
       } catch (err: any) {
         console.error(err);
         if (confirm(`Falha no AstraCalls (${err.message}).\n\nDeseja abrir o WhatsApp no seu aparelho para enviar o recibo manualmente?`)) {
+          if (receiptImageBase64) copyReceiptImageToClipboard(receiptImageBase64);
           openWhatsApp(`55${cleanPhone}`, message);
         }
         return false;
       }
     } else if (effectiveProvider === 'meta') {
       try {
-        await sendMetaMessage(client.phone, message, currentSettings, receiptMsgId);
-        setReceiptToast({ text: `Recibo de pagamento enviado com sucesso para ${client.name} via WhatsApp Meta!` });
+        await sendMetaMessage(client.phone, message, currentSettings, receiptMsgId, receiptImageBase64, 'image/png');
+        setReceiptToast({ text: `Recibo com imagem enviado com sucesso para ${client.name} via WhatsApp Meta!` });
         return true;
       } catch (err: any) {
         console.error(err);
         if (confirm(`Falha na API Meta (${err.message}).\n\nDeseja abrir o WhatsApp no seu aparelho para enviar o recibo manualmente?`)) {
+          if (receiptImageBase64) copyReceiptImageToClipboard(receiptImageBase64);
           openWhatsApp(`55${cleanPhone}`, message);
         }
         return false;
       }
     } else if (effectiveProvider === 'evolution') {
       try {
-        await sendEvolutionMessage(client.phone, message, currentSettings, receiptMsgId);
-        setReceiptToast({ text: `Recibo de pagamento enviado com sucesso para ${client.name} via Evolution API!` });
+        await sendEvolutionMessage(client.phone, message, currentSettings, receiptMsgId, receiptImageBase64, 'image/png');
+        setReceiptToast({ text: `Recibo com imagem enviado com sucesso para ${client.name} via Evolution API!` });
         return true;
       } catch (err: any) {
         console.error(err);
         if (confirm(`Falha na Evolution API (${err.message}).\n\nDeseja abrir o WhatsApp no seu aparelho para enviar o recibo manualmente?`)) {
+          if (receiptImageBase64) copyReceiptImageToClipboard(receiptImageBase64);
           openWhatsApp(`55${cleanPhone}`, message);
         }
         return false;
       }
     } else {
+      if (receiptImageBase64) {
+        copyReceiptImageToClipboard(receiptImageBase64);
+      }
       openWhatsApp(`55${cleanPhone}`, message);
-      setReceiptToast({ text: `WhatsApp aberto com o recibo para ${client.name}.` });
+      setReceiptToast({ text: `WhatsApp aberto! A imagem do recibo foi copiada para sua área de transferência (basta colar).` });
       return true;
     }
   };
@@ -886,13 +967,14 @@ export default function Billing() {
       // Dispara o recibo/comprovante digital se habilitado
       if (sendReceiptOnConfirm && clientToPay.phone) {
         await sendReceiptToClient(
-          { id: data.id, name: clientToPay.name, phone: clientToPay.phone },
+          { id: data.id, name: clientToPay.name, phone: clientToPay.phone, dueDate: clientToPay.dueDate, rawClient: data },
           {
             amount: totalAmountPaid,
             paymentDate: todayFormatted,
             refMonth,
             refYear,
-            nextDueDate: nextDueDateStr
+            nextDueDate: nextDueDateStr,
+            originalDueDate: clientToPay.dueDate
           },
           customReceiptMessage || undefined
         );
@@ -1743,12 +1825,58 @@ export default function Billing() {
 
               {sendReceiptOnConfirm && (
                 <div className="pt-2 border-t border-emerald-200/80">
-                  <span className="text-xs font-semibold text-emerald-900 block mb-1">
-                    Prévia do Recibo a ser enviado:
-                  </span>
-                  <div className="p-3 bg-white rounded-lg border border-emerald-300 text-xs text-gray-800 font-mono whitespace-pre-wrap leading-relaxed max-h-36 overflow-y-auto shadow-inner">
-                    {getReceiptPreviewForCurrentClient()}
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-semibold text-emerald-900">
+                      Recibo de Pagamento (Formato Imagem):
+                    </span>
+                    {paymentReceiptImage && (
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const ok = await copyReceiptImageToClipboard(paymentReceiptImage);
+                            if (ok) {
+                              setCopiedImageFeedback(true);
+                              setTimeout(() => setCopiedImageFeedback(false), 2000);
+                            } else {
+                              downloadReceiptImage(paymentReceiptImage, `recibo_${clientToPay?.name || 'cliente'}.png`);
+                            }
+                          }}
+                          className="px-2.5 py-1 text-[11px] font-bold bg-white hover:bg-emerald-100 text-emerald-800 rounded-lg border border-emerald-300 flex items-center gap-1 cursor-pointer transition-colors shadow-xs"
+                          title="Copiar imagem do recibo para a área de transferência"
+                        >
+                          {copiedImageFeedback ? <Check size={13} className="text-emerald-600" /> : <Copy size={13} />}
+                          <span>{copiedImageFeedback ? 'Copiada!' : 'Copiar Imagem'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => downloadReceiptImage(paymentReceiptImage, `recibo_${clientToPay?.name?.replace(/\s+/g, '_') || 'cliente'}.png`)}
+                          className="px-2.5 py-1 text-[11px] font-bold bg-white hover:bg-emerald-100 text-emerald-800 rounded-lg border border-emerald-300 flex items-center gap-1 cursor-pointer transition-colors shadow-xs"
+                          title="Baixar imagem PNG do recibo"
+                        >
+                          <Download size={13} />
+                          <span>Baixar PNG</span>
+                        </button>
+                      </div>
+                    )}
                   </div>
+
+                  {paymentReceiptImage ? (
+                    <div className="p-2 bg-white rounded-xl border border-emerald-300 shadow-sm flex flex-col items-center">
+                      <img 
+                        src={paymentReceiptImage} 
+                        alt="Recibo de Pagamento" 
+                        className="w-full max-h-56 object-contain rounded-lg"
+                      />
+                      <span className="text-[10px] text-emerald-700 mt-1 font-medium">
+                        ✓ Este comprovante em imagem será enviado diretamente ao cliente via WhatsApp
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="p-3 bg-white rounded-lg border border-emerald-300 text-xs text-gray-800 font-mono whitespace-pre-wrap leading-relaxed max-h-36 overflow-y-auto shadow-inner">
+                      {getReceiptPreviewForCurrentClient()}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1818,10 +1946,51 @@ export default function Billing() {
             </div>
 
             <div className="my-4">
-              <span className="text-xs font-semibold text-gray-700 block mb-1">
-                Conteúdo do Recibo:
-              </span>
-              <div className="p-3.5 bg-gray-50 rounded-xl border border-gray-200 text-xs text-gray-800 font-mono whitespace-pre-wrap leading-relaxed max-h-56 overflow-y-auto">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-gray-700">
+                  Recibo de Pagamento (Formato Imagem):
+                </span>
+                {historyReceiptImage && (
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const ok = await copyReceiptImageToClipboard(historyReceiptImage);
+                        if (ok) {
+                          setCopiedImageFeedback(true);
+                          setTimeout(() => setCopiedImageFeedback(false), 2000);
+                        } else {
+                          downloadReceiptImage(historyReceiptImage, `recibo_${selectedPaymentForReceipt.id}.png`);
+                        }
+                      }}
+                      className="px-2.5 py-1 text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg border border-slate-300 flex items-center gap-1 cursor-pointer transition-colors"
+                      title="Copiar imagem para área de transferência"
+                    >
+                      {copiedImageFeedback ? <Check size={14} className="text-emerald-600" /> : <Copy size={14} />}
+                      <span>{copiedImageFeedback ? 'Copiada!' : 'Copiar'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => downloadReceiptImage(historyReceiptImage, `recibo_${selectedPaymentForReceipt.id}.png`)}
+                      className="px-2.5 py-1 text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg border border-slate-300 flex items-center gap-1 cursor-pointer transition-colors"
+                      title="Baixar imagem PNG"
+                    >
+                      <Download size={14} />
+                      <span>Baixar PNG</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {historyReceiptImage ? (
+                <div className="p-2 bg-slate-50 rounded-xl border border-slate-200 shadow-sm flex justify-center mb-3">
+                  <img src={historyReceiptImage} alt="Recibo de Pagamento" className="max-w-full h-auto rounded-lg" />
+                </div>
+              ) : null}
+
+              <details className="mt-2 text-xs text-slate-500">
+                <summary className="cursor-pointer font-semibold hover:text-slate-700">Ver mensagem em texto</summary>
+                <div className="p-3.5 bg-gray-50 rounded-xl border border-gray-200 text-xs text-gray-800 font-mono whitespace-pre-wrap leading-relaxed max-h-56 overflow-y-auto mt-2">
                 {(() => {
                   const client = allClients.find(c => c.id === selectedPaymentForReceipt.client_id) || {
                     id: selectedPaymentForReceipt.client_id,
@@ -1869,7 +2038,8 @@ export default function Billing() {
                     pixReceiverName: waSettings.pixReceiverName
                   });
                 })()}
-              </div>
+                </div>
+              </details>
             </div>
 
             <div className="flex justify-end space-x-3 pt-2 border-t border-gray-100">
@@ -1905,13 +2075,19 @@ export default function Billing() {
                     const refY = selectedPaymentForReceipt.ref_year || selectedPaymentForReceipt.year || new Date().getFullYear();
 
                     await sendReceiptToClient(
-                      client,
+                      {
+                        id: selectedPaymentForReceipt.client_id,
+                        name: client.name,
+                        phone: client.phone,
+                        dueDate: selectedPaymentForReceipt.due_date || client.dueDate
+                      },
                       {
                         amount: selectedPaymentForReceipt.amount || 0,
                         paymentDate: payDateFormatted,
                         refMonth: refM,
                         refYear: refY,
-                        nextDueDate: client.dueDate
+                        nextDueDate: client.dueDate,
+                        originalDueDate: selectedPaymentForReceipt.due_date || client.dueDate
                       }
                     );
                     setHistoryReceiptModalOpen(false);

@@ -106,10 +106,13 @@ export default function Messages() {
 
       const targetIds = combinedData.map((c) => c.id).filter(Boolean);
       
-      // 2. Fetch chat sessions for current admin or admin's clients/contacts
+      // 2. Fetch active chat sessions (status open created within last 30 min) for current admin or clients/contacts
+      const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
       let allSessionsQuery = supabase
         .from('chat_sessions')
-        .select('id, client_id, status, created_at');
+        .select('id, client_id, status, created_at')
+        .eq('status', 'open')
+        .gte('created_at', thirtyMinutesAgo);
 
       if (targetIds.length > 0) {
         allSessionsQuery = allSessionsQuery.or(`admin_id.eq.${currentAdminId},client_id.in.(${targetIds.join(',')})`);

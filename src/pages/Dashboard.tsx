@@ -89,7 +89,7 @@ export default function Dashboard() {
 
   const [upcomingClients3to5, setUpcomingClients3to5] = useState<UpcomingClient[]>([]);
   const [upcomingClientsNext7, setUpcomingClientsNext7] = useState<UpcomingClient[]>([]);
-  const [upcomingTab, setUpcomingTab] = useState<'3to5' | '7days'>('3to5');
+  const [upcomingTab, setUpcomingTab] = useState<'3to5' | '7days'>('7days');
 
   const [clientsWithoutVisits, setClientsWithoutVisits] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -318,8 +318,8 @@ export default function Dashboard() {
               pendingThisMonth += fullPrice;
             }
 
-            // Próximos Vencimentos (somente se ainda não pagou no mês atual e estiver ativo)
-            if (data.active !== false && !clientsWhoPaidThisMonth.has(data.id)) {
+            // Próximos Vencimentos: clientes ativos cujo vencimento está a partir de hoje
+            if (data.active !== false && diffDays >= 0) {
               const upcomingItem: UpcomingClient = {
                 id: data.id,
                 name: data.name,
@@ -1474,9 +1474,9 @@ Agradecemos imensamente pela parceria e por nos permitir cuidar da sua piscina p
               
               {/* Top Banner Numbers */}
               <div className="bg-slate-950/50 rounded-xl p-4 border border-slate-800/80">
-                <div className="flex items-baseline justify-between mb-2">
-                  <span className="text-xs font-semibold text-slate-400">Progresso da Meta Mensal</span>
-                  <span className="text-xs font-bold text-emerald-400">
+                <div className="flex items-baseline justify-between gap-2 mb-2">
+                  <span className="text-xs font-semibold text-slate-400 truncate">Progresso da Meta Mensal</span>
+                  <span className="text-xs font-bold text-emerald-400 shrink-0 text-right">
                     {formatCurrency(stats.receivedThisMonth)} de {formatCurrency(stats.totalToReceive)}
                   </span>
                 </div>
@@ -1519,32 +1519,68 @@ Agradecemos imensamente pela parceria e por nos permitir cuidar da sua piscina p
                 </div>
               </div>
 
-              {/* Sub-Cards Row */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <div className="p-3 bg-sky-950/30 rounded-xl border border-sky-500/30 relative overflow-hidden">
-                  <span className="text-[11px] text-sky-400 block font-medium">Recebidos Hoje</span>
-                  <span className="text-base sm:text-lg font-black text-sky-300 tracking-tight">
+              {/* Sub-Cards 2x2 Grid - ensures spacious width per card so large currency values never overflow */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="p-3 bg-sky-950/30 rounded-xl border border-sky-500/30 min-w-0 flex flex-col justify-between overflow-hidden">
+                  <div className="flex items-center justify-between gap-1 mb-1">
+                    <span className="text-[11px] sm:text-xs text-sky-400 font-semibold truncate">Recebidos Hoje</span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-sky-400 shrink-0" />
+                  </div>
+                  <span 
+                    className="text-base sm:text-lg xl:text-xl font-black text-sky-300 tracking-tight truncate block"
+                    title={formatCurrency(stats.receivedToday)}
+                  >
                     {formatCurrency(stats.receivedToday)}
                   </span>
                 </div>
 
-                <div className="p-3 bg-slate-950/40 rounded-xl border border-slate-800/60">
-                  <span className="text-[11px] text-slate-400 block font-medium">Já Recebido</span>
-                  <span className="text-base sm:text-lg font-black text-emerald-400 tracking-tight">
+                <div className="p-3 bg-slate-950/50 rounded-xl border border-slate-800/80 min-w-0 flex flex-col justify-between overflow-hidden">
+                  <div className="flex items-center justify-between gap-1 mb-1">
+                    <span className="text-[11px] sm:text-xs text-slate-400 font-semibold truncate">Já Recebido</span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                  </div>
+                  <span 
+                    className="text-base sm:text-lg xl:text-xl font-black text-emerald-400 tracking-tight truncate block"
+                    title={formatCurrency(stats.receivedThisMonth)}
+                  >
                     {formatCurrency(stats.receivedThisMonth)}
                   </span>
                 </div>
 
-                <div className="p-3 bg-slate-950/40 rounded-xl border border-slate-800/60">
-                  <span className="text-[11px] text-slate-400 block font-medium">A Receber no Mês</span>
-                  <span className="text-base sm:text-lg font-black text-amber-400 tracking-tight">
+                <div className="p-3 bg-slate-950/50 rounded-xl border border-slate-800/80 min-w-0 flex flex-col justify-between overflow-hidden">
+                  <div className="flex items-center justify-between gap-1 mb-1">
+                    <span className="text-[11px] sm:text-xs text-slate-400 font-semibold truncate">A Receber no Mês</span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                  </div>
+                  <span 
+                    className="text-base sm:text-lg xl:text-xl font-black text-amber-400 tracking-tight truncate block"
+                    title={formatCurrency(stats.pendingThisMonth)}
+                  >
                     {formatCurrency(stats.pendingThisMonth)}
                   </span>
                 </div>
 
-                <div className="p-3 bg-slate-950/40 rounded-xl border border-slate-800/60">
-                  <span className="text-[11px] text-slate-400 block font-medium">Em Atraso ({stats.delayedClients})</span>
-                  <span className={`text-base sm:text-lg font-black tracking-tight ${stats.delayedClients > 0 ? 'text-red-400' : 'text-slate-300'}`}>
+                <div className={`p-3 rounded-xl border min-w-0 flex flex-col justify-between overflow-hidden ${
+                  stats.delayedClients > 0
+                    ? 'bg-red-950/20 border-red-500/30'
+                    : 'bg-slate-950/50 border-slate-800/80'
+                }`}>
+                  <div className="flex items-center justify-between gap-1 mb-1">
+                    <span className={`text-[11px] sm:text-xs font-semibold truncate ${
+                      stats.delayedClients > 0 ? 'text-red-400' : 'text-slate-400'
+                    }`}>
+                      Em Atraso ({stats.delayedClients})
+                    </span>
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                      stats.delayedClients > 0 ? 'bg-red-400 animate-pulse' : 'bg-slate-600'
+                    }`} />
+                  </div>
+                  <span 
+                    className={`text-base sm:text-lg xl:text-xl font-black tracking-tight truncate block ${
+                      stats.delayedClients > 0 ? 'text-red-400' : 'text-slate-300'
+                    }`}
+                    title={formatCurrency(stats.delayedTotalAmount)}
+                  >
                     {formatCurrency(stats.delayedTotalAmount)}
                   </span>
                 </div>
@@ -1716,11 +1752,15 @@ Agradecemos imensamente pela parceria e por nos permitir cuidar da sua piscina p
 
                       {/* Due Countdown Badge */}
                       <span className={`text-[11px] font-bold px-2 py-0.5 rounded-md shrink-0 ${
-                        client.diffDays <= 3
+                        client.diffDays === 0
+                          ? 'bg-red-100 text-red-800 border border-red-200'
+                          : client.diffDays === 1
                           ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                          : client.diffDays <= 3
+                          ? 'bg-amber-50 text-amber-900 border border-amber-200'
                           : 'bg-sky-100 text-sky-800 border border-sky-200'
                       }`}>
-                        {client.diffDays === 0 ? 'Vence Hoje' : `Em ${client.diffDays} dias`}
+                        {client.diffDays === 0 ? 'Vence Hoje' : client.diffDays === 1 ? 'Vence Amanhã' : `Em ${client.diffDays} dias`}
                       </span>
                     </div>
 

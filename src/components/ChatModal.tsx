@@ -65,39 +65,77 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   }, []);
 
   // 1. React Query: Carregar Sessão Ativa e Disponibilidade diretamente do Supabase
-  const { data: sessionData } = useQuery({
+  // 1. React Query: Carregar Sessão Ativa ou Assegurar Nova Sessão de 30 minutos
+  const { data: sessionData, isLoading: loadingSession } = useQuery({
     queryKey: ['chat-session', clientId],
     queryFn: async () => {
       if (!clientId) return null;
 
-      const [check, sessionsRes] = await Promise.all([
-        checkDailyChatAvailability(clientId, supabase),
-        supabase
-          .from('chat_sessions')
-          .select('id, status, created_at, closed_at')
-          .eq('client_id', clientId)
-          .order('created_at', { ascending: false })
-      ]);
+      // 1. Chama endpoint do backend para garantir que há uma sessão aberta de 30 minutos
+      try {
+        const admId = client?.admin_id || (userProfile?.role === 'admin' ? userProfile.uid : (userProfile?.adminId || userProfile?.uid));
+        const empId = userProfile?.uid || admId;
 
-      const allSessions = sessionsRes.data || [];
-      const session = check.activeSession || allSessions.find((s: any) => s.status === 'open' || s.status === 'active') || check.lastSession || allSessions[0] || { status: 'closed' };
-      const sessionIds = new Set<string>();
-      allSessions.forEach((s: any) => sessionIds.add(s.id));
-      if (session?.id) sessionIds.add(session.id);
+        const sessionRes = await fetch(getApiUrl('/api/chat/session/ensure'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            clientId,
+            adminId: admId,
+            employeeId: empId,
+            visitId: visit?.id || null
+          })
+        });
 
-      return { session, sessionIds: Array.from(sessionIds) };
+        if (sessionRes.ok) {
+          const sessData = await sessionRes.json().catch(() => null);
+          if (sessData?.session && sessData.session.status === 'open') {
+            const exp = evaluateSessionExpiry(sessData.session);
+            if (!exp.isExpired) {
+              return { session: sessData.session, sessionIds: [sessData.session.id] };
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[ChatModal] Erro ao garantir sessão via API backend:', err);
+      }
+
+      // Fallback direto via Supabase se o backend não responder
+      const { data: openSessions } = await supabase
+        .from('chat_sessions')
+        .select('id, status, created_at, closed_at')
+        .eq('client_id', clientId)
+        .eq('status', 'open')
+        .order('created_at', { ascending: false });
+
+      if (openSessions && openSessions.length > 0) {
+        const first = openSessions[0];
+        const expiry = evaluateSessionExpiry(first);
+        if (!expiry.isExpired) {
+          return { session: first, sessionIds: [first.id] };
+        }
+      }
+
+      return { session: null, sessionIds: [] };
     },
     enabled: !!isOpen && !!clientId,
-    staleTime: 1000 * 15,
+    staleTime: 1000 * 5,
   });
 
   const session = sessionData?.session || null;
 
   // 2. React Query: Carregar Mensagens diretamente sincronizadas com o backend e Supabase
   const { data: messages = [], isLoading: loadingMessages } = useQuery<any[]>({
-    queryKey: ['chat-messages', clientId],
+    queryKey: ['chat-messages', clientId, session?.id],
     queryFn: async () => {
       if (!clientId) return [];
+      
+      // REGRA ESTRITA DO USUÁRIO: As mensagens só aparecem durante o tempo em que o colaborador/admin
+      // estiver em conversa com o cliente pelo chat (sessão aberta e não expirada de 30 min).
+      const currentSess = session;
+      if (!currentSess || currentSess.status !== 'open' || evaluateSessionExpiry(currentSess).isExpired) {
+        return [];
+      }
       
       let loadedMsgs: any[] = [];
 
@@ -114,29 +152,22 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         console.warn('[ChatModal] Falha ao buscar via API backend, buscando via Supabase:', apiErr);
       }
 
-      if (loadedMsgs.length === 0) {
+      if (loadedMsgs.length === 0 && currentSess?.id) {
         try {
-          const { data: sData } = await supabase
-            .from('chat_sessions')
-            .select('id')
-            .eq('client_id', clientId);
-
-          if (sData && sData.length > 0) {
-            const sessionIds = sData.map((s) => s.id);
-            const { data: directMsgs } = await supabase
-              .from('chat_messages')
-              .select('*')
-              .in('session_id', sessionIds)
-              .order('created_at', { ascending: true });
-            if (directMsgs) loadedMsgs = directMsgs;
-          }
+          const { data: directMsgs } = await supabase
+            .from('chat_messages')
+            .select('*')
+            .eq('session_id', currentSess.id)
+            .order('created_at', { ascending: true });
+          if (directMsgs) loadedMsgs = directMsgs;
         } catch (e) {
           console.warn('[ChatModal] Erro ao carregar mensagens do Supabase:', e);
         }
       }
 
       // Deduplicação e preservação de mensagens otimistas locais
-      const previous = queryClient.getQueryData<any[]>(['chat-messages', clientId]) || [];
+      const previous = queryClient.getQueryData<any[]>(['chat-messages', clientId, session?.id]) || 
+                       queryClient.getQueryData<any[]>(['chat-messages', clientId]) || [];
       const map = new Map<string, any>();
 
       // Manter mensagens locais temporárias até confirmação
@@ -166,8 +197,8 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
       );
     },
-    enabled: !!isOpen && !!clientId,
-    refetchInterval: 3000,
+    enabled: !!isOpen && !!clientId && !!session?.id,
+    refetchInterval: 2500,
     refetchOnWindowFocus: true,
     staleTime: 1000,
   });
@@ -314,7 +345,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         const newMsg = (payload.new || payload.old) as any;
         if (!newMsg || newMsg.sender_type === 'read') return;
 
-        queryClient.setQueryData(['chat-messages', clientId], (prev: any[] | undefined) => {
+        const updater = (prev: any[] | undefined) => {
           let list = prev ? [...prev] : [];
 
           if (newMsg.sender_type === 'tech') {
@@ -330,7 +361,12 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
           return list.sort(
             (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
           );
-        });
+        };
+
+        queryClient.setQueryData(['chat-messages', clientId], updater);
+        if (session?.id) {
+          queryClient.setQueryData(['chat-messages', clientId, session.id], updater);
+        }
 
         if (payload.eventType === 'INSERT' && newMsg.sender_type === 'client') {
           queryClient.invalidateQueries({ queryKey: ['chat-messages', clientId] });
@@ -357,11 +393,24 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   // Timer countdown para a sessão ativa
   useEffect(() => {
     if (session?.status === 'open' && session.created_at) {
-      const updateTimer = () => {
+      const updateTimer = async () => {
         const evaluation = evaluateSessionExpiry(session);
         if (evaluation.isExpired) {
           setTimeLeft(0);
+          // REGRA ESTRITA DO USUÁRIO: quando o tempo de 30 minutos se acabar, as mensagens devem ser deletadas do chat e do banco de dados
+          try {
+            await fetch(getApiUrl('/api/chat/close'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ clientId, sessionId: session.id })
+            });
+            await supabase.from('chat_messages').delete().eq('session_id', session.id);
+            await supabase.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', session.id);
+          } catch (e) {}
+
+          queryClient.setQueryData(['chat-messages', clientId], []);
           queryClient.invalidateQueries({ queryKey: ['chat-session', clientId] });
+          queryClient.invalidateQueries({ queryKey: ['chat-messages', clientId] });
         } else {
           setTimeLeft(evaluation.secondsRemaining);
         }
@@ -643,18 +692,28 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       queryClient.setQueryData(['chat-messages', clientId], (prev: any[] | undefined) => {
         return [...(prev || []), optimisticMsg];
       });
+      if (session?.id) {
+        queryClient.setQueryData(['chat-messages', clientId, session.id], (prev: any[] | undefined) => {
+          return [...(prev || []), optimisticMsg];
+        });
+      }
 
       requestAnimationFrame(() => scrollToBottom(true));
       return { tempId };
     },
     onSuccess: (newInsertedMsg, _vars, context) => {
-      queryClient.setQueryData(['chat-messages', clientId], (prev: any[] | undefined) => {
+      const successUpdater = (prev: any[] | undefined) => {
         if (!prev) return [newInsertedMsg];
         const filtered = prev.filter(m => m.id !== context?.tempId && m.id !== newInsertedMsg.id);
         return [...filtered, newInsertedMsg].sort(
           (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
         );
-      });
+      };
+
+      queryClient.setQueryData(['chat-messages', clientId], successUpdater);
+      if (session?.id) {
+        queryClient.setQueryData(['chat-messages', clientId, session.id], successUpdater);
+      }
 
       queryClient.invalidateQueries({ queryKey: ['chat-messages', clientId] });
       queryClient.invalidateQueries({ queryKey: ['chat-session', clientId] });
@@ -665,7 +724,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     onError: (err: any, variables, context) => {
       console.error('[ChatModal] Erro ao enviar mensagem:', err);
       if (context?.tempId) {
-        queryClient.setQueryData(['chat-messages', clientId], (prev: any[] | undefined) => {
+        const errorUpdater = (prev: any[] | undefined) => {
           if (!prev) return prev;
           return prev.map(m => {
             if (m.id === context.tempId) {
@@ -681,7 +740,12 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
             }
             return m;
           });
-        });
+        };
+
+        queryClient.setQueryData(['chat-messages', clientId], errorUpdater);
+        if (session?.id) {
+          queryClient.setQueryData(['chat-messages', clientId, session.id], errorUpdater);
+        }
       }
     },
     onSettled: () => {
