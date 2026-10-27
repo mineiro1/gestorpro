@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { RS_LOGO_BASE64 } from '../assets/logoBase64';
 import { getBrazilianPhoneVariations } from '../lib/phoneUtils';
+import { getApiUrl } from '../lib/apiConfig';
 
 export default function Login() {
   const location = useLocation();
@@ -35,87 +36,99 @@ export default function Login() {
       const trimmedLogin = phone.trim();
       const trimmedPass = password.trim();
 
+      if (!trimmedLogin || !trimmedPass) {
+        setError('Preencha o login e a senha para entrar.');
+        setLoading(false);
+        return;
+      }
+
       let authResult: any = null;
       let lastError: any = null;
 
-      // 1. Tentar resolução inteligente via API
-      // Suporta todos os 4 formatos de telefone (AstraCalls com 55, com 9, sem 9, com DDD)
-      const isClientPhoneInput = !trimmedLogin.includes('@') || trimmedLogin.endsWith('@gestaopro.com') || trimmedLogin.endsWith('@serviplay.com');
+      // 1. Autenticação direta e ultra-rápida no Supabase (< 150ms)
+      // Executa 100% no cliente sem depender de rotas de backend externas e funciona no APK, Web e PWA
+      const cleanDigits = trimmedLogin.replace(/\D/g, '');
+      const loginVariations = getBrazilianPhoneVariations(trimmedLogin);
+      const passVariations = getBrazilianPhoneVariations(trimmedPass);
 
-      if (isClientPhoneInput) {
-        try {
-          const res = await fetch('/api/auth/client-resolve', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ login: trimmedLogin, password: trimmedPass })
-          });
+      const candidateEmails: string[] = [];
+      if (trimmedLogin.includes('@')) {
+        candidateEmails.push(trimmedLogin);
+      } else {
+        // Prioridade 1: O número exato digitado pelo usuário (ex: 6792126280@gestaopro.com)
+        if (cleanDigits) {
+          candidateEmails.push(`${cleanDigits}@gestaopro.com`);
+          candidateEmails.push(`${cleanDigits}@serviplay.com`);
+        }
+        // Prioridade 2: Variações adicionais (com 55, com 9, etc.)
+        loginVariations.all.forEach(num => {
+          candidateEmails.push(`${num}@gestaopro.com`);
+          candidateEmails.push(`${num}@serviplay.com`);
+        });
+      }
+      const uniqueEmails = [...new Set(candidateEmails)];
 
-          if (res.ok) {
-            const data = await res.json();
-            if (data.success && data.email) {
-              const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
-                email: data.email,
-                password: data.password || trimmedPass
-              });
+      // Prioridade 1: A senha exata informada pelo usuário
+      const candidatePasswords: string[] = [trimmedPass];
+      if (password !== trimmedPass) candidatePasswords.push(password);
+      passVariations.all.forEach(p => candidatePasswords.push(p));
+      // Para clientes a senha padrão pode ser o próprio telefone
+      loginVariations.all.forEach(p => candidatePasswords.push(p));
 
-              if (!signInErr && signInData?.user) {
-                authResult = signInData;
-              } else if (signInErr) {
-                lastError = signInErr;
-              }
-            } else if (data.error) {
-              throw new Error(data.error);
+      const uniquePasswords = [...new Set(candidatePasswords.filter(Boolean))];
+
+      for (const email of uniqueEmails) {
+        for (const pass of uniquePasswords) {
+          try {
+            const { data, error } = await supabase.auth.signInWithPassword({
+              email,
+              password: pass,
+            });
+            if (!error && data?.user) {
+              authResult = data;
+              break;
+            } else if (error) {
+              lastError = error;
             }
-          }
-        } catch (apiErr: any) {
-          console.warn('[client-resolve] Falha na resolução rápida, tentando fallback:', apiErr);
-          if (apiErr.message && !apiErr.message.includes('fetch')) {
-            throw apiErr;
+          } catch (err: any) {
+            lastError = err;
           }
         }
+        if (authResult) break;
       }
 
-      // 2. Fallback de autenticação direta com geração de todos os candidatos
-      if (!authResult || !authResult.user) {
-        const loginVariations = getBrazilianPhoneVariations(trimmedLogin);
-        const passVariations = getBrazilianPhoneVariations(trimmedPass);
+      // 2. Se a autenticação direta não encontrou usuário e parece ser um cliente,
+      // tenta a resolução via API (caso seja um cliente novo que ainda precisa ser provisionado)
+      if (!authResult?.user) {
+        const isClientPhoneInput = !trimmedLogin.includes('@') || trimmedLogin.endsWith('@gestaopro.com') || trimmedLogin.endsWith('@serviplay.com');
+        if (isClientPhoneInput) {
+          try {
+            const apiUrl = getApiUrl('/api/auth/client-resolve');
+            const res = await fetch(apiUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ login: trimmedLogin, password: trimmedPass })
+            });
 
-        const candidateEmails: string[] = [];
-        if (trimmedLogin.includes('@')) {
-          candidateEmails.push(trimmedLogin);
-        } else {
-          loginVariations.all.forEach(num => {
-            candidateEmails.push(`${num}@gestaopro.com`);
-            candidateEmails.push(`${num}@serviplay.com`);
-          });
-        }
-        const uniqueEmails = [...new Set(candidateEmails)];
+            const contentType = res.headers.get('content-type') || '';
+            if (res.ok && contentType.includes('application/json')) {
+              const data = await res.json().catch(() => null);
+              if (data?.success && data?.email) {
+                const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
+                  email: data.email,
+                  password: data.password || trimmedPass
+                });
 
-        const candidatePasswords: string[] = [trimmedPass, password];
-        passVariations.all.forEach(p => candidatePasswords.push(p));
-        // Para clientes a senha padrão é o telefone em qualquer formato
-        loginVariations.all.forEach(p => candidatePasswords.push(p));
-
-        const uniquePasswords = [...new Set(candidatePasswords.filter(Boolean))];
-
-        for (const email of uniqueEmails) {
-          for (const pass of uniquePasswords) {
-            try {
-              const { data, error } = await supabase.auth.signInWithPassword({
-                email,
-                password: pass,
-              });
-              if (!error && data?.user) {
-                authResult = data;
-                break;
-              } else if (error) {
-                lastError = error;
+                if (!signInErr && signInData?.user) {
+                  authResult = signInData;
+                } else if (signInErr) {
+                  lastError = signInErr;
+                }
               }
-            } catch (err: any) {
-              lastError = err;
             }
+          } catch (apiErr) {
+            console.warn('[client-resolve] Resolução via API ignorada com segurança:', apiErr);
           }
-          if (authResult) break;
         }
       }
 

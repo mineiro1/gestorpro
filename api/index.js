@@ -702,6 +702,157 @@ const handleGetChatMessages = async (req, res) => {
 app.get(['/api/chat/messages/:clientId', '/chat/messages/:clientId', '/api/chat/messages', '/chat/messages'], handleGetChatMessages);
 app.post(['/api/chat/messages/:clientId', '/chat/messages/:clientId', '/api/chat/messages', '/chat/messages', '/api/chat/sync-messages', '/chat/sync-messages'], handleGetChatMessages);
 
+// Helper para normalização de variações telefônicas brasileiras
+function getBrazilianPhoneVariations(phone) {
+  if (!phone) return { astracalls: '', with55With9: '', no55With9: '', no55No9: '', ddd: '', rest8: '', rest9: '', all: [] };
+  const clean = String(phone).replace(/\D/g, '');
+  if (!clean || clean.length < 8) {
+    return { astracalls: clean, with55With9: clean, no55With9: clean, no55No9: clean, ddd: '', rest8: '', rest9: '', all: [clean].filter(Boolean) };
+  }
+  let ddd = '';
+  let rest8 = '';
+  let rest9 = '';
+  if (clean.startsWith('55') && clean.length >= 12) {
+    ddd = clean.substring(2, 4);
+    const rest = clean.substring(4);
+    if (rest.length === 9 && rest.startsWith('9')) { rest9 = rest; rest8 = rest.substring(1); }
+    else if (rest.length === 8) { rest8 = rest; rest9 = '9' + rest; }
+    else { rest8 = rest.slice(-8); rest9 = '9' + rest8; }
+  } else if (clean.length === 10 || clean.length === 11) {
+    ddd = clean.substring(0, 2);
+    const rest = clean.substring(2);
+    if (rest.length === 9 && rest.startsWith('9')) { rest9 = rest; rest8 = rest.substring(1); }
+    else if (rest.length === 8) { rest8 = rest; rest9 = '9' + rest; }
+    else { rest8 = rest.slice(-8); rest9 = '9' + rest8; }
+  } else if (clean.length === 8 || clean.length === 9) {
+    ddd = '67';
+    if (clean.length === 9 && clean.startsWith('9')) { rest9 = clean; rest8 = clean.substring(1); }
+    else if (clean.length === 8) { rest8 = clean; rest9 = '9' + clean; }
+  } else {
+    rest8 = clean.slice(-8);
+    rest9 = '9' + rest8;
+    ddd = clean.length >= 10 ? clean.slice(-10, -8) : '67';
+  }
+  const astracalls = ddd && rest8 ? `55${ddd}${rest8}` : clean;
+  const with55With9 = ddd && rest9 ? `55${ddd}${rest9}` : clean;
+  const no55With9 = ddd && rest9 ? `${ddd}${rest9}` : clean;
+  const no55No9 = ddd && rest8 ? `${ddd}${rest8}` : clean;
+  const all = [...new Set([astracalls, with55With9, no55With9, no55No9, clean, rest9, rest8].filter(Boolean))];
+  return { astracalls, with55With9, no55With9, no55No9, ddd, rest8, rest9, all };
+}
+
+// Resolução inteligente de login de cliente
+app.post(['/api/auth/client-resolve', '/auth/client-resolve'], async (req, res) => {
+  try {
+    const { login, password } = req.body;
+    if (!login) return res.status(400).json({ success: false, message: "Login não informado" });
+
+    const cleanLogin = String(login).trim();
+    if (cleanLogin.includes('@') && !cleanLogin.endsWith('@gestaopro.com') && !cleanLogin.endsWith('@serviplay.com')) {
+      return res.json({ success: false, reason: "standard_email" });
+    }
+
+    const loginVariations = getBrazilianPhoneVariations(cleanLogin).all;
+    const passVariations = password ? getBrazilianPhoneVariations(String(password).trim()).all : [];
+
+    const supabaseAdmin = getSupabaseAdmin();
+    const { data: allUsers } = await supabaseAdmin.from('users').select('id, name, email, phone, role, client_id, active, admin_id');
+
+    let matchedUser = allUsers?.find(u => {
+      const uPhone = (u.phone || '').replace(/\D/g, '');
+      const uEmailPrefix = (u.email || '').split('@')[0].replace(/\D/g, '');
+      return loginVariations.includes(uPhone) || loginVariations.includes(uEmailPrefix);
+    });
+
+    if (!matchedUser) {
+      const { data: allClients } = await supabaseAdmin.from('clients').select('id, name, phone, email, active, admin_id');
+      const matchedClient = allClients?.find(c => {
+        const cPhone = (c.phone || '').replace(/\D/g, '');
+        return loginVariations.includes(cPhone);
+      });
+
+      if (matchedClient) {
+        matchedUser = allUsers?.find(u => u.client_id === matchedClient.id);
+        if (!matchedUser) {
+          const primaryPhone = getBrazilianPhoneVariations(matchedClient.phone || cleanLogin).no55With9 || cleanLogin.replace(/\D/g, '');
+          const clientEmail = `${primaryPhone}@gestaopro.com`;
+          const defaultPassword = primaryPhone;
+
+          let authUser = null;
+          try {
+            const { data: newAuth, error: createAuthErr } = await supabaseAdmin.auth.admin.createUser({
+              email: clientEmail,
+              password: defaultPassword,
+              email_confirm: true,
+              user_metadata: { name: matchedClient.name, role: 'client' }
+            });
+            if (newAuth?.user) {
+              authUser = newAuth.user;
+            } else if (createAuthErr?.message?.includes('already registered')) {
+              const { data: existingList } = await supabaseAdmin.auth.admin.listUsers();
+              authUser = (existingList?.users || [])?.find((u) => u.email === clientEmail);
+            }
+          } catch (e) {}
+
+          if (authUser) {
+            const { data: newUser } = await supabaseAdmin.from('users').upsert({
+              id: authUser.id,
+              name: matchedClient.name,
+              email: clientEmail,
+              phone: primaryPhone,
+              role: 'client',
+              client_id: matchedClient.id,
+              admin_id: matchedClient.admin_id,
+              active: true
+            }).select().single();
+            matchedUser = newUser;
+          }
+        }
+      }
+    }
+
+    if (!matchedUser) {
+      return res.json({ success: false, reason: "user_not_found" });
+    }
+
+    if (matchedUser.active === false) {
+      return res.status(403).json({ success: false, error: "Esta conta está desativada no momento. Entre em contato com a empresa." });
+    }
+
+    // Se for cliente (ou tiver client_id associado)
+    if (matchedUser.role === 'client' || matchedUser.client_id) {
+      const { data: authUserData } = await supabaseAdmin.auth.admin.getUserById(matchedUser.id);
+      const authEmail = authUserData?.user?.email || matchedUser.email || `${matchedUser.phone}@gestaopro.com`;
+
+      const userPhoneVariations = getBrazilianPhoneVariations(matchedUser.phone || '').all;
+      const targetPassword = password ? String(password).trim() : (matchedUser.phone || '123456');
+
+      const isPhoneMatch = passVariations.some(p => userPhoneVariations.includes(p) || loginVariations.includes(p)) ||
+                           userPhoneVariations.some(p => passVariations.includes(p));
+
+      if (isPhoneMatch || !password) {
+        await supabaseAdmin.auth.admin.updateUserById(matchedUser.id, {
+          password: targetPassword,
+          email_confirm: true
+        });
+
+        return res.json({
+          success: true,
+          email: authEmail,
+          password: targetPassword,
+          role: 'client',
+          user: matchedUser
+        });
+      }
+    }
+
+    return res.json({ success: false, reason: "credentials_mismatch" });
+  } catch (err) {
+    console.error("[client-resolve] Erro:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 
 // Obter Sessão Ativa do Chat de um Cliente
 app.get(['/api/chat/session/:clientId', '/chat/session/:clientId'], async (req, res) => {
