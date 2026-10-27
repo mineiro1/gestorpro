@@ -137,32 +137,44 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         return [];
       }
       
+      // 1. Aciona sincronização no backend para puxar mensagens novas do WhatsApp em tempo real
+      try {
+        await fetch(getApiUrl('/api/chat/sync-status'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            clientId, 
+            sessionId: currentSess.id,
+            waSettings 
+          })
+        });
+      } catch (e) {}
+
       let loadedMsgs: any[] = [];
 
       try {
-        const msgApiUrl = getApiUrl(`/api/chat/messages/${clientId}`);
-        const apiRes = await fetch(msgApiUrl);
-        if (apiRes.ok) {
-          const apiData = await apiRes.json();
-          if (Array.isArray(apiData?.messages)) {
-            loadedMsgs = apiData.messages;
-          }
-        }
-      } catch (apiErr) {
-        console.warn('[ChatModal] Falha ao buscar via API backend, buscando via Supabase:', apiErr);
+        const { data: directMsgs } = await supabase
+          .from('chat_messages')
+          .select('*')
+          .eq('session_id', currentSess.id)
+          .order('created_at', { ascending: true });
+        if (directMsgs) loadedMsgs = directMsgs;
+      } catch (e) {
+        console.warn('[ChatModal] Erro ao carregar mensagens do Supabase:', e);
       }
 
-      if (loadedMsgs.length === 0 && currentSess?.id) {
+      // Fallback secundário via rota de mensagens se Supabase direto não retornar nada
+      if (loadedMsgs.length === 0) {
         try {
-          const { data: directMsgs } = await supabase
-            .from('chat_messages')
-            .select('*')
-            .eq('session_id', currentSess.id)
-            .order('created_at', { ascending: true });
-          if (directMsgs) loadedMsgs = directMsgs;
-        } catch (e) {
-          console.warn('[ChatModal] Erro ao carregar mensagens do Supabase:', e);
-        }
+          const msgApiUrl = getApiUrl(`/api/chat/messages/${clientId}`);
+          const apiRes = await fetch(msgApiUrl);
+          if (apiRes.ok) {
+            const apiData = await apiRes.json();
+            if (Array.isArray(apiData?.messages)) {
+              loadedMsgs = apiData.messages;
+            }
+          }
+        } catch (apiErr) {}
       }
 
       // Deduplicação e preservação de mensagens otimistas locais
@@ -219,9 +231,9 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       .filter(Boolean);
   }, [messages]);
 
-  // 3. Sincronização Ativa de Status de Entrega/Leitura (WhatsApp)
+  // 3. Sincronização Ativa de Mensagens do Cliente e Status de Entrega/Leitura
   const runSyncStatus = useCallback(async () => {
-    if (!isOpen || !clientId || isSyncingRef.current || unreadTechMsgIds.length === 0) return;
+    if (!isOpen || !clientId || !session?.id || isSyncingRef.current) return;
 
     isSyncingRef.current = true;
     try {
@@ -245,11 +257,21 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       const syncRes = await fetch(syncUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messageIds: unreadTechMsgIds, waSettings: currentSettings })
+        body: JSON.stringify({ 
+          messageIds: unreadTechMsgIds, 
+          waSettings: currentSettings,
+          clientId,
+          sessionId: session?.id
+        })
       });
 
       if (syncRes.ok) {
         const resData = await syncRes.json();
+
+        // Se novas mensagens do cliente foram sincronizadas, invalidar query imediatamente
+        if (resData?.syncedIncoming && resData.syncedIncoming > 0) {
+          queryClient.invalidateQueries({ queryKey: ['chat-messages', clientId] });
+        }
         if (resData?.statusMap && Object.keys(resData.statusMap).length > 0) {
           queryClient.setQueryData(['chat-messages', clientId], (prev: any[] | undefined) => {
             if (!prev) return prev;
@@ -317,15 +339,15 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
     } finally {
       isSyncingRef.current = false;
     }
-  }, [isOpen, clientId, unreadTechMsgIds, waSettings, userProfile, queryClient]);
+  }, [isOpen, clientId, session?.id, unreadTechMsgIds, waSettings, userProfile, queryClient]);
 
-  // Loop de polling de status enquanto houver mensagens não lidas
+  // Loop de polling de sincronização contínua (status e mensagens) a cada 2 segundos enquanto o chat estiver aberto
   useEffect(() => {
-    if (!isOpen || !clientId || unreadTechMsgIds.length === 0) return;
+    if (!isOpen || !clientId || !session?.id) return;
     runSyncStatus();
-    const interval = setInterval(runSyncStatus, 1500);
+    const interval = setInterval(runSyncStatus, 2000);
     return () => clearInterval(interval);
-  }, [isOpen, clientId, unreadTechMsgIds.length, runSyncStatus]);
+  }, [isOpen, clientId, session?.id, runSyncStatus]);
 
   // 4. Inscrição em Tempo Real (Supabase Realtime)
   useEffect(() => {

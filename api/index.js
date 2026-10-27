@@ -12,11 +12,8 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Helper para obter o cliente Supabase Admin
 function getSupabaseAdmin() {
-  const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://fgmmvrvudozzwqxzsztwo.supabase.co';
-  const part1 = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZnbW12cnZ1ZG96endxenN6dHdvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3OTA1MjMzMSwi";
-  const part2 = "ZXhwIjoyMDk0NjI4MzMxfQ.iB9iF3aoumsNtywpLZL_QjrBzR8QPWw7GGWQ6-Yx-Ik";
-  const directKey = part1 + part2;
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || directKey;
+  const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://fgmmvrvudozzwqzsztwo.supabase.co';
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZnbW12cnZ1ZG96endxenN6dHdvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3OTA1MjMzMSwiZXhwIjoyMDk0NjI4MzMxfQ.iB9iF3aoumsNtywpLZL_QjrBzR8QPWw7GGWQ6-Yx-Ik';
   return createClient(supabaseUrl, supabaseKey, {
     auth: { autoRefreshToken: false, persistSession: false }
   });
@@ -67,6 +64,10 @@ function isMatchingClientPhone(storedRaw, incomingRaw) {
     if (storedDDD && incomingDDD) return storedDDD === incomingDDD;
     return true;
   }
+
+  if (stored.includes(incoming) || incoming.includes(stored)) return true;
+  if (storedNo55.includes(incomingNo55) || incomingNo55.includes(storedNo55)) return true;
+
   return false;
 }
 
@@ -214,7 +215,519 @@ async function processStatusUpdates(body) {
 
 const processedMessageClientIds = new Map();
 
+function cleanJidToPhone(rawJid) {
+  if (!rawJid) return '';
+  const str = String(rawJid);
+  const withoutDomain = str.split('@')[0];
+  const withoutDevice = withoutDomain.split(':')[0];
+  return withoutDevice.replace(/\D/g, '');
+}
+
+// Cache bidirecional de LIDs (Linked Identity Device) do WhatsApp Web/Multi-Device para telefones reais
+const lidToRealPhoneCache = new Map();
+let lastAstraContactsFetch = 0;
+
+async function refreshAstraContactsCache(force = false) {
+  const now = Date.now();
+  if (!force && lastAstraContactsFetch > 0 && now - lastAstraContactsFetch < 10 * 60 * 1000) {
+    return;
+  }
+  try {
+    const astracallsUrl = (process.env.ASTRACALLS_URL || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
+    const astracallsApiKey = process.env.ASTRACALLS_API_KEY || 'rs_piscinas_segredo_2026';
+    const sessionId = '8090cca3add0b8eb3e41efb9eec363e4';
+
+    const res = await fetch(`${astracallsUrl}/api/sessions/${sessionId}/contacts`, {
+      headers: { 'X-Api-Key': astracallsApiKey }
+    });
+    if (!res.ok) return;
+    const contacts = await res.json();
+    if (!Array.isArray(contacts)) return;
+
+    lastAstraContactsFetch = now;
+    const nonLidContacts = contacts.filter((c) => !c.id?.includes('@lid') && (c.number || c.id));
+    const lidContacts = contacts.filter((c) => c.id?.includes('@lid') || (c.number && c.number.length > 13));
+
+    for (const lid of lidContacts) {
+      const cleanLid = cleanJidToPhone(lid.id || lid.number);
+      if (!cleanLid) continue;
+      const lidName = (lid.name || lid.pushName || lid.pushname || lid.fullName || '').trim().toLowerCase();
+      if (!lidName) continue;
+
+      const phoneMatch = nonLidContacts.find((c) => {
+        const cName = (c.name || c.pushName || c.pushname || c.fullName || '').trim().toLowerCase();
+        return cName && cName === lidName;
+      });
+
+      if (phoneMatch) {
+        const realPhone = cleanJidToPhone(phoneMatch.number || phoneMatch.id);
+        if (realPhone) {
+          lidToRealPhoneCache.set(cleanLid, realPhone);
+        }
+      }
+    }
+    console.log(`[AstraCalls Cache] Mapeamento de LIDs atualizado: ${lidToRealPhoneCache.size} LIDs mapeados para números.`);
+  } catch (err) {
+    console.warn('[AstraCalls Cache] Erro ao carregar contatos AstraCalls:', err.message);
+  }
+}
+
+async function resolveLidToRealPhone(
+  cleanLid,
+  rawRemote,
+  msgData = {},
+  body = {},
+  allTargets = []
+) {
+  if (!cleanLid) return null;
+
+  // 1. Verificar cache em memória
+  if (lidToRealPhoneCache.has(cleanLid)) {
+    return lidToRealPhoneCache.get(cleanLid);
+  }
+
+  // 2. Se não está no cache, atualizar cache forçadamente
+  await refreshAstraContactsCache(true);
+  if (lidToRealPhoneCache.has(cleanLid)) {
+    return lidToRealPhoneCache.get(cleanLid);
+  }
+
+  // 3. Tentar resolução via pushName
+  const pushName = String(msgData?.pushName || body?.pushName || msgData?.verifiedName || body?.verifiedName || '').trim().toLowerCase();
+  if (pushName && pushName.length >= 3) {
+    const targetByName = allTargets.find((t) => {
+      const tName = String(t.name || '').trim().toLowerCase();
+      return tName && (tName === pushName || tName.includes(pushName) || pushName.includes(tName));
+    });
+
+    if (targetByName?.phone) {
+      const resolved = cleanJidToPhone(targetByName.phone);
+      if (resolved) {
+        lidToRealPhoneCache.set(cleanLid, resolved);
+        return resolved;
+      }
+    }
+  }
+
+  // 4. Se houver apenas uma sessão ativa aberta no momento no app, associar o LID a essa sessão
+  try {
+    const supabaseAdmin = getSupabaseAdmin();
+    const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const { data: openSess } = await supabaseAdmin
+      .from('chat_sessions')
+      .select('id, client_id')
+      .eq('status', 'open')
+      .gte('created_at', thirtyMinAgo);
+
+    if (openSess && openSess.length === 1) {
+      const singleClientId = openSess[0].client_id;
+      const cli = allTargets.find((t) => t.id === singleClientId);
+      if (cli?.phone) {
+        const resolved = cleanJidToPhone(cli.phone);
+        if (resolved) {
+          console.log(`[LID Resolver] Associado LID ${cleanLid} ao cliente da única sessão ativa: ${cli.name} (${resolved})`);
+          lidToRealPhoneCache.set(cleanLid, resolved);
+          return resolved;
+        }
+      }
+    }
+  } catch (e) {}
+
+  return null;
+}
+
+function extractMessageData(rawMsg) {
+  if (!rawMsg) return { content: '', mediaUrl: '' };
+  if (typeof rawMsg === 'string') return { content: rawMsg, mediaUrl: '' };
+
+  if (rawMsg.ephemeralMessage?.message) return extractMessageData(rawMsg.ephemeralMessage.message);
+  if (rawMsg.viewOnceMessage?.message) return extractMessageData(rawMsg.viewOnceMessage.message);
+  if (rawMsg.viewOnceMessageV2?.message) return extractMessageData(rawMsg.viewOnceMessageV2.message);
+  if (rawMsg.documentWithCaptionMessage?.message) return extractMessageData(rawMsg.documentWithCaptionMessage.message);
+  if (rawMsg.editedMessage?.message?.protocolMessage?.editedMessage) return extractMessageData(rawMsg.editedMessage.message.protocolMessage.editedMessage);
+
+  if (rawMsg.conversation) return { content: rawMsg.conversation, mediaUrl: '' };
+  if (rawMsg.extendedTextMessage?.text) return { content: rawMsg.extendedTextMessage.text, mediaUrl: '' };
+  if (rawMsg.text) return { content: typeof rawMsg.text === 'string' ? rawMsg.text : (rawMsg.text?.body || ''), mediaUrl: '' };
+  if (rawMsg.body) return { content: rawMsg.body, mediaUrl: '' };
+  if (rawMsg.caption) return { content: rawMsg.caption, mediaUrl: '' };
+
+  if (rawMsg.audioMessage) {
+    return { content: '🎵 Áudio recebido', mediaUrl: rawMsg.audioMessage.url || rawMsg.audioMessage.directPath || '' };
+  }
+  if (rawMsg.imageMessage) {
+    return { content: rawMsg.imageMessage.caption || '📸 Imagem recebida', mediaUrl: rawMsg.imageMessage.url || rawMsg.imageMessage.directPath || '' };
+  }
+  if (rawMsg.videoMessage) {
+    return { content: rawMsg.videoMessage.caption || '🎥 Vídeo recebido', mediaUrl: rawMsg.videoMessage.url || rawMsg.videoMessage.directPath || '' };
+  }
+  if (rawMsg.documentMessage) {
+    return { content: `📄 Documento: ${rawMsg.documentMessage.fileName || rawMsg.documentMessage.title || 'Arquivo'}`, mediaUrl: rawMsg.documentMessage.url || '' };
+  }
+  if (rawMsg.stickerMessage) {
+    return { content: '🏷️ Figurinha recebida', mediaUrl: rawMsg.stickerMessage.url || '' };
+  }
+
+  if (rawMsg.buttonsResponseMessage?.selectedButtonId || rawMsg.buttonsResponseMessage?.selectedDisplayText) {
+    return { content: rawMsg.buttonsResponseMessage.selectedDisplayText || rawMsg.buttonsResponseMessage.selectedButtonId, mediaUrl: '' };
+  }
+  if (rawMsg.templateButtonReplyMessage?.selectedId || rawMsg.templateButtonReplyMessage?.selectedDisplayText) {
+    return { content: rawMsg.templateButtonReplyMessage.selectedDisplayText || rawMsg.templateButtonReplyMessage.selectedId, mediaUrl: '' };
+  }
+  if (rawMsg.listResponseMessage?.title || rawMsg.listResponseMessage?.singleSelectReply?.selectedRowId) {
+    return { content: rawMsg.listResponseMessage.title || rawMsg.listResponseMessage.singleSelectReply?.selectedRowId, mediaUrl: '' };
+  }
+
+  return { content: '', mediaUrl: '' };
+}
+
+function formatFirstTwoNames(fullName) {
+  if (!fullName || typeof fullName !== 'string') return 'Cliente';
+  const parts = fullName.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return 'Cliente';
+  if (parts.length === 1) return parts[0];
+  return `${parts[0]} ${parts[1]}`;
+}
+
+const recentProcessedMsgIds = new Map();
+function isDuplicateIncomingMsg(uniqueKey) {
+  const now = Date.now();
+  for (const [k, time] of recentProcessedMsgIds.entries()) {
+    if (now - time > 30000) {
+      recentProcessedMsgIds.delete(k);
+    }
+  }
+  if (recentProcessedMsgIds.has(uniqueKey)) {
+    return true;
+  }
+  recentProcessedMsgIds.set(uniqueKey, now);
+  return false;
+}
+
+// Rotina contínua de expurgo de mensagens e sessões expiradas (> 30 min) ou encerradas
+async function cleanupExpiredAndClosedChatMessages() {
+  try {
+    const supabaseAdmin = getSupabaseAdmin();
+    const now = Date.now();
+    const thirtyMinutesAgo = new Date(now - 30 * 60 * 1000).toISOString();
+
+    // 1. Fechar sessões 'open' com mais de 30 minutos e deletar suas mensagens
+    const { data: expiredOpenSessions } = await supabaseAdmin
+      .from('chat_sessions')
+      .select('id, client_id')
+      .eq('status', 'open')
+      .lt('created_at', thirtyMinutesAgo);
+
+    if (expiredOpenSessions && expiredOpenSessions.length > 0) {
+      const expiredIds = expiredOpenSessions.map(s => s.id);
+      console.log(`[Chat Expiry Cleaner] Expurgando ${expiredIds.length} sessões abertas há mais de 30 minutos...`);
+      await supabaseAdmin.from('chat_messages').delete().in('session_id', expiredIds);
+      await supabaseAdmin.from('chat_sessions').update({ 
+        status: 'closed', 
+        closed_at: new Date().toISOString() 
+      }).in('id', expiredIds);
+    }
+
+    // 2. Deletar mensagens de sessões que já possuem status 'closed'
+    const { data: closedSessions } = await supabaseAdmin
+      .from('chat_sessions')
+      .select('id')
+      .eq('status', 'closed');
+
+    if (closedSessions && closedSessions.length > 0) {
+      const closedIds = closedSessions.map(s => s.id);
+      await supabaseAdmin.from('chat_messages').delete().in('session_id', closedIds);
+    }
+  } catch (e) {
+    console.warn('[Chat Expiry Cleaner] Erro na limpeza periódica:', e.message);
+  }
+}
+
+// Inicia cache e expurgo
+cleanupExpiredAndClosedChatMessages();
+refreshAstraContactsCache();
+
+// Sincronização direta e bidirecional de mensagens AstraCalls para sessões ativas (< 30 min)
+async function syncAstraCallsIncomingMessages({ clientId, sessionId, waSettings } = {}) {
+  try {
+    const supabaseAdmin = getSupabaseAdmin();
+    const astracallsUrl = (waSettings?.astracallsUrl || process.env.ASTRACALLS_URL || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
+    const astracallsApiKey = waSettings?.astracallsApiKey || process.env.ASTRACALLS_API_KEY || 'rs_piscinas_segredo_2026';
+    const astraSessionId = waSettings?.astracallsSessionId || '8090cca3add0b8eb3e41efb9eec363e4';
+
+    let session = null;
+    if (sessionId) {
+      const { data } = await supabaseAdmin.from('chat_sessions').select('*').eq('id', sessionId).maybeSingle();
+      session = data;
+    } else if (clientId) {
+      const { data } = await supabaseAdmin.from('chat_sessions').select('*').eq('client_id', clientId).eq('status', 'open').order('created_at', { ascending: false }).limit(1);
+      session = data?.[0];
+    }
+
+    if (!session || session.status !== 'open') {
+      return { synced: 0, reason: 'no_open_session' };
+    }
+
+    const sessionStartMs = new Date(session.created_at).getTime();
+    const now = Date.now();
+    if (now - sessionStartMs > 30 * 60 * 1000) {
+      await supabaseAdmin.from('chat_messages').delete().eq('session_id', session.id);
+      await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', session.id);
+      return { synced: 0, reason: 'session_expired' };
+    }
+
+    const targetClientId = clientId || session.client_id;
+    let client = null;
+    const { data: cRow } = await supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id, employee_id').eq('id', targetClientId).maybeSingle();
+    if (cRow) {
+      client = cRow;
+    } else {
+      const { data: aRow } = await supabaseAdmin.from('agenda_contacts').select('id, name, phone, admin_id').eq('id', targetClientId).maybeSingle();
+      if (aRow) client = { ...aRow, local_phone: '', employee_id: aRow.admin_id };
+    }
+
+    if (!client) return { synced: 0, reason: 'client_not_found' };
+
+    const rawPhone = client.phone || client.local_phone || '';
+    const digits = String(rawPhone).replace(/\D/g, '');
+    if (!digits) return { synced: 0, reason: 'no_phone' };
+
+    const ddd = digits.length >= 10 ? digits.slice(-10, -8) : '67';
+    const num8 = digits.slice(-8);
+
+    const chatIds = new Set([
+      `55${ddd}${num8}@s.whatsapp.net`,
+      `55${ddd}9${num8}@s.whatsapp.net`,
+      `55${ddd}${num8}@c.us`,
+      `55${ddd}9${num8}@c.us`
+    ]);
+
+    try {
+      const cRes = await fetch(`${astracallsUrl}/api/sessions/${astraSessionId}/contacts`, {
+        headers: { 'X-Api-Key': astracallsApiKey }
+      });
+      if (cRes.ok) {
+        const contacts = await cRes.json();
+        if (Array.isArray(contacts)) {
+          const matchedContacts = contacts.filter(c => {
+            const cNum = String(c.number || c.id || '').replace(/\D/g, '');
+            return cNum.endsWith(num8) || (cNum.length >= 10 && cNum.includes(num8));
+          });
+
+          const knownNames = new Set();
+          for (const mc of matchedContacts) {
+            if (mc.id) chatIds.add(mc.id);
+            if (mc.jid) chatIds.add(mc.jid);
+            const n = (mc.name || mc.pushName || mc.pushname || mc.fullName || '').trim().toLowerCase();
+            if (n && n.length >= 3) knownNames.add(n);
+          }
+
+          const normClientName = (client.name || '').trim().toLowerCase();
+          if (normClientName && normClientName.length >= 3) knownNames.add(normClientName);
+
+          for (const c of contacts) {
+            const isLid = c.id?.includes('@lid') || c.jid?.includes('@lid');
+            if (!isLid) continue;
+            const cName = (c.name || c.pushName || c.pushname || c.fullName || '').trim().toLowerCase();
+            if (!cName || cName.length < 3) continue;
+
+            let matches = false;
+            for (const kn of knownNames) {
+              if (cName === kn || cName.includes(kn) || kn.includes(cName)) {
+                matches = true;
+                break;
+              }
+            }
+            if (matches) {
+              if (c.id) chatIds.add(c.id);
+              if (c.jid) chatIds.add(c.jid);
+            }
+          }
+        }
+      }
+    } catch (e) {}
+
+    const { data: currentMsgs } = await supabaseAdmin.from('chat_messages').select('id, media_url, sender_type').eq('session_id', session.id);
+    const existingExtIds = new Set();
+    (currentMsgs || []).forEach(m => {
+      try {
+        const meta = typeof m.media_url === 'string' && m.media_url.startsWith('{') ? JSON.parse(m.media_url) : {};
+        if (meta.external_id) existingExtIds.add(String(meta.external_id));
+        if (meta.astra_id) existingExtIds.add(String(meta.astra_id));
+      } catch (e) {}
+    });
+
+    let newInsertedCount = 0;
+    for (const cid of chatIds) {
+      try {
+        const mRes = await fetch(`${astracallsUrl}/api/sessions/${astraSessionId}/messages?chatId=${encodeURIComponent(cid)}&limit=15`, {
+          headers: { 'X-Api-Key': astracallsApiKey }
+        });
+        if (!mRes.ok) continue;
+        const msgs = await mRes.json();
+        if (!Array.isArray(msgs)) continue;
+
+        for (const m of msgs) {
+          if (m.fromMe) continue;
+          if (m.timestamp < sessionStartMs) continue;
+          const extId = String(m.id || '');
+          if (extId && existingExtIds.has(extId)) continue;
+
+          let content = m.body || m.text || m.message || '';
+          if (m.type === 'audio' && !content) content = '🎵 Mensagem de Áudio';
+          if (m.type === 'image' && !content) content = '📸 Imagem';
+          if (m.type === 'video' && !content) content = '🎥 Vídeo';
+          if (m.type === 'document' && !content) content = '📄 Documento';
+          if (!content) continue;
+
+          const meta = {
+            external_id: extId || undefined,
+            astra_id: extId || undefined,
+            status: 'read'
+          };
+
+          const { error: insErr } = await supabaseAdmin.from('chat_messages').insert({
+            session_id: session.id,
+            sender_type: 'client',
+            content: String(content),
+            media_url: JSON.stringify(meta),
+            created_at: new Date(m.timestamp).toISOString()
+          });
+
+          if (!insErr) {
+            existingExtIds.add(extId);
+            newInsertedCount++;
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (newInsertedCount > 0) {
+      const { data: unreadTech } = await supabaseAdmin
+        .from('chat_messages')
+        .select('id, media_url')
+        .eq('session_id', session.id)
+        .eq('sender_type', 'tech');
+
+      if (unreadTech) {
+        for (const utm of unreadTech) {
+          let mMeta = {};
+          try { mMeta = JSON.parse(utm.media_url); } catch(e) {}
+          if (mMeta.status !== 'read') {
+            await supabaseAdmin.from('chat_messages').update({
+              media_url: JSON.stringify({ ...mMeta, status: 'read' })
+            }).eq('id', utm.id);
+          }
+        }
+      }
+
+      const targetUserId = client.employee_id || client.admin_id;
+      if (targetUserId && typeof sendPushToAdmin === 'function') {
+        const clientDisplayName = formatFirstTwoNames(client.name);
+        sendPushToAdmin(targetUserId, `💬 ${clientDisplayName}`, 'Nova mensagem recebida no WhatsApp', {
+          clientId: client.id,
+          sessionId: session.id,
+          type: 'chat_message',
+          channelId: 'chat_messages'
+        }).catch(() => {});
+      }
+    }
+
+    return { synced: newInsertedCount, success: true, chatIds: Array.from(chatIds) };
+  } catch (err) {
+    return { synced: 0, error: err.message };
+  }
+}
+
 // --- 1. CHAT ENDPOINTS ---
+
+// Obter / Sincronizar Mensagens do Chat de um Cliente (GET e POST)
+const handleGetChatMessages = async (req, res) => {
+  try {
+    const clientId = req.params?.clientId || req.body?.clientId || req.query?.clientId;
+    if (!clientId) return res.status(400).json({ error: "Missing clientId" });
+
+    const supabaseAdmin = getSupabaseAdmin();
+
+    // Expurgar mensagens de sessões expiradas ou encerradas
+    await cleanupExpiredAndClosedChatMessages();
+
+    // Sincronizar mensagens pendentes da AstraCalls antes de retornar
+    try {
+      await syncAstraCallsIncomingMessages({ clientId, waSettings: req.body?.waSettings });
+    } catch(e) {}
+
+    // Buscar APENAS sessão aberta ('open') do cliente
+    const { data: openSessions } = await supabaseAdmin
+      .from('chat_sessions')
+      .select('id, created_at, status')
+      .eq('client_id', clientId)
+      .eq('status', 'open')
+      .order('created_at', { ascending: false });
+
+    if (!openSessions || openSessions.length === 0) {
+      return res.json({ success: true, messages: [] });
+    }
+
+    const activeSession = openSessions[0];
+    const now = Date.now();
+    const createdMs = activeSession.created_at ? new Date(activeSession.created_at).getTime() : 0;
+
+    // Se a sessão expirou (> 30 min), deleta as mensagens do chat/banco e fecha a sessão
+    if (createdMs > 0 && now - createdMs > 30 * 60 * 1000) {
+      await supabaseAdmin.from('chat_messages').delete().eq('session_id', activeSession.id);
+      await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', activeSession.id);
+      return res.json({ success: true, messages: [] });
+    }
+
+    // Retorna APENAS as mensagens da sessão aberta ativa atual
+    const { data: loadedMsgs, error } = await supabaseAdmin
+      .from('chat_messages')
+      .select('*')
+      .eq('session_id', activeSession.id)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      console.error("[/api/chat/messages] Erro ao buscar mensagens:", error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    return res.json({ success: true, messages: loadedMsgs || [] });
+  } catch (e) {
+    console.error("[/api/chat/messages] Erro inesperado:", e);
+    return res.status(500).json({ error: e.message });
+  }
+};
+
+app.get(['/api/chat/messages/:clientId', '/chat/messages/:clientId', '/api/chat/messages', '/chat/messages'], handleGetChatMessages);
+app.post(['/api/chat/messages/:clientId', '/chat/messages/:clientId', '/api/chat/messages', '/chat/messages', '/api/chat/sync-messages', '/chat/sync-messages'], handleGetChatMessages);
+
+
+// Obter Sessão Ativa do Chat de um Cliente
+app.get(['/api/chat/session/:clientId', '/chat/session/:clientId'], async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    if (!clientId) return res.status(400).json({ error: "Missing clientId" });
+
+    const supabaseAdmin = getSupabaseAdmin();
+    const { data: allSessions, error } = await supabaseAdmin
+      .from('chat_sessions')
+      .select('id, status, created_at, closed_at, client_id, admin_id, employee_id, visit_id')
+      .eq('client_id', clientId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error("[/api/chat/session] Erro ao buscar sessões:", error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    const active = (allSessions || []).find(s => s.status === 'open' || s.status === 'active') || allSessions?.[0] || null;
+    return res.json({ success: true, session: active, allSessions: allSessions || [] });
+  } catch (e) {
+    console.error("[/api/chat/session] Erro inesperado:", e);
+    return res.status(500).json({ error: e.message });
+  }
+});
 
 // Ensure Session
 app.post(['/api/chat/session/ensure', '/chat/session/ensure'], async (req, res) => {
@@ -223,29 +736,39 @@ app.post(['/api/chat/session/ensure', '/chat/session/ensure'], async (req, res) 
     if (!clientId) return res.status(400).json({ error: "Missing clientId" });
 
     const supabaseAdmin = getSupabaseAdmin();
-    const { data: existingSessions } = await supabaseAdmin
+    const now = Date.now();
+
+    // 1. Procurar sessão open existente
+    const { data: openSessions } = await supabaseAdmin
       .from('chat_sessions')
       .select('*')
       .eq('client_id', clientId)
-      .order('created_at', { ascending: false })
-      .limit(10);
+      .eq('status', 'open')
+      .order('created_at', { ascending: false });
 
-    const openSession = existingSessions?.find(s => s.status === 'open');
-    if (openSession) {
-      const now = Date.now();
-      const sessionStart = openSession.created_at ? new Date(openSession.created_at).getTime() : now;
-      if (now - sessionStart <= 30 * 60 * 1000) {
-        return res.json({ success: true, session: openSession });
+    if (openSessions && openSessions.length > 0) {
+      const currentSession = openSessions[0];
+      const createdMs = currentSession.created_at ? new Date(currentSession.created_at).getTime() : 0;
+
+      // Se a sessão existente ainda estiver dentro do limite de 30 minutos, reutiliza
+      if (createdMs > 0 && now - createdMs <= 30 * 60 * 1000) {
+        if (openSessions.length > 1) {
+          const extraIds = openSessions.slice(1).map((s) => s.id);
+          await supabaseAdmin.from('chat_messages').delete().in('session_id', extraIds);
+          await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).in('id', extraIds);
+        }
+        return res.json({ success: true, session: currentSession });
       } else {
-        await supabaseAdmin
-          .from('chat_sessions')
-          .update({ status: 'closed', closed_at: new Date().toISOString() })
-          .eq('id', openSession.id);
+        // Sessão existente expirou (> 30 min): deletar mensagens e fechar
+        console.log(`[/api/chat/session/ensure] Sessão existente expirou (>30min). Deletando mensagens e fechando...`);
+        const expiredIds = openSessions.map((s) => s.id);
+        await supabaseAdmin.from('chat_messages').delete().in('session_id', expiredIds);
+        await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).in('id', expiredIds);
       }
     }
 
     let resolvedAdminId = adminId;
-    let resolvedEmpId = employeeId;
+    let resolvedEmpId = employeeId || adminId;
     const { data: clientRow } = await supabaseAdmin.from('clients').select('admin_id, employee_id').eq('id', clientId).maybeSingle();
     if (clientRow) {
       resolvedAdminId = resolvedAdminId || clientRow.admin_id;
@@ -666,25 +1189,54 @@ app.post(['/api/chat/send', '/chat/send'], async (req, res) => {
 app.post(['/api/chat/close', '/chat/close'], async (req, res) => {
   try {
     const { clientId, sessionId } = req.body;
+    if (!clientId && !sessionId) return res.status(400).json({ error: "Missing clientId or sessionId" });
+
     const supabaseAdmin = getSupabaseAdmin();
     const now = new Date().toISOString();
+
+    let query = supabaseAdmin.from('chat_sessions').select('id');
     if (sessionId) {
-      await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: now }).eq('id', sessionId);
-    } else if (clientId) {
-      await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: now }).eq('client_id', clientId).eq('status', 'open');
+      query = query.eq('id', sessionId);
+    } else {
+      query = query.eq('client_id', clientId);
     }
-    return res.json({ success: true, message: 'Session closed' });
+
+    const { data: targetSessions } = await query;
+    if (targetSessions && targetSessions.length > 0) {
+      const sIds = targetSessions.map((s) => s.id);
+      console.log(`[/api/chat/close] Encerrando chat e excluindo todas as mensagens de ${sIds.length} sessões...`);
+      await supabaseAdmin.from('chat_messages').delete().in('session_id', sIds);
+      await supabaseAdmin.from('chat_sessions').update({ 
+        status: 'closed', 
+        closed_at: now 
+      }).in('id', sIds);
+    }
+
+    return res.json({ success: true, closed: true, deleted: true });
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
 });
 
-// Sync Status (1 tique -> 2 tiques entregue -> 2 tiques azuis lido)
+// Sync Status (1 tique -> 2 tiques entregue -> 2 tiques azuis lido) e Sincronização em Tempo Real de Mensagens
 app.post(['/api/chat/sync-status', '/chat/sync-status'], async (req, res) => {
   try {
-    let { messageIds, waSettings } = req.body;
-    if (!Array.isArray(messageIds) || messageIds.length === 0) return res.json({ updated: 0, statusMap: {} });
+    let { messageIds, waSettings, clientId, sessionId } = req.body;
     const supabaseAdmin = getSupabaseAdmin();
+
+    // Sincroniza mensagens do cliente via AstraCalls se houver conversa em andamento (< 30 min)
+    let syncRes = null;
+    if (clientId || sessionId) {
+      try {
+        syncRes = await syncAstraCallsIncomingMessages({ clientId, sessionId, waSettings });
+      } catch (e) {
+        console.warn('Erro ao sincronizar mensagens AstraCalls em sync-status:', e.message);
+      }
+    }
+
+    if (!Array.isArray(messageIds) || messageIds.length === 0) {
+      return res.json({ updated: 0, statusMap: {}, syncedIncoming: syncRes?.synced || 0 });
+    }
 
     if (!waSettings?.metaToken && !waSettings?.evolutionApiKey) {
       const { data: adminUsers } = await supabaseAdmin.from('users').select('whatsapp_settings').not('whatsapp_settings', 'is', null);
@@ -1913,7 +2465,17 @@ app.all(['/api/sync-payment', '/sync-payment'], async (req, res) => {
 
 // --- 6. WEBHOOKS (ASTRACALLS / EVOLUTION / META / WAME) ---
 
-app.all(['/api/webhook/astracalls', '/webhook/astracalls', '/api/astracalls/webhook', '/astracalls/webhook'], async (req, res) => {
+const handleWameGet = (req, res) => {
+  const mode = req.query["hub.mode"];
+  const challenge = req.query["hub.challenge"];
+  if (mode === "subscribe" && challenge) {
+    return res.status(200).send(challenge);
+  }
+  return res.status(200).send("OK");
+};
+
+// AstraCalls Webhook
+const handleAstraCallsWebhook = async (req, res) => {
   if (req.method === 'GET') {
     return res.status(200).send(req.query['hub.challenge'] || 'OK_ASTRACALLS');
   }
@@ -1922,78 +2484,292 @@ app.all(['/api/webhook/astracalls', '/webhook/astracalls', '/api/astracalls/webh
     const supabaseAdmin = getSupabaseAdmin();
 
     // 1. Processa atualizações de status de mensagens enviadas
-    await processStatusUpdates(payload);
+    const statusResult = await processStatusUpdates(payload);
 
     const isStatusOnly = payload.event === 'message.status' || payload.event === 'message.ack' || payload.event === 'message_status' || payload.event === 'messages.update' || payload.type === 'message_status';
     if (isStatusOnly) {
-      return res.status(200).json({ success: true });
+      return res.status(200).json({ success: true, event: payload.event, ...statusResult });
     }
 
-    // 2. Processa mensagens recebidas do cliente
-    const data = payload.data || payload;
-    const msgObj = data.message || data.messages?.[0] || (data.key ? data : null);
-    if (msgObj) {
-      const fromMe = msgObj.fromMe || msgObj.key?.fromMe || msgObj.direction === 'outbound';
-      if (!fromMe) {
-        let senderPhone = msgObj.from || msgObj.key?.remoteJid || msgObj.phone || msgObj.sender || '';
-        senderPhone = senderPhone.replace('@s.whatsapp.net', '').replace('@c.us', '').replace(/\D/g, '');
-        const textContent = msgObj.text || msgObj.body || msgObj.conversation || msgObj.message?.conversation || msgObj.message?.extendedTextMessage?.text || '';
-        const mediaUrl = msgObj.mediaUrl || msgObj.url || msgObj.imageMessage?.url || msgObj.audioMessage?.url || '';
+    // 2. Processa mensagens recebidas do cliente (suporta objetos diretos e arrays de mensagens)
+    const rawItem = payload.data?.messages?.[0] || payload.messages?.[0] || (Array.isArray(payload.data) ? payload.data[0] : null) || (Array.isArray(payload) ? payload[0] : null) || payload.data || payload;
+    const msgData = rawItem || payload;
+    const isFromMe = Boolean(
+      msgData.key?.fromMe === true ||
+      msgData.fromMe === true ||
+      payload.fromMe === true ||
+      msgData.direction === 'outbound' ||
+      msgData.direction === 'outgoing'
+    );
 
-        if (senderPhone && (textContent || mediaUrl)) {
-          const { data: allClients } = await supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id, employee_id');
-          const matched = allClients?.find(c => isMatchingClientPhone(c.phone || '', senderPhone) || isMatchingClientPhone(c.local_phone || '', senderPhone));
+    if (isFromMe) {
+      return res.status(200).json({ success: true, fromMe: true, ...statusResult });
+    }
 
-          if (matched) {
-            const { data: openSess } = await supabaseAdmin.from('chat_sessions').select('id').eq('client_id', matched.id).eq('status', 'open').maybeSingle();
-            let targetSessId = openSess?.id;
-            if (!targetSessId) {
-              const { data: newSess } = await supabaseAdmin.from('chat_sessions').insert({
-                client_id: matched.id,
-                admin_id: matched.admin_id || null,
-                employee_id: matched.employee_id || null,
-                status: 'open',
-                created_at: new Date().toISOString()
-              }).select('id').single();
-              targetSessId = newSess?.id;
-            }
-            if (targetSessId) {
-              await supabaseAdmin.from('chat_messages').insert({
-                session_id: targetSessId,
-                sender_type: 'client',
-                sender_name: matched.name || 'Cliente',
-                content: textContent || 'Mídia recebida',
-                media_url: mediaUrl || undefined,
-                created_at: new Date().toISOString()
-              });
+    let rawRemote = msgData.key?.remoteJid || msgData.remoteJid || msgData.chat || msgData.chatId || msgData.from || msgData.sender || msgData.phone || msgData.to || payload.chat || payload.from || payload.chatId || "";
+    const cleanIncoming = cleanJidToPhone(rawRemote);
 
-              // Dispara notificação push para o responsável
-              const targetUserId = matched.admin_id || matched.employee_id;
-              sendPushToAdmin(
-                targetUserId,
-                `💬 ${matched.name || 'Cliente'}`,
-                textContent || 'Enviou uma mídia no WhatsApp',
-                {
-                  url: '/messages',
-                  channelId: 'chat_messages',
-                  type: 'chat_message',
-                  clientId: matched.id
-                }
-              ).catch(err => console.error('[Push Notification Error]', err));
-            }
+    const extracted = extractMessageData(msgData.message || msgData);
+    let content = extracted.content || msgData.body || msgData.text || msgData.message || msgData.content || payload.body || payload.text || payload.message || "";
+    let mediaUrl = extracted.mediaUrl || msgData.mediaUrl || msgData.url || "";
+    let externalMsgId = String(msgData.key?.id || msgData.id || payload.id || payload.messageId || "");
+
+    if (msgData.type === 'audio' && !content) content = "🎵 Mensagem de Áudio";
+    if (msgData.type === 'image' && !content) content = "📸 Imagem";
+    if (msgData.type === 'video' && !content) content = "🎥 Vídeo";
+    if (msgData.type === 'document' && !content) content = "📄 Documento";
+
+    if (!cleanIncoming || (!content && !mediaUrl)) {
+      return res.status(200).json({ success: true, ...statusResult });
+    }
+
+    // Deduplicação
+    const dedupKey = externalMsgId ? `astra_${externalMsgId}` : `astra_txt_${cleanIncoming}_${content}`;
+    if (isDuplicateIncomingMsg(dedupKey)) {
+      return res.status(200).json({ success: true, duplicate: true });
+    }
+
+    const [{ data: clients }, { data: agendaContacts }] = await Promise.all([
+      supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id, employee_id'),
+      supabaseAdmin.from('agenda_contacts').select('id, name, phone, admin_id')
+    ]);
+
+    const allTargets = [
+      ...(clients || []).map((c) => ({ ...c, is_agenda: false })),
+      ...(agendaContacts || []).map((a) => ({ ...a, local_phone: '', employee_id: a.admin_id, is_agenda: true }))
+    ];
+
+    let candidatePhones = [cleanIncoming];
+    const isLid = rawRemote.includes('@lid') || cleanIncoming.length > 13;
+    if (isLid) {
+      const resolved = await resolveLidToRealPhone(cleanIncoming, rawRemote, msgData, payload, allTargets);
+      if (resolved) {
+        candidatePhones.push(resolved);
+      }
+    }
+
+    const matchedClient = allTargets.find((c) => {
+      return candidatePhones.some(cand => 
+        isMatchingClientPhone(c.phone || '', cand) || isMatchingClientPhone(c.local_phone || '', cand)
+      );
+    });
+
+    if (!matchedClient) {
+      console.log("[Webhook AstraCalls] Mensagem ignorada (número não pertence a cliente cadastrado):", cleanIncoming, rawRemote, "Candidatos:", candidatePhones);
+      return res.status(200).json({ success: true, matched: false });
+    }
+
+    const { data: sessions } = await supabaseAdmin
+      .from('chat_sessions')
+      .select('*')
+      .eq('client_id', matchedClient.id)
+      .order('created_at', { ascending: false });
+
+    const now = Date.now();
+    let activeSession = null;
+
+    // Localiza sessões abertas válidas criadas nos últimos 30 minutos
+    const openSessions = (sessions || []).filter((s) => s.status === 'open');
+    if (openSessions.length > 0) {
+      for (const sess of openSessions) {
+        const createdTime = new Date(sess.created_at).getTime();
+        if (now - createdTime <= 30 * 60 * 1000) {
+          if (!activeSession) {
+            activeSession = sess;
+          } else {
+            await supabaseAdmin.from('chat_messages').delete().eq('session_id', sess.id);
+            await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', sess.id);
           }
+        } else {
+          console.log(`[Webhook AstraCalls] Sessão expirou (>30 min). Deletando mensagens da sessão ${sess.id}...`);
+          await supabaseAdmin.from('chat_messages').delete().eq('session_id', sess.id);
+          await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', sess.id);
         }
       }
     }
-    return res.status(200).json({ success: true });
-  } catch (e) {
-    return res.status(200).json({ success: true });
-  }
-});
 
-app.all(['/api/webhook/wame', '/webhook/wame', '/api/webhook/evolution', '/webhook/evolution', '/api/webhook/meta', '/webhook/meta', '/api/webhook/status', '/webhook/status', '/api/webhook/messages/status'], async (req, res) => {
+    // REGRA ESTRITA: Se não houver conversa ativa iniciada pelo colaborador nos últimos 30 min, descarta!
+    if (!activeSession) {
+      console.log(`[Webhook AstraCalls] Mensagem descartada de ${matchedClient.name} (${cleanIncoming}): Nenhuma conversa ativa de 30 minutos em andamento iniciada pelo colaborador.`);
+      return res.status(200).json({ success: true, activeSession: false });
+    }
+
+    const metadataPayload = {
+      external_id: externalMsgId || undefined,
+      astra_id: externalMsgId || undefined,
+      url: mediaUrl || undefined,
+      status: 'read'
+    };
+
+    // Insere sem sender_name (a coluna não existe na tabela chat_messages do Supabase)
+    await supabaseAdmin.from('chat_messages').insert({
+      session_id: activeSession.id,
+      sender_type: 'client',
+      content: String(content),
+      media_url: JSON.stringify(metadataPayload)
+    });
+
+    // Cliente respondeu: marca mensagens anteriores enviadas pelo colaborador como lidas
+    const { data: unreadTech } = await supabaseAdmin
+      .from('chat_messages')
+      .select('id, media_url')
+      .eq('session_id', activeSession.id)
+      .eq('sender_type', 'tech');
+
+    if (unreadTech) {
+      for (const utm of unreadTech) {
+        let mMeta = {};
+        try { mMeta = JSON.parse(utm.media_url); } catch(e) {}
+        if (mMeta.status !== 'read') {
+          await supabaseAdmin.from('chat_messages').update({
+            media_url: JSON.stringify({ ...mMeta, status: 'read' })
+          }).eq('id', utm.id);
+        }
+      }
+    }
+
+    const targetUserId = matchedClient.employee_id || matchedClient.admin_id;
+    if (targetUserId) {
+      const clientDisplayName = formatFirstTwoNames(matchedClient.name);
+      sendPushToAdmin(targetUserId, `💬 ${clientDisplayName}`, String(content), {
+        clientId: matchedClient.id,
+        sessionId: activeSession.id,
+        type: 'chat_message',
+        channelId: 'chat_messages'
+      }).catch(err => console.error('[Push Notification Error]', err));
+    }
+
+    return res.status(200).json({ success: true, processed: true });
+  } catch (e) {
+    console.error("[Webhook AstraCalls Error]", e);
+    return res.status(500).json({ error: e.message });
+  }
+};
+
+app.all(['/api/webhook/astracalls', '/webhook/astracalls', '/api/astracalls/webhook', '/astracalls/webhook'], handleAstraCallsWebhook);
+
+// Evolution Webhook
+const handleEvolutionWebhook = async (req, res) => {
   if (req.method === 'GET') {
-    return res.status(200).send(req.query["hub.challenge"] || "Webhook active");
+    return res.status(200).send("OK_EVOLUTION");
+  }
+  try {
+    const body = req.body || {};
+    await processStatusUpdates(body);
+
+    const msgData = body.data || body;
+    if (!msgData || (!msgData.key && !msgData.message && !body.message)) return res.status(200).send("OK");
+    if (msgData.key?.fromMe || msgData.fromMe) return res.status(200).send("OK");
+
+    let remoteJid = msgData.key?.remoteJid || msgData.remoteJid || body.remoteJid || "";
+    if (!remoteJid && msgData.from) remoteJid = msgData.from;
+    if (!remoteJid) return res.status(200).send("OK");
+
+    const cleanIncoming = remoteJid.split('@')[0].replace(/\D/g, '');
+    let externalMsgId = msgData.key?.id || msgData.id || "";
+
+    let content = "";
+    if (msgData.message?.conversation) content = msgData.message.conversation;
+    else if (msgData.message?.extendedTextMessage?.text) content = msgData.message.extendedTextMessage.text;
+    else if (typeof msgData.message === 'string') content = msgData.message;
+    else if (typeof body.message === 'string') content = body.message;
+
+    let mediaUrl = "";
+    if (msgData.message?.audioMessage) content = "🎵 Mensagem de Áudio";
+    else if (msgData.message?.imageMessage) content = "📷 Imagem";
+
+    if (!content && !mediaUrl) return res.status(200).send("OK");
+
+    const dedupKey = externalMsgId ? `evo_${externalMsgId}` : `evo_txt_${cleanIncoming}_${content}`;
+    if (isDuplicateIncomingMsg(dedupKey)) {
+      return res.status(200).send("OK");
+    }
+
+    const supabaseAdmin = getSupabaseAdmin();
+    const [{ data: clients }, { data: agendaContacts }] = await Promise.all([
+      supabaseAdmin.from('clients').select('id, name, phone, local_phone, admin_id, employee_id'),
+      supabaseAdmin.from('agenda_contacts').select('id, name, phone, admin_id')
+    ]);
+
+    const allTargets = [
+      ...(clients || []).map((c) => ({ ...c, is_agenda: false })),
+      ...(agendaContacts || []).map((a) => ({ ...a, local_phone: '', employee_id: a.admin_id, is_agenda: true }))
+    ];
+
+    let candidatePhones = [cleanIncoming];
+    const isLid = remoteJid.includes('@lid') || cleanIncoming.length > 13;
+    if (isLid) {
+      const resolved = await resolveLidToRealPhone(cleanIncoming, remoteJid, msgData, body, allTargets);
+      if (resolved) candidatePhones.push(resolved);
+    }
+
+    const matchedClient = allTargets.find((c) => {
+      return candidatePhones.some(cand => 
+        isMatchingClientPhone(c.phone || '', cand) || isMatchingClientPhone(c.local_phone || '', cand)
+      );
+    });
+
+    if (!matchedClient) return res.status(200).send("OK");
+
+    const { data: sessions } = await supabaseAdmin
+      .from('chat_sessions')
+      .select('*')
+      .eq('client_id', matchedClient.id)
+      .order('created_at', { ascending: false });
+
+    const now = Date.now();
+    let activeSession = null;
+
+    const openSessions = (sessions || []).filter((s) => s.status === 'open');
+    if (openSessions.length > 0) {
+      for (const sess of openSessions) {
+        const createdTime = new Date(sess.created_at).getTime();
+        if (now - createdTime <= 30 * 60 * 1000) {
+          if (!activeSession) {
+            activeSession = sess;
+          } else {
+            await supabaseAdmin.from('chat_messages').delete().eq('session_id', sess.id);
+            await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', sess.id);
+          }
+        } else {
+          await supabaseAdmin.from('chat_messages').delete().eq('session_id', sess.id);
+          await supabaseAdmin.from('chat_sessions').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', sess.id);
+        }
+      }
+    }
+
+    if (!activeSession) return res.status(200).send("OK");
+
+    await supabaseAdmin.from('chat_messages').insert({
+      session_id: activeSession.id,
+      sender_type: 'client',
+      content: content,
+      media_url: mediaUrl
+    });
+
+    const targetUserId = matchedClient.employee_id || matchedClient.admin_id;
+    if (targetUserId) {
+      const clientDisplayName = formatFirstTwoNames(matchedClient.name);
+      sendPushToAdmin(targetUserId, `💬 ${clientDisplayName}`, content, {
+        clientId: matchedClient.id,
+        sessionId: activeSession.id,
+        type: 'chat_message',
+        channelId: 'chat_messages'
+      }).catch(err => console.error('[Push Notification Error]', err));
+    }
+
+    return res.status(200).send("OK");
+  } catch (e) {
+    return res.status(500).send("Error");
+  }
+};
+
+app.all(['/api/webhook/evolution', '/webhook/evolution'], handleEvolutionWebhook);
+
+// Status and WAME Webhooks
+app.all(['/api/webhook/wame', '/webhook/wame', '/api/webhook/meta', '/webhook/meta', '/api/webhook/status', '/webhook/status', '/api/webhook/messages/status'], async (req, res) => {
+  if (req.method === 'GET') {
+    return handleWameGet(req, res);
   }
   try {
     await processStatusUpdates(req.body || {});
@@ -2002,3 +2778,4 @@ app.all(['/api/webhook/wame', '/webhook/wame', '/api/webhook/evolution', '/webho
 });
 
 export default app;
+

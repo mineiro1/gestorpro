@@ -2640,27 +2640,7 @@ useEffect(() => {
                               <MapPin size={20} />
                             </button>
 
-                            {/* Botão Aviso Estou a Caminho */}
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleSendOnTheWay(client);
-                              }}
-                              className={`p-1 rounded-md transition-colors ${
-                                onTheWayNotified[client.id]
-                                  ? 'text-teal-700 bg-teal-100 hover:bg-teal-200'
-                                  : 'text-amber-600 hover:bg-amber-100'
-                              }`}
-                              title={
-                                onTheWayNotified[client.id]
-                                  ? `Aviso de deslocamento enviado às ${onTheWayNotified[client.id]} (Clique para reenviar)`
-                                  : 'Avisar cliente no WhatsApp que estou a caminho (~15 min)'
-                              }
-                            >
-                              <Navigation size={20} className={onTheWayNotified[client.id] ? 'rotate-45' : ''} />
-                            </button>
-                            
+
                             {/* Botão Chat */}
                             {(() => {
                               const chatStatus = chatStatusByClient[client.id];
