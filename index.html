@@ -1,6 +1,28 @@
 <!doctype html>
 <html lang="pt-BR">
   <head>
+    <!-- Global JSON Parse Shield for Android WebViews & PWAs -->
+    <script>
+      (function() {
+        if (typeof Response !== 'undefined' && Response.prototype && Response.prototype.json) {
+          var originalResponseJson = Response.prototype.json;
+          Response.prototype.json = async function() {
+            try {
+              var text = await this.text();
+              var trimmed = (text || '').trim();
+              if (trimmed.startsWith('<') || trimmed.startsWith('<!doctype') || trimmed.startsWith('<!DOCTYPE') || trimmed.startsWith('<html')) {
+                console.warn('[Global JSON Shield] Interceptada resposta HTML inesperada onde se esperava JSON:', trimmed.slice(0, 100));
+                return { success: false, reason: 'html_fallback_intercepted', isHtmlFallback: true };
+              }
+              return JSON.parse(text);
+            } catch (err) {
+              console.warn('[Global JSON Shield] Falha ao fazer parse de JSON:', err);
+              return { success: false, error: err.message, isInvalidJson: true };
+            }
+          };
+        }
+      })();
+    </script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="RS Piscinas - Especialistas em Limpeza e Tratamento de Piscinas, Correção Química da Água, Limpeza de Capas e Manutenção de Casa de Máquinas em Campo Grande, MS. CNPJ: 37.666.108.0001/28." />
@@ -138,13 +160,42 @@
     </script>
 
     <script>
-      // Safe offline service worker registration and sync
+      // Safe offline service worker registration, auto-update and sync
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
           navigator.serviceWorker.register('/sw.js').then((registration) => {
             console.log('ServiceWorker registration successful with scope: ', registration.scope);
+            
+            // Força verificação imediata de atualizações no servidor
+            registration.update().catch(() => {});
+
+            // Checa periodicamente por nova versão a cada 10 minutos
+            setInterval(() => {
+              registration.update().catch(() => {});
+            }, 10 * 60 * 1000);
+
+            registration.onupdatefound = () => {
+              const installingWorker = registration.installing;
+              if (installingWorker) {
+                installingWorker.onstatechange = () => {
+                  if (installingWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                    console.log('[SW] Nova versão detectada! Atualizando aplicação...');
+                    window.location.reload();
+                  }
+                };
+              }
+            };
           }).catch((err) => {
             console.log('ServiceWorker registration note: ', err);
+          });
+
+          let refreshing = false;
+          navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (!refreshing) {
+              refreshing = true;
+              console.log('[SW Controller] Nova versão ativada! Recarregando...');
+              window.location.reload();
+            }
           });
         });
 

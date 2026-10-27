@@ -2,6 +2,10 @@
   "appId": "br.com.gestorpro.app",
   "appName": "RS PISCINA",
   "webDir": "dist",
+  "server": {
+    "url": "https://www.rspiscinas.app.br",
+    "cleartext": true
+  },
   "plugins": {
     "PushNotifications": {
       "presentationOptions": ["badge", "sound", "alert"]

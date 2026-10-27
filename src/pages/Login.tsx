@@ -172,13 +172,16 @@ export default function Login() {
         navigate('/dashboard', { replace: true });
       }
     } catch (err: any) {
-      if (err.message?.includes('Invalid login credentials')) {
+      const errMsg = String(err?.message || err || '');
+      if (errMsg.includes('Invalid login credentials') || errMsg.includes('credentials_mismatch')) {
         setError('Telefone ou senha incorretos.');
-      } else if (err.message?.includes('Email not confirmed')) {
+      } else if (errMsg.includes('Unexpected token') || errMsg.includes('<!doctype') || errMsg.includes('valid JSON') || errMsg.includes('html_fallback')) {
+        setError('Telefone ou senha incorretos. Verifique seus dados.');
+      } else if (errMsg.includes('Email not confirmed')) {
         setError('Por favor, desative a confirmação de e-mail no painel do Supabase: Authentication -> Providers -> Email -> Desmarque "Confirm email".');
-      } else if (err.message?.includes('Email logins are disabled')) {
+      } else if (errMsg.includes('Email logins are disabled')) {
         setError('Por favor, ative o provedor de E-mail no painel do Supabase: Authentication -> Providers -> Email -> Enable Email provider.');
-      } else if (err.message?.includes('FetchError') || err.message?.includes('Network request failed')) {
+      } else if (errMsg.includes('FetchError') || errMsg.includes('Network request failed')) {
         setError('Erro de conexão. Verifique sua internet, desative bloqueadores de anúncios (AdBlock) ou tente em uma aba anônima.');
       } else {
         console.error(err);
@@ -186,6 +189,30 @@ export default function Login() {
       }
     } finally {
       setLoading(false);
+    }
+  };
+
+  const [clearingCache, setClearingCache] = useState(false);
+
+  const handleForceUpdateApp = async () => {
+    setClearingCache(true);
+    try {
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map(k => caches.delete(k)));
+      }
+      if ('serviceWorker' in navigator) {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        for (const reg of registrations) {
+          await reg.unregister();
+        }
+      }
+      localStorage.clear();
+      sessionStorage.clear();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      window.location.href = window.location.origin + window.location.pathname + '?v=' + Date.now();
     }
   };
 
@@ -254,7 +281,18 @@ export default function Login() {
           </button>
         </form>
 
-        <div className="mt-8 pt-6 border-t border-slate-800 text-center">
+        <div className="mt-4 text-center">
+          <button
+            type="button"
+            onClick={handleForceUpdateApp}
+            disabled={clearingCache}
+            className="text-xs text-slate-400 hover:text-sky-300 transition-colors underline cursor-pointer"
+          >
+            {clearingCache ? 'Atualizando aplicativo...' : '🔄 Atualizar aplicativo / Limpar cache'}
+          </button>
+        </div>
+
+        <div className="mt-6 pt-5 border-t border-slate-800 text-center">
           <Link to="/" className="text-xs sm:text-sm font-medium text-slate-400 hover:text-sky-400 transition-colors">
             ← Voltar para a página inicial
           </Link>
