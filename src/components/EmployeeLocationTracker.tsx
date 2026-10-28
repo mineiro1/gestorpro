@@ -1,30 +1,16 @@
 import React, { useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
-import { RealtimeChannel } from '@supabase/supabase-js';
+import { fleetRealtimeService, TechnicianTelemetry } from '../lib/fleetRealtime';
 import { 
   startForegroundTrackingNotification, 
   stopForegroundTrackingNotification 
 } from '../lib/pushNotifications';
 
-export interface TechnicianTelemetry {
-  userId: string;
-  name: string;
-  email: string;
-  role: string;
-  lat: number;
-  lng: number;
-  speedKmH: number;
-  heading: number | null;
-  accuracy: number;
-  status: 'deslocamento' | 'em_atendimento' | 'pausado';
-  currentClientName: string | null;
-  updatedAt: string;
-}
+export { type TechnicianTelemetry } from '../lib/fleetRealtime';
 
 export default function EmployeeLocationTracker() {
   const { userProfile, isAdmin } = useAuth();
-  const channelRef = useRef<RealtimeChannel | null>(null);
   const lastDbPersistTimeRef = useRef<number>(0);
   const lastCoordsRef = useRef<GeolocationCoordinates | null>(null);
 
@@ -33,40 +19,17 @@ export default function EmployeeLocationTracker() {
     if (!userProfile?.uid) return;
     if (userProfile.role === 'client') return;
 
-    // Determina o canal exclusivo da empresa com base no adminId
+    // Determina o ID do administrador da conta
     const companyAdminId = isAdmin ? userProfile.uid : (userProfile.adminId || userProfile.uid);
-    const channelName = `fleet_tracking_${companyAdminId}`;
 
     // Ativa a notificação persistente no Android: "RS Piscinas - Sistema em execução."
     startForegroundTrackingNotification().catch((err) => {
       console.warn('[EmployeeLocationTracker] Falha ao iniciar notificação em segundo plano:', err);
     });
 
-    // 1. Inicializa o canal WebSocket de Presença
-    const channel = supabase.channel(channelName, {
-      config: {
-        presence: {
-          key: userProfile.uid,
-        },
-      },
-    });
-
-    channelRef.current = channel;
-
-    channel.subscribe(async (status) => {
-      if (status === 'SUBSCRIBED') {
-        console.log(`[FleetTracker] Conectado ao canal WebSocket de frota: ${channelName}`);
-        // Se já tivermos uma coordenada capturada, sincroniza imediatamente
-        if (lastCoordsRef.current) {
-          await transmitPresence(lastCoordsRef.current);
-        }
-      }
-    });
-
     let watchId: number;
 
     const transmitPresence = async (coords: GeolocationCoordinates) => {
-      if (!channelRef.current) return;
       lastCoordsRef.current = coords;
 
       const activeClientName = localStorage.getItem('active_visit_client_name') || null;
@@ -89,9 +52,9 @@ export default function EmployeeLocationTracker() {
         updatedAt: new Date().toISOString(),
       };
 
-      // A) Transmissão em memória RAM via WebSocket (Custo 0 de banco)
+      // A) Transmissão em memória RAM via FleetRealtimeService (Custo 0 de banco)
       try {
-        await channelRef.current.track(telemetry);
+        await fleetRealtimeService.track(companyAdminId, telemetry);
       } catch (err) {
         console.warn('[FleetTracker] Falha ao sincronizar presença no WebSocket:', err);
       }
@@ -124,7 +87,7 @@ export default function EmployeeLocationTracker() {
     window.addEventListener('active_visit_change', handleActiveVisitChange);
     window.addEventListener('storage', handleActiveVisitChange);
 
-    // 2. Inicia o monitoramento de GPS de alta precisão
+    // Inicia o monitoramento de GPS de alta precisão
     if ('geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(
         (pos) => transmitPresence(pos.coords),
@@ -143,7 +106,7 @@ export default function EmployeeLocationTracker() {
       );
     }
 
-    // 3. Limpeza ao desmontar
+    // Limpeza ao desmontar
     return () => {
       window.removeEventListener('active_visit_change', handleActiveVisitChange);
       window.removeEventListener('storage', handleActiveVisitChange);
@@ -151,13 +114,8 @@ export default function EmployeeLocationTracker() {
       if (watchId !== undefined && 'geolocation' in navigator) {
         navigator.geolocation.clearWatch(watchId);
       }
-      if (channelRef.current) {
-        channelRef.current.untrack();
-        supabase.removeChannel(channelRef.current);
-        channelRef.current = null;
-      }
     };
-  }, [userProfile?.uid, userProfile?.adminId, userProfile?.role, isAdmin]);
+  }, [userProfile?.uid, userProfile?.adminId, userProfile?.role, userProfile?.name, userProfile?.email, isAdmin]);
 
   return null;
 }

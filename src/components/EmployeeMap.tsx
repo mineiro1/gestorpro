@@ -4,8 +4,8 @@ import { supabase } from '../lib/supabase';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
-import { Navigation, Radio, Clock, ShieldCheck, UserCheck } from 'lucide-react';
-import { TechnicianTelemetry } from './EmployeeLocationTracker';
+import { Navigation, Radio, Clock, ShieldCheck } from 'lucide-react';
+import { fleetRealtimeService, TechnicianTelemetry } from '../lib/fleetRealtime';
 
 // Correção dos caminhos padrão dos ícones do Leaflet
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -49,101 +49,83 @@ export default function EmployeeMap({
     if (!companyAdminId || (!isAdmin && !isManager)) return;
 
     const fetchHistoricalUsers = async () => {
-      const { data, error } = await supabase
-        .from('users')
-        .select('id, name, email, role, last_location, location_updated_at')
-        .or(`admin_id.eq.${companyAdminId},id.eq.${companyAdminId}`);
+      try {
+        const { data, error } = await supabase
+          .from('users')
+          .select('id, name, email, role, last_location, location_updated_at')
+          .or(`admin_id.eq.${companyAdminId},id.eq.${companyAdminId}`);
 
-      if (error || !data) return;
+        if (error || !data) return;
 
-      const fallbackList: TechnicianMarkerData[] = [];
+        const fallbackList: TechnicianMarkerData[] = [];
 
-      data.forEach((u: any) => {
-        let lat: number | null = null;
-        let lng: number | null = null;
+        data.forEach((u: any) => {
+          let lat: number | null = null;
+          let lng: number | null = null;
 
-        if (u.last_location) {
-          if (typeof u.last_location === 'object' && u.last_location !== null) {
-            lat = parseFloat(u.last_location.lat);
-            lng = parseFloat(u.last_location.lng);
-          } else if (typeof u.last_location === 'string') {
-            try {
-              const parsed = JSON.parse(u.last_location);
-              lat = parseFloat(parsed.lat);
-              lng = parseFloat(parsed.lng);
-            } catch {
-              const parts = u.last_location.split(',');
-              if (parts.length >= 2) {
-                lat = parseFloat(parts[0]);
-                lng = parseFloat(parts[1]);
+          if (u.last_location) {
+            if (typeof u.last_location === 'object' && u.last_location !== null) {
+              lat = parseFloat(u.last_location.lat);
+              lng = parseFloat(u.last_location.lng);
+            } else if (typeof u.last_location === 'string') {
+              try {
+                const parsed = JSON.parse(u.last_location);
+                lat = parseFloat(parsed.lat);
+                lng = parseFloat(parsed.lng);
+              } catch {
+                const parts = u.last_location.split(',');
+                if (parts.length >= 2) {
+                  lat = parseFloat(parts[0]);
+                  lng = parseFloat(parts[1]);
+                }
               }
             }
           }
-        }
 
-        if (lat !== null && lng !== null && !isNaN(lat) && !isNaN(lng)) {
-          fallbackList.push({
-            id: u.id,
-            name: u.name || 'Colaborador',
-            email: u.email || '',
-            role: u.role || 'employee',
-            lat,
-            lng,
-            speedKmH: 0,
-            heading: null,
-            status: 'offline',
-            currentClientName: null,
-            updatedAt: u.location_updated_at || '',
-            isLive: false,
-          });
-        }
-      });
+          if (lat !== null && lng !== null && !isNaN(lat) && !isNaN(lng)) {
+            fallbackList.push({
+              id: u.id,
+              name: u.name || 'Colaborador',
+              email: u.email || '',
+              role: u.role || 'employee',
+              lat,
+              lng,
+              speedKmH: 0,
+              heading: null,
+              status: 'offline',
+              currentClientName: null,
+              updatedAt: u.location_updated_at || '',
+              isLive: false,
+            });
+          }
+        });
 
-      setOfflineEmployees(fallbackList);
+        setOfflineEmployees(fallbackList);
+      } catch (err) {
+        console.warn('[EmployeeMap] Erro ao carregar posições históricas:', err);
+      }
     };
 
     fetchHistoricalUsers();
   }, [companyAdminId, isAdmin, isManager]);
 
-  // 2. Assinatura do Canal Realtime Presence (Ao Vivo via WebSocket)
+  // 2. Assinatura do Canal Realtime Presence (Ao Vivo via FleetRealtimeService)
   useEffect(() => {
     if (!companyAdminId || (!isAdmin && !isManager)) return;
 
-    const channelName = `fleet_tracking_${companyAdminId}`;
-    const channel = supabase.channel(channelName);
+    // Inicializa o canal singleton de forma segura com callbacks registrados antes do subscribe
+    fleetRealtimeService.initChannel(companyAdminId, userProfile?.uid);
 
-    channel
-      .on('presence', { event: 'sync' }, () => {
-        const state = channel.presenceState();
-        const activeMap: Record<string, TechnicianTelemetry> = {};
-
-        Object.keys(state).forEach((userId) => {
-          const presences = state[userId] as unknown as TechnicianTelemetry[];
-          if (presences && presences.length > 0) {
-            // Pega a telemetria mais recente deste usuário
-            activeMap[userId] = presences[presences.length - 1];
-          }
-        });
-
-        setLiveTechnicians(activeMap);
-      })
-      .on('presence', { event: 'leave' }, ({ key }) => {
-        setLiveTechnicians((prev) => {
-          const updated = { ...prev };
-          delete updated[key];
-          return updated;
-        });
-      })
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          console.log(`[AdminFleetMap] Monitorando frota em tempo real via canal: ${channelName}`);
-        }
-      });
+    // Registra o ouvinte para sincronizações de presença em tempo real
+    const unsubscribe = fleetRealtimeService.subscribeListener((activeMap) => {
+      setLiveTechnicians({ ...activeMap });
+    });
 
     return () => {
-      supabase.removeChannel(channel);
+      unsubscribe();
+      fleetRealtimeService.releaseSubscription();
     };
-  }, [companyAdminId, isAdmin, isManager]);
+  }, [companyAdminId, isAdmin, isManager, userProfile?.uid]);
 
   // 3. Mescla técnicos ao vivo (Presence) com os que estão offline (Banco de dados)
   const combinedTechnicians = useMemo(() => {
