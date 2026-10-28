@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, Volume2, VolumeX, PhoneOff, User } from 'lucide-react';
+import { Mic, MicOff, Volume2, VolumeX, PhoneOff, User, PhoneCall, Check } from 'lucide-react';
 import { ActiveCall } from '../contexts/CallContext';
 import { createVolumeMeterWorklet } from '../lib/audioWorklet';
 import { getApiUrl } from '../lib/apiConfig';
@@ -10,14 +10,18 @@ interface CallModalProps {
 }
 
 export default function CallModal({ call, onClose }: CallModalProps) {
-  const [callStatus, setCallStatus] = useState<'dialing' | 'connected' | 'ended'>('dialing');
+  const [callStatus, setCallStatus] = useState<'dialing' | 'ringing' | 'connected' | 'ended'>('dialing');
   const [isMuted, setIsMuted] = useState(false);
   const [isSpeakerOn, setIsSpeakerOn] = useState(true);
   const [duration, setDuration] = useState(0);
   const [localVolume, setLocalVolume] = useState(0);
   const [remoteVolume, setRemoteVolume] = useState(0);
 
+  const callStatusRef = useRef<'dialing' | 'ringing' | 'connected' | 'ended'>('dialing');
   const timerRef = useRef<any>(null);
+  const statusPollRef = useRef<any>(null);
+  const consecutiveVoiceSamplesRef = useRef<number>(0);
+
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
@@ -36,7 +40,11 @@ export default function CallModal({ call, onClose }: CallModalProps) {
   const localSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const remoteSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
 
-  // Start dual-channel recording mixer
+  useEffect(() => {
+    callStatusRef.current = callStatus;
+  }, [callStatus]);
+
+  // Start dual-channel recording mixer - disparado ESTRITAMENTE quando o cliente atende
   const startRecordingMixer = (micStream: MediaStream, rStream?: MediaStream | null) => {
     try {
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') return;
@@ -91,7 +99,7 @@ export default function CallModal({ call, onClose }: CallModalProps) {
         };
 
         recorder.start(1000);
-        console.log('[VoIP Recording] Gravação da chamada iniciada:', mimeType || 'default');
+        console.log('[VoIP Recording] Cliente atendeu: gravação da conversa iniciada:', mimeType || 'default');
       }
     } catch (e) {
       console.warn('[VoIP Recording] Erro ao iniciar gravação:', e);
@@ -108,32 +116,53 @@ export default function CallModal({ call, onClose }: CallModalProps) {
     } catch (e) {}
   };
 
-  // Realistic telephone ringing tone generator
+  // Realistic Telephone Ringback Tone ("Tuuu... Tuuu...")
+  // Padrão de telefonia: duas frequências senoidais puras (440Hz + 480Hz) com envelope suave de 1.2s de toque e 3.0s de silêncio
   const playRingTone = () => {
     try {
+      stopRingTone();
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) return;
       const ctx = new AudioCtx();
       ringAudioCtxRef.current = ctx;
 
-      const playBeep = () => {
-        if (ctx.state === 'closed') return;
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(425, ctx.currentTime);
-        gain.gain.setValueAtTime(0.08, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.2);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start();
-        osc.stop(ctx.currentTime + 1.2);
+      const playBurst = () => {
+        if (!ctx || ctx.state === 'closed') return;
+        try {
+          if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+          const now = ctx.currentTime;
+
+          const osc1 = ctx.createOscillator();
+          const osc2 = ctx.createOscillator();
+          const gain = ctx.createGain();
+
+          osc1.type = 'sine';
+          osc1.frequency.setValueAtTime(440, now);
+
+          osc2.type = 'sine';
+          osc2.frequency.setValueAtTime(480, now);
+
+          // Envelope realista do tom de chamada telefônica
+          gain.gain.setValueAtTime(0.0001, now);
+          gain.gain.linearRampToValueAtTime(0.12, now + 0.05);
+          gain.gain.setValueAtTime(0.12, now + 1.15);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.25);
+
+          osc1.connect(gain);
+          osc2.connect(gain);
+          gain.connect(ctx.destination);
+
+          osc1.start(now);
+          osc2.start(now);
+          osc1.stop(now + 1.25);
+          osc2.stop(now + 1.25);
+        } catch (e) {}
       };
 
-      playBeep();
-      ringOscRef.current = setInterval(playBeep, 3500);
+      playBurst();
+      ringOscRef.current = setInterval(playBurst, 3800);
     } catch (e) {
-      console.warn('AudioContext not supported or blocked:', e);
+      console.warn('AudioContext ring tone error:', e);
     }
   };
 
@@ -146,11 +175,33 @@ export default function CallModal({ call, onClose }: CallModalProps) {
       try {
         ringAudioCtxRef.current.close();
       } catch (e) {}
+      ringAudioCtxRef.current = null;
+    }
+  };
+
+  // Transição oficial: CLIENTE ATENDEU A CHAMADA
+  // Corta o som de "Tuuu... Tuuu...", dispara o cronômetro a partir de 00:00 e liga a gravação
+  const handleCallAnswered = () => {
+    if (callStatusRef.current === 'connected' || callStatusRef.current === 'ended') return;
+    console.log('[VoIP] 📞 Cliente atendeu a chamada! Iniciando cronômetro e gravador de áudio...');
+    stopRingTone();
+    setCallStatus('connected');
+    callStatusRef.current = 'connected';
+    setDuration(0);
+
+    // Inicia gravação de áudio no momento do atendimento
+    if (micStreamRef.current) {
+      startRecordingMixer(micStreamRef.current, remoteStreamRef.current);
     }
   };
 
   const cleanupAudio = () => {
     stopRingTone();
+
+    if (statusPollRef.current) {
+      clearInterval(statusPollRef.current);
+      statusPollRef.current = null;
+    }
 
     if (localWorkletDisconnectRef.current) {
       localWorkletDisconnectRef.current();
@@ -183,8 +234,9 @@ export default function CallModal({ call, onClose }: CallModalProps) {
     }
   };
 
-  // Official AstraCalls v0.0.4 WebRTC VoIP Connection Engine with AudioWorklet Voice Activity
+  // Motor WebRTC VoIP do AstraCalls com Detecção de Atendimento e Som de Chamada Real
   useEffect(() => {
+    // 1. Inicia som realista de telefone chamando
     playRingTone();
 
     const sessionId = call.sessionId || '8090cca3add0b8eb3e41efb9eec363e4';
@@ -193,8 +245,8 @@ export default function CallModal({ call, onClose }: CallModalProps) {
 
     let isCleanedUp = false;
 
-    // 1. Inicia IMEDIATAMENTE a captura do microfone e gravação de áudio desde o primeiro segundo
-    const initMicrophoneAndRecording = async () => {
+    // 2. Prepara microfone em segundo plano (pronto para gravação assim que atender)
+    const initMicrophone = async () => {
       try {
         if (micStreamRef.current) return;
         const micStream = await navigator.mediaDevices.getUserMedia({
@@ -210,9 +262,6 @@ export default function CallModal({ call, onClose }: CallModalProps) {
         }
         micStreamRef.current = micStream;
 
-        // Inicia gravação imediatamente
-        startRecordingMixer(micStream);
-
         // Medidor de volume do microfone local
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         if (AudioCtx) {
@@ -224,29 +273,31 @@ export default function CallModal({ call, onClose }: CallModalProps) {
           localWorkletDisconnectRef.current = disconnect;
         }
 
-        // Se WebRTC já estiver pronto, conecta
+        // Se WebRTC já estiver pronto, conecta faixa
         if (pcRef.current && micStream.getAudioTracks().length > 0) {
           micStream.getAudioTracks().forEach(track => pcRef.current?.addTrack(track, micStream));
         }
       } catch (err) {
-        console.warn('[Call Recording] Erro ao iniciar microfone/gravação:', err);
+        console.warn('[Call Setup] Erro ao obter microfone:', err);
       }
     };
 
-    initMicrophoneAndRecording();
+    initMicrophone();
 
     const establishWebRTC = async () => {
-      if (!call.callId || call.callId.startsWith('call_')) return;
+      if (!call.callId || call.callId.startsWith('call_')) {
+        // Modo local ou aguardando callId
+        setCallStatus('ringing');
+        return;
+      }
 
       try {
-        // Aguarda microfone se ainda estiver capturando
         if (!micStreamRef.current) {
-          await initMicrophoneAndRecording();
+          await initMicrophone();
         }
         const micStream = micStreamRef.current;
         if (!micStream || isCleanedUp) return;
 
-        // 2. Setup RTCPeerConnection
         const pc = new RTCPeerConnection({ iceServers: [] });
         pcRef.current = pc;
 
@@ -262,13 +313,23 @@ export default function CallModal({ call, onClose }: CallModalProps) {
               remoteAudioRef.current.play().catch(() => {});
             }
 
-            // Connect remote stream to call recording mixer
             connectRemoteToMixer(rStream);
 
-            // Setup AudioWorklet for remote caller volume level
+            // AudioWorklet para volume remoto e detecção de voz do cliente
             if (workletAudioCtxRef.current) {
               const { disconnect } = await createVolumeMeterWorklet(workletAudioCtxRef.current, rStream, (vol) => {
-                if (!isCleanedUp) setRemoteVolume(vol);
+                if (!isCleanedUp) {
+                  setRemoteVolume(vol);
+                  // Se o cliente falar e houver áudio remoto vindo da linha, atende automaticamente!
+                  if (vol > 0.03) {
+                    consecutiveVoiceSamplesRef.current += 1;
+                    if (consecutiveVoiceSamplesRef.current >= 2 && callStatusRef.current !== 'connected') {
+                      handleCallAnswered();
+                    }
+                  } else {
+                    consecutiveVoiceSamplesRef.current = 0;
+                  }
+                }
               });
               remoteWorkletDisconnectRef.current = disconnect;
             }
@@ -277,19 +338,18 @@ export default function CallModal({ call, onClose }: CallModalProps) {
 
         pc.oniceconnectionstatechange = () => {
           if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
-            stopRingTone();
-            setCallStatus('connected');
-            if (micStreamRef.current) {
-              startRecordingMixer(micStreamRef.current, remoteStreamRef.current);
+            // A conexão de rede com o servidor AstraCalls foi feita -> a ligação agora está tocando no celular do cliente
+            if (callStatusRef.current === 'dialing') {
+              setCallStatus('ringing');
+              callStatusRef.current = 'ringing';
             }
           } else if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed') {
-            if (!isCleanedUp && callStatus === 'connected') {
+            if (!isCleanedUp && callStatusRef.current === 'connected') {
               handleEndCall();
             }
           }
         };
 
-        // 3. Create Offer and wait for ICE gathering
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
 
@@ -308,7 +368,7 @@ export default function CallModal({ call, onClose }: CallModalProps) {
           }
         });
 
-        // 4. Exchange SDP with AstraCalls WebRTC endpoint
+        // Exchange SDP with AstraCalls WebRTC endpoint
         const res = await fetch(`${astracallsUrl}/api/sessions/${sessionId}/calls/${call.callId}/webrtc`, {
           method: 'POST',
           headers: {
@@ -322,10 +382,10 @@ export default function CallModal({ call, onClose }: CallModalProps) {
           const data = await res.json();
           if (data.sdp_answer) {
             await pc.setRemoteDescription({ type: 'answer', sdp: data.sdp_answer });
-            stopRingTone();
-            setCallStatus('connected');
-            if (micStreamRef.current) {
-              startRecordingMixer(micStreamRef.current, remoteStreamRef.current);
+            // Chamada enviada com sucesso ao WhatsApp -> tocando no aparelho do cliente
+            if (callStatusRef.current === 'dialing') {
+              setCallStatus('ringing');
+              callStatusRef.current = 'ringing';
             }
           }
         }
@@ -336,13 +396,44 @@ export default function CallModal({ call, onClose }: CallModalProps) {
 
     establishWebRTC();
 
+    // 3. Monitoramento em tempo real do status da chamada no AstraCalls
+    // Detecta o momento exato em que o cliente clica para atender ou rejeita
+    const pollCallStatus = async () => {
+      if (!call.callId || callStatusRef.current === 'connected' || callStatusRef.current === 'ended') return;
+
+      try {
+        const queryUrl = getApiUrl(`/api/call/status?callId=${encodeURIComponent(call.callId)}&sessionId=${encodeURIComponent(sessionId)}`);
+        const statusRes = await fetch(queryUrl);
+        if (statusRes.ok) {
+          const sData = await statusRes.json().catch(() => null);
+          const c = sData?.call;
+          if (c) {
+            const state = String(c.state || c.status || '').toLowerCase();
+            // Estados de atendimento do WhatsApp VoIP
+            if (state === 'accept' || state === 'in-progress' || state === 'connected' || state === 'active' || state === 'answered') {
+              handleCallAnswered();
+            } else if (state === 'rejected' || state === 'terminate' || state === 'ended' || state === 'declined' || state === 'busy' || state === 'missed') {
+              stopRingTone();
+              setCallStatus('ended');
+              callStatusRef.current = 'ended';
+              setTimeout(() => {
+                onClose(0, '');
+              }, 1200);
+            }
+          }
+        }
+      } catch (e) {}
+    };
+
+    statusPollRef.current = setInterval(pollCallStatus, 1200);
+
     return () => {
       isCleanedUp = true;
       cleanupAudio();
     };
   }, [call.callId, call.sessionId]);
 
-  // Duration Timer when connected
+  // Cronômetro de Duração: Começa ESTRITAMENTE quando callStatus === 'connected'
   useEffect(() => {
     if (callStatus === 'connected') {
       timerRef.current = setInterval(() => {
@@ -377,6 +468,7 @@ export default function CallModal({ call, onClose }: CallModalProps) {
 
   // Handle End Call with Audio Recording Save
   const handleEndCall = async () => {
+    stopRingTone();
     const finalDuration = duration;
     let finalRecordingUrl = '';
 
@@ -390,7 +482,7 @@ export default function CallModal({ call, onClose }: CallModalProps) {
               if (recordedChunksRef.current && recordedChunksRef.current.length > 0) {
                 const mime = mediaRecorderRef.current?.mimeType || 'audio/webm';
                 const audioBlob = new Blob(recordedChunksRef.current, { type: mime });
-                
+
                 const reader = new FileReader();
                 reader.readAsDataURL(audioBlob);
                 reader.onloadend = async () => {
@@ -437,6 +529,8 @@ export default function CallModal({ call, onClose }: CallModalProps) {
 
     cleanupAudio();
     setCallStatus('ended');
+    callStatusRef.current = 'ended';
+
     setTimeout(() => {
       onClose(finalDuration, finalRecordingUrl);
     }, 400);
@@ -457,13 +551,19 @@ export default function CallModal({ call, onClose }: CallModalProps) {
           {callStatus === 'dialing' && (
             <div className="inline-flex items-center px-3 py-1 rounded-full bg-blue-500/20 text-blue-300 text-xs font-medium animate-pulse border border-blue-500/30">
               <span className="w-2 h-2 rounded-full bg-blue-400 mr-2 animate-ping" />
-              Chamando cliente no WhatsApp...
+              Iniciando conexão de voz...
+            </div>
+          )}
+          {callStatus === 'ringing' && (
+            <div className="inline-flex items-center px-3 py-1 rounded-full bg-amber-500/20 text-amber-300 text-xs font-medium border border-amber-500/30">
+              <span className="w-2 h-2 rounded-full bg-amber-400 mr-2 animate-ping" />
+              Chamando telefone do cliente (Tuuu... Tuuu...)
             </div>
           )}
           {callStatus === 'connected' && (
             <div className="inline-flex items-center px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-300 text-xs font-medium border border-emerald-500/30">
               <span className="w-2 h-2 rounded-full bg-emerald-400 mr-2 animate-pulse" />
-              Em chamada de voz ao vivo
+              Em chamada de voz ao vivo (Gravando)
             </div>
           )}
           {callStatus === 'ended' && (
@@ -476,10 +576,12 @@ export default function CallModal({ call, onClose }: CallModalProps) {
         {/* Client Avatar with Audio Visualizer Glow */}
         <div className="relative mb-5">
           <div 
-            className={`w-28 h-28 rounded-full p-1 shadow-lg flex items-center justify-center transition-all duration-150 ${
-              callStatus === 'connected' && remoteVolume > 0.05
-                ? 'bg-gradient-to-tr from-emerald-500 to-green-400 ring-4 ring-emerald-400/40 shadow-emerald-500/40 scale-105'
-                : 'bg-gradient-to-tr from-emerald-600 to-teal-500 shadow-emerald-500/20'
+            className={`w-28 h-28 rounded-full p-1 shadow-lg flex items-center justify-center transition-all duration-200 ${
+              callStatus === 'connected'
+                ? remoteVolume > 0.05
+                  ? 'bg-gradient-to-tr from-emerald-500 to-green-400 ring-4 ring-emerald-400/40 shadow-emerald-500/40 scale-105'
+                  : 'bg-gradient-to-tr from-emerald-600 to-teal-500 shadow-emerald-500/20'
+                : 'bg-gradient-to-tr from-blue-600 to-indigo-500 shadow-blue-500/20 animate-pulse'
             }`}
           >
             {call.avatarUrl ? (
@@ -505,17 +607,34 @@ export default function CallModal({ call, onClose }: CallModalProps) {
         </h2>
 
         {/* Call Timer or Ringing Subtext */}
-        <div className="text-sm font-medium text-gray-400 mb-6">
-          {callStatus === 'dialing' && 'Tocando no WhatsApp do cliente...'}
+        <div className="text-sm font-medium text-gray-400 mb-6 min-h-[44px] flex flex-col items-center justify-center">
+          {(callStatus === 'dialing' || callStatus === 'ringing') && (
+            <div className="flex flex-col items-center gap-1.5">
+              <span className="text-xs text-amber-300 flex items-center gap-1 font-medium">
+                <PhoneCall size={14} className="animate-bounce" />
+                Tocando no telefone do cliente...
+              </span>
+              <button
+                type="button"
+                onClick={handleCallAnswered}
+                className="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-300 border border-emerald-500/40 transition-colors flex items-center gap-1"
+                title="Clique caso o cliente já tenha atendido"
+              >
+                <Check size={12} />
+                Cliente já atendeu
+              </button>
+            </div>
+          )}
+
           {callStatus === 'connected' && (
             <div className="flex flex-col items-center gap-2">
-              <span className="text-lg font-semibold text-emerald-400 font-mono">
+              <span className="text-xl font-bold text-emerald-400 font-mono tracking-wider">
                 {formatTime(duration)}
               </span>
 
               {/* Real-time Audio Activity Waveform (AudioWorklet) */}
-              <div className="flex items-center gap-1 h-3 mt-1">
-                <span className="text-[10px] text-gray-400 mr-1.5">Voz:</span>
+              <div className="flex items-center gap-1 h-3 mt-0.5">
+                <span className="text-[10px] text-gray-400 mr-1.5 font-mono">Áudio:</span>
                 {[0.2, 0.4, 0.6, 0.8, 1.0].map((threshold, idx) => {
                   const active = Math.max(localVolume * 4, remoteVolume * 4) >= threshold;
                   return (
@@ -530,7 +649,10 @@ export default function CallModal({ call, onClose }: CallModalProps) {
               </div>
             </div>
           )}
-          {callStatus === 'ended' && 'Desconectado'}
+
+          {callStatus === 'ended' && (
+            <span className="text-xs text-red-400">Ligação finalizada</span>
+          )}
         </div>
 
         {/* Quick Action Controls */}

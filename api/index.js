@@ -1799,40 +1799,132 @@ app.post(['/api/call/hangup', '/call/hangup'], async (req, res) => {
   }
 });
 
+app.get(['/api/call/status', '/call/status'], async (req, res) => {
+  try {
+    const callId = req.query.callId;
+    const sid = req.query.sessionId || '8090cca3add0b8eb3e41efb9eec363e4';
+    const astracallsUrl = (process.env.ASTRACALLS_URL || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
+    const astracallsApiKey = process.env.ASTRACALLS_API_KEY || 'rs_piscinas_segredo_2026';
+
+    if (!callId) return res.status(400).json({ error: "Missing callId" });
+
+    try {
+      const directRes = await fetch(`${astracallsUrl}/api/sessions/${sid}/calls/${callId}`, {
+        headers: { 'X-Api-Key': astracallsApiKey }
+      });
+      if (directRes.ok) {
+        const data = await directRes.json();
+        return res.json({ success: true, call: data });
+      }
+    } catch (err) {}
+
+    try {
+      const listRes = await fetch(`${astracallsUrl}/api/sessions/${sid}/calls`, {
+        headers: { 'X-Api-Key': astracallsApiKey }
+      });
+      if (listRes.ok) {
+        const listData = await listRes.json();
+        const calls = Array.isArray(listData) ? listData : (listData?.calls || []);
+        const found = calls.find(c => c.callId === callId || c.id === callId);
+        if (found) {
+          return res.json({ success: true, call: found });
+        }
+      }
+    } catch (err) {}
+
+    return res.json({ success: false, notFound: true });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 app.get(['/api/calls/history', '/calls/history'], async (req, res) => {
   try {
     const supabaseAdmin = getSupabaseAdmin();
-    const { data: calls } = await supabaseAdmin.from('call_logs').select('*').order('created_at', { ascending: false }).limit(50);
-    return res.json({ calls: calls || [] });
+    const { data: rows } = await supabaseAdmin
+      .from('settings')
+      .select('id, monthlyprice, updated_at')
+      .like('id', 'call_log_%')
+      .order('updated_at', { ascending: false })
+      .limit(100);
+
+    const dbLogs = [];
+    if (rows && rows.length > 0) {
+      for (const r of rows) {
+        try {
+          if (r.id.includes('__meta_')) {
+            const b64 = r.id.split('__meta_')[1];
+            const parsed = JSON.parse(Buffer.from(b64, 'base64').toString('utf-8'));
+            dbLogs.push({
+              id: r.id,
+              call_id: parsed.call_id || r.id,
+              client_id: parsed.client_id || null,
+              client_name: parsed.client_name || "Cliente RS Piscinas",
+              caller_name: parsed.caller_name || "Colaborador",
+              duration: Number(r.monthlyprice || parsed.duration || 0),
+              status: parsed.status || "completed",
+              has_recording: !!parsed.recording_url,
+              recording_url: parsed.recording_url || "",
+              created_at: r.updated_at
+            });
+            continue;
+          }
+        } catch (parseErr) {}
+
+        const parts = r.id.split('_');
+        const ts = parts[2] ? Number(parts[2]) : new Date(r.updated_at).getTime();
+        dbLogs.push({
+          id: r.id,
+          call_id: `call_${ts}`,
+          client_name: "Cliente RS Piscinas",
+          caller_name: "Colaborador",
+          duration: Number(r.monthlyprice || 0),
+          status: "completed",
+          has_recording: false,
+          recording_url: "",
+          created_at: r.updated_at || new Date(ts).toISOString()
+        });
+      }
+    }
+
+    return res.json({ success: true, logs: dbLogs, calls: dbLogs });
   } catch (e) {
-    return res.status(500).json({ error: e.message, calls: [] });
+    return res.status(500).json({ error: e.message, logs: [], calls: [] });
   }
 });
 
 app.post(['/api/calls/log', '/calls/log'], async (req, res) => {
   try {
-    const { clientId, clientName, phone, type = 'outbound', status = 'completed', duration = 0, provider = 'astracalls', audioRecordingUrl, adminId, employeeId } = req.body;
+    const { clientName, clientId, callerName, duration, callId, status, recording_url } = req.body;
     const supabaseAdmin = getSupabaseAdmin();
-    const { data, error } = await supabaseAdmin
-      .from('call_logs')
-      .insert({
-        client_id: clientId || null,
-        client_name: clientName || null,
-        phone: phone || null,
-        type,
-        status,
-        duration,
-        provider,
-        audio_recording_url: audioRecordingUrl || null,
-        admin_id: adminId || null,
-        employee_id: employeeId || null,
-        created_at: new Date().toISOString()
-      })
-      .select()
-      .single();
 
-    if (error) return res.status(500).json({ error: error.message });
-    return res.json({ success: true, log: data });
+    const metaObj = {
+      call_id: callId || `call_${Date.now()}`,
+      client_id: clientId || null,
+      client_name: clientName || 'Cliente',
+      caller_name: callerName || 'Colaborador',
+      duration: Number(duration || 0),
+      status: status || 'completed',
+      recording_url: recording_url || ''
+    };
+
+    const b64 = Buffer.from(JSON.stringify(metaObj)).toString('base64');
+    const logId = `call_log_${Date.now()}__meta_${b64}`;
+
+    const newEntry = {
+      id: logId,
+      ...metaObj,
+      has_recording: !!recording_url,
+      created_at: new Date().toISOString()
+    };
+
+    await supabaseAdmin.from('settings').insert({
+      id: logId,
+      monthlyprice: Number(duration || 0),
+      updated_at: new Date().toISOString()
+    });
+
+    return res.json({ success: true, log: newEntry });
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
@@ -1841,7 +1933,11 @@ app.post(['/api/calls/log', '/calls/log'], async (req, res) => {
 app.delete(['/api/calls/log/:id', '/calls/log/:id'], async (req, res) => {
   try {
     const supabaseAdmin = getSupabaseAdmin();
-    await supabaseAdmin.from('call_logs').delete().eq('id', req.params.id);
+    const { id } = req.params;
+    await supabaseAdmin.from('settings').delete().eq('id', id);
+    try {
+      await supabaseAdmin.from('call_logs').delete().eq('id', id);
+    } catch (e) {}
     return res.json({ success: true });
   } catch (e) {
     return res.status(500).json({ error: e.message });

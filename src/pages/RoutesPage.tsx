@@ -207,20 +207,29 @@ export default function RoutesPage() {
   const [activeFixedNoticeText, setActiveFixedNoticeText] = useState<string>('');
   const cachedLocationRef = useRef<{ lat: number; lng: number } | null>(null);
 
-  // Pre-fetch location as soon as report modal opens
+  // Pre-fetch location as soon as report modal opens and sync active visit state for fleet telemetry
   useEffect(() => {
-    if (reportModalOpen && navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          if (pos?.coords) {
-            cachedLocationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-          }
-        },
-        () => {},
-        { enableHighAccuracy: true, timeout: 15000, maximumAge: 300000 }
-      );
+    if (reportModalOpen) {
+      if (selectedClientForReport?.name) {
+        localStorage.setItem('active_visit_client_name', selectedClientForReport.name);
+        window.dispatchEvent(new Event('active_visit_change'));
+      }
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            if (pos?.coords) {
+              cachedLocationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+            }
+          },
+          () => {},
+          { enableHighAccuracy: true, timeout: 15000, maximumAge: 300000 }
+        );
+      }
+    } else {
+      localStorage.removeItem('active_visit_client_name');
+      window.dispatchEvent(new Event('active_visit_change'));
     }
-  }, [reportModalOpen]);
+  }, [reportModalOpen, selectedClientForReport]);
   const [reportNotes, setReportNotes] = useState('');
   const [reportPhotos, setReportPhotos] = useState<string[]>([]);
   const [photoDate, setPhotoDate] = useState<Date | null>(null);

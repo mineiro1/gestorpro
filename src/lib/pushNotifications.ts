@@ -65,6 +65,16 @@ export async function setupPushNotificationChannels(): Promise<void> {
         lightColor: '#2563eb',
       },
       {
+        id: 'foreground_service_silent',
+        name: 'Serviço em Segundo Plano (RS Piscinas)',
+        description: 'Mantém o sistema em execução e a localização ativa durante a jornada de trabalho',
+        importance: 2 as const, // Low importance (silencioso, sem som, sem vibrar)
+        visibility: 0 as const, // Private on lockscreen
+        sound: '',
+        vibration: false,
+        lights: false,
+      },
+      {
         id: 'cobrancas',
         name: 'Cobranças e Vencimentos',
         description: 'Alertas diários de mensalidades a vencer e cobranças automáticas',
@@ -425,5 +435,68 @@ export async function sendTestPushNotification(adminId: string): Promise<{ succe
     return await res.json();
   } catch (e: any) {
     return { success: false, message: e.message };
+  }
+}
+
+/**
+ * Inicia ou atualiza a notificação persistente na barra de status do Android
+ * Título: RS Piscinas
+ * Texto: Sistema em execução.
+ * Modo silencioso de baixa prioridade (sem som, sem vibração)
+ */
+export async function startForegroundTrackingNotification(): Promise<void> {
+  if (!Capacitor.isNativePlatform()) return;
+
+  try {
+    // Garante a existência do canal silencioso
+    try {
+      await LocalNotifications.createChannel({
+        id: 'foreground_service_silent',
+        name: 'Serviço em Segundo Plano (RS Piscinas)',
+        description: 'Mantém o sistema em execução e a localização ativa durante a jornada de trabalho',
+        importance: 2, // Low importance
+        visibility: 0,
+        sound: '',
+        vibration: false,
+        lights: false,
+      });
+    } catch {
+      // Canal já existente
+    }
+
+    // Agenda a notificação em andamento (sticky/ongoing)
+    await LocalNotifications.schedule({
+      notifications: [
+        {
+          id: 99991, // ID fixo exclusivo para o serviço de segundo plano
+          title: 'RS Piscinas',
+          body: 'Sistema em execução.',
+          channelId: 'foreground_service_silent',
+          ongoing: true, // Notificação fixa (o usuário não fecha por engano)
+          autoCancel: false,
+          smallIcon: 'ic_stat_icon_config_sample',
+          iconColor: '#0284c7',
+        }
+      ]
+    });
+    console.log('[ForegroundNotification] Notificação persistente ativa: RS Piscinas - Sistema em execução.');
+  } catch (err) {
+    console.warn('[ForegroundNotification] Falha ao registrar notificação persistente:', err);
+  }
+}
+
+/**
+ * Remove a notificação persistente ao deslogar ou finalizar jornada
+ */
+export async function stopForegroundTrackingNotification(): Promise<void> {
+  if (!Capacitor.isNativePlatform()) return;
+
+  try {
+    await LocalNotifications.cancel({
+      notifications: [{ id: 99991 }]
+    });
+    console.log('[ForegroundNotification] Notificação persistente removida.');
+  } catch (err) {
+    console.warn('[ForegroundNotification] Falha ao cancelar notificação persistente:', err);
   }
 }

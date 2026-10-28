@@ -1607,6 +1607,47 @@ setInterval(() => {
     }
   });
 
+  // Query live AstraCalls call state to detect exactly when the recipient answers
+  app.get(["/api/call/status", "/call/status"], async (req, res) => {
+    try {
+      const callId = req.query.callId as string;
+      const sid = (req.query.sessionId as string) || '8090cca3add0b8eb3e41efb9eec363e4';
+      const astracallsUrl = (process.env.ASTRACALLS_URL || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
+      const astracallsApiKey = process.env.ASTRACALLS_API_KEY || 'rs_piscinas_segredo_2026';
+
+      if (!callId) return res.status(400).json({ error: "Missing callId" });
+
+      try {
+        const directRes = await fetch(`${astracallsUrl}/api/sessions/${sid}/calls/${callId}`, {
+          headers: { 'X-Api-Key': astracallsApiKey }
+        });
+        if (directRes.ok) {
+          const data = await directRes.json();
+          return res.json({ success: true, call: data });
+        }
+      } catch (err) {}
+
+      // Tenta listar chamadas ativas da sessão
+      try {
+        const listRes = await fetch(`${astracallsUrl}/api/sessions/${sid}/calls`, {
+          headers: { 'X-Api-Key': astracallsApiKey }
+        });
+        if (listRes.ok) {
+          const listData = await listRes.json();
+          const calls = Array.isArray(listData) ? listData : (listData?.calls || []);
+          const found = calls.find((c: any) => c.callId === callId || c.id === callId);
+          if (found) {
+            return res.json({ success: true, call: found });
+          }
+        }
+      } catch (err) {}
+
+      return res.json({ success: false, notFound: true });
+    } catch (e: any) {
+      return res.status(500).json({ error: e.message });
+    }
+  });
+
   // Endpoints para Gerenciamento do AstraCalls & Histórico de Gravações
   app.get("/api/astracalls/status", async (req, res) => {
     try {
@@ -1797,19 +1838,7 @@ setInterval(() => {
   });
 
   // Call Logs Store (in-memory cache synced with settings table)
-  const inMemoryCallLogs: any[] = [
-    {
-      id: "call_log_1",
-      call_id: "call_demo_1",
-      client_name: "Centro Sul Piscinas",
-      caller_name: "Renivaldo (Admin)",
-      duration: 185,
-      status: "completed",
-      has_recording: true,
-      recording_url: "/audio-placeholder.webm",
-      created_at: new Date(Date.now() - 3600000 * 2).toISOString()
-    }
-  ];
+  const inMemoryCallLogs: any[] = [];
 
   app.get("/api/calls/history", async (req, res) => {
     try {
@@ -1910,7 +1939,7 @@ setInterval(() => {
     }
   });
 
-  app.delete("/api/calls/log/:id", async (req, res) => {
+  app.delete(["/api/calls/log/:id", "/calls/log/:id"], async (req, res) => {
     try {
       const { id } = req.params;
       const idx = inMemoryCallLogs.findIndex(l => l.id === id);

@@ -391,9 +391,17 @@ export default function Settings() {
   const handleDeleteCall = async (id: string) => {
     if (!confirm('Deseja realmente excluir este registro de gravação?')) return;
     try {
-      await fetch(`/api/calls/log/${id}`, { method: 'DELETE' });
+      // 1. Atualização otimista imediata na interface
       setCallRecords(prev => prev.filter(r => r.id !== id));
-    } catch (e) {}
+
+      // 2. Exclusão permanente direta na tabela settings do Supabase (onde call_log_* fica salvo)
+      await supabase.from('settings').delete().eq('id', id);
+
+      // 3. Exclusão via API backend com endpoint absoluto
+      await fetch(getApiUrl(`/api/calls/log/${id}`), { method: 'DELETE' }).catch(() => {});
+    } catch (e) {
+      console.warn('Erro ao excluir registro de chamada:', e);
+    }
   };
 
   const formatSecs = (secs: number) => {
