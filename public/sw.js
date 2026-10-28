@@ -1,5 +1,5 @@
-const CACHE_NAME = 'gestao-pro-v7';
-const DATA_CACHE_NAME = 'gestao-pro-data-v7';
+const CACHE_NAME = 'gestao-pro-v8';
+const DATA_CACHE_NAME = 'gestao-pro-data-v8';
 const SYNC_STORE_NAME = 'sync-queue';
 const DB_NAME = 'gestao-pro-sync-db';
 
@@ -225,21 +225,48 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
-console.log('SW Updated to v7');
+console.log('SW Updated to v8');
+
+// Web Push event handling (wakes up browser and displays system notification when screen is locked)
+self.addEventListener('push', function(event) {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch (e) {
+    data = { body: event.data ? event.data.text() : 'Nova notificação' };
+  }
+
+  const title = data.title || 'RS Piscinas';
+  const options = {
+    body: data.body || 'Nova notificação recebida',
+    icon: '/logo.png',
+    badge: '/logo.png',
+    vibrate: [200, 100, 200, 100, 200],
+    tag: data.tag || (data.data?.channelId ? `${data.data.channelId}_${Date.now()}` : 'rs_piscinas_alert'),
+    data: data.data || data,
+    requireInteraction: true,
+  };
+
+  event.waitUntil(self.registration.showNotification(title, options));
+});
 
 // Notification click handling
 self.addEventListener('notificationclick', function(event) {
   event.notification.close();
+  const targetUrl = event.notification.data?.url || '/';
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(clientList) {
       for (let i = 0; i < clientList.length; i++) {
         let client = clientList[i];
         if (client.url && 'focus' in client) {
+          if ('navigate' in client && targetUrl) {
+            client.navigate(targetUrl);
+          }
           return client.focus();
         }
       }
       if (clients.openWindow) {
-        return clients.openWindow('/');
+        return clients.openWindow(targetUrl);
       }
     })
   );

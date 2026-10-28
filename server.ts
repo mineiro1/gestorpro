@@ -2769,10 +2769,16 @@ setInterval(() => {
       }
 
       // Dispara push notification para os responsáveis (admin e funcionário responsável)
-      const targetUserId = matchedClient.admin_id || matchedClient.employee_id;
-      if (targetUserId) {
-        const clientDisplayName = formatFirstTwoNames(matchedClient.name);
-        sendPushToAdmin(targetUserId, `💬 ${clientDisplayName}`, content, {
+      const notifyUsers = new Set<string>();
+      if (matchedClient.admin_id) notifyUsers.add(matchedClient.admin_id);
+      if (matchedClient.employee_id) notifyUsers.add(matchedClient.employee_id);
+      if (activeSession.admin_id) notifyUsers.add(activeSession.admin_id);
+      if (activeSession.employee_id) notifyUsers.add(activeSession.employee_id);
+      if (notifyUsers.size === 0) notifyUsers.add('698dfcdd-7c91-4df5-aaee-eae9e67f15ae');
+
+      const clientDisplayName = formatFirstTwoNames(matchedClient.name);
+      for (const uId of notifyUsers) {
+        sendPushToUser(uId, `💬 ${clientDisplayName}`, content, {
           clientId: matchedClient.id,
           sessionId: activeSession.id,
           type: 'chat_message',
@@ -2934,10 +2940,16 @@ setInterval(() => {
       }
 
       // Dispara push notification para os responsáveis
-      const targetUserId = matchedClient.employee_id || matchedClient.admin_id;
-      if (targetUserId) {
-        const clientDisplayName = formatFirstTwoNames(matchedClient.name);
-        sendPushToAdmin(targetUserId, `💬 ${clientDisplayName}`, content, {
+      const notifyUsers = new Set<string>();
+      if (matchedClient.admin_id) notifyUsers.add(matchedClient.admin_id);
+      if (matchedClient.employee_id) notifyUsers.add(matchedClient.employee_id);
+      if (activeSession.admin_id) notifyUsers.add(activeSession.admin_id);
+      if (activeSession.employee_id) notifyUsers.add(activeSession.employee_id);
+      if (notifyUsers.size === 0) notifyUsers.add('698dfcdd-7c91-4df5-aaee-eae9e67f15ae');
+
+      const clientDisplayName = formatFirstTwoNames(matchedClient.name);
+      for (const uId of notifyUsers) {
+        sendPushToUser(uId, `💬 ${clientDisplayName}`, content, {
           clientId: matchedClient.id,
           sessionId: activeSession.id,
           type: 'chat_message',
@@ -3120,10 +3132,16 @@ setInterval(() => {
           }
         }
 
-        const targetUserId = matchedClient.employee_id || matchedClient.admin_id;
-        if (targetUserId) {
-          const clientDisplayName = formatFirstTwoNames(matchedClient.name);
-          sendPushToAdmin(targetUserId, `💬 ${clientDisplayName}`, String(content), {
+        const notifyUsers = new Set<string>();
+        if (matchedClient.admin_id) notifyUsers.add(matchedClient.admin_id);
+        if (matchedClient.employee_id) notifyUsers.add(matchedClient.employee_id);
+        if (activeSession.admin_id) notifyUsers.add(activeSession.admin_id);
+        if (activeSession.employee_id) notifyUsers.add(activeSession.employee_id);
+        if (notifyUsers.size === 0) notifyUsers.add('698dfcdd-7c91-4df5-aaee-eae9e67f15ae');
+
+        const clientDisplayName = formatFirstTwoNames(matchedClient.name);
+        for (const uId of notifyUsers) {
+          sendPushToUser(uId, `💬 ${clientDisplayName}`, String(content), {
             clientId: matchedClient.id,
             sessionId: activeSession.id,
             type: 'chat_message',
@@ -3486,6 +3504,11 @@ await getMessaging().send({
       for (const tok of cleanTokens) {
         if (!fcmInitialized) break;
         try {
+          const isChat = data?.channelId === 'chat_messages' || data?.type === 'chat_message';
+          const targetChannel = data?.channelId || (isChat ? 'chat_messages' : 'atendimentos_v3');
+          const targetSound = isChat ? 'chat_notification' : 'notificacao';
+          const targetSoundFile = isChat ? 'chat_notification.mp3' : 'notificacao.mp3';
+
           await getMessaging().send({
             token: tok,
             notification: {
@@ -3497,26 +3520,26 @@ await getMessaging().send({
               body,
               ...data,
               click_action: 'FCM_PLUGIN_ACTIVITY',
-              url: data.url || '/routes',
-              channelId: 'atendimentos_v3',
-              channel_id: 'atendimentos_v3',
-              sound: 'notificacao'
+              url: data.url || (isChat ? '/messages' : '/routes'),
+              channelId: targetChannel,
+              channel_id: targetChannel,
+              sound: targetSound
             },
             android: {
               priority: 'high',
               ttl: 2419200,
               directBootOk: true,
               notification: {
-                channelId: 'atendimentos_v3',
+                channelId: targetChannel,
                 title,
                 body,
-                sound: 'notificacao',
+                sound: targetSound,
                 priority: 'max',
                 visibility: 'public',
                 defaultVibrateTimings: true,
                 localOnly: false,
                 notificationCount: 1,
-                tag: data.tag || (data.visitId ? `visit_${data.visitId}` : undefined)
+                tag: data.tag || (data.visitId ? `visit_${data.visitId}` : (data.sessionId ? `chat_${data.sessionId}` : undefined))
               }
             },
             apns: {
@@ -3526,7 +3549,7 @@ await getMessaging().send({
               },
               payload: {
                 aps: {
-                  sound: 'notificacao.mp3',
+                  sound: targetSoundFile,
                   badge: 1,
                   contentAvailable: true,
                   alert: {
@@ -3964,21 +3987,25 @@ await getMessaging().send({
             if (clientData?.name) clientName = clientData.name;
           }
 
-          const targetUserId = session.admin_id || session.employee_id;
-          if (targetUserId) {
-             const clientDisplayName = formatFirstTwoNames(clientName);
-             await sendPushToAdmin(
-               targetUserId,
-               `💬 ${clientDisplayName}`,
-               newMsg.content || 'Mensagem recebida',
-               {
-                 url: '/messages',
-                 channelId: 'chat_messages',
-                 type: 'chat_message',
-                 clientId: String(session.client_id || ''),
-                 sessionId: String(newMsg.session_id || '')
-               }
-             );
+          const notifyUsers = new Set<string>();
+          if (session.admin_id) notifyUsers.add(session.admin_id);
+          if (session.employee_id) notifyUsers.add(session.employee_id);
+          if (notifyUsers.size === 0) notifyUsers.add('698dfcdd-7c91-4df5-aaee-eae9e67f15ae');
+
+          const clientDisplayName = formatFirstTwoNames(clientName);
+          for (const uId of notifyUsers) {
+            await sendPushToUser(
+              uId,
+              `💬 ${clientDisplayName}`,
+              newMsg.content || 'Mensagem recebida',
+              {
+                url: '/messages',
+                channelId: 'chat_messages',
+                type: 'chat_message',
+                clientId: String(session.client_id || ''),
+                sessionId: String(newMsg.session_id || '')
+              }
+            );
           }
        }
     })
