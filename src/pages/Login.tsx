@@ -172,20 +172,28 @@ export default function Login() {
         navigate('/dashboard', { replace: true });
       }
     } catch (err: any) {
-      const errMsg = String(err?.message || err || '');
-      if (errMsg.includes('Invalid login credentials') || errMsg.includes('credentials_mismatch')) {
+      const errMsg = String(err?.message || err || '').toLowerCase();
+      if (errMsg.includes('invalid login credentials') || errMsg.includes('credentials_mismatch')) {
         setError('Telefone ou senha incorretos.');
-      } else if (errMsg.includes('Unexpected token') || errMsg.includes('<!doctype') || errMsg.includes('valid JSON') || errMsg.includes('html_fallback')) {
-        setError('Telefone ou senha incorretos. Verifique seus dados.');
-      } else if (errMsg.includes('Email not confirmed')) {
+      } else if (
+        errMsg.includes('unexpected token') || 
+        errMsg.includes('<!doctype') || 
+        errMsg.includes('valid json') || 
+        errMsg.includes('html_fallback') ||
+        errMsg.includes('syntaxerror') ||
+        errMsg.includes('<html') ||
+        errMsg.includes('<')
+      ) {
+        setError('Telefone ou senha incorretos. Verifique seus dados de acesso.');
+      } else if (errMsg.includes('email not confirmed')) {
         setError('Por favor, desative a confirmação de e-mail no painel do Supabase: Authentication -> Providers -> Email -> Desmarque "Confirm email".');
-      } else if (errMsg.includes('Email logins are disabled')) {
+      } else if (errMsg.includes('email logins are disabled')) {
         setError('Por favor, ative o provedor de E-mail no painel do Supabase: Authentication -> Providers -> Email -> Enable Email provider.');
-      } else if (errMsg.includes('FetchError') || errMsg.includes('Network request failed')) {
-        setError('Erro de conexão. Verifique sua internet, desative bloqueadores de anúncios (AdBlock) ou tente em uma aba anônima.');
+      } else if (errMsg.includes('fetcherror') || errMsg.includes('network request failed') || errMsg.includes('failed to fetch')) {
+        setError('Erro de conexão com o servidor. Verifique sua conexão e tente novamente.');
       } else {
         console.error(err);
-        setError(err.message || 'Erro ao fazer login. Verifique seus dados.');
+        setError(err?.message || 'Erro ao fazer login. Verifique seus dados.');
       }
     } finally {
       setLoading(false);

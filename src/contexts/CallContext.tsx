@@ -7,6 +7,7 @@ export interface ActiveCall {
   clientId?: string;
   clientPhone?: string;
   clientName: string;
+  callerName?: string;
   avatarUrl?: string;
   callId?: string | null;
   sessionId?: string;
@@ -34,11 +35,14 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     let astracallsUrl = 'https://calls.rspiscinas.app.br';
     let astracallsApiKey = 'rs_piscinas_segredo_2026';
 
+    const currentCallerName = (userProfile?.name || 'Colaborador').trim();
+
     // Open modal immediately in dialing state (callId null while connecting)
     setActiveCall({
       clientId,
       clientPhone,
       clientName: clientName || 'Cliente',
+      callerName: currentCallerName,
       avatarUrl,
       callId: null,
       sessionId,
@@ -158,10 +162,11 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
           clientId: activeCall.clientId,
           clientName: activeCall.clientName,
           clientPhone: activeCall.clientPhone,
-          callerName: userProfile?.name || 'Administrador',
+          callerName: activeCall.callerName || userProfile?.name || 'Colaborador',
           callId: activeCall.callId,
           duration: callDuration,
           recording_url: recordingUrl || undefined,
+          has_recording: !!recordingUrl,
           status: 'completed',
         }),
       }).catch(() => {});

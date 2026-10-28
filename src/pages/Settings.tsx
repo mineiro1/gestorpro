@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { Capacitor } from '@capacitor/core';
 import { requestPushPermissions, sendTestPushNotification } from '../lib/pushNotifications';
+import { getPersistentBusinessData, savePersistentBusinessData, DEFAULT_PIX_KEY, DEFAULT_PIX_RECEIVER } from '../lib/persistentBusinessData';
 
 interface CallRecord {
   id: string;
@@ -30,6 +31,12 @@ export default function Settings() {
   const [loading, setLoading] = useState(false);
   const [isSmsGateway, setIsSmsGateway] = useState(false);
   const [useSmsForReports, setUseSmsForReports] = useState(false);
+
+  // PIX Company & Beneficiary state (Permanente e protegido contra apagamento)
+  const [pixKey, setPixKey] = useState(DEFAULT_PIX_KEY);
+  const [pixReceiverName, setPixReceiverName] = useState(DEFAULT_PIX_RECEIVER);
+  const [pixKeyType, setPixKeyType] = useState('cnpj');
+  const [autoAppendPix, setAutoAppendPix] = useState(true);
 
   // WhatsApp Provider Selection ('astracalls' | 'evolution' | 'meta' | 'manual')
   const [waProvider, setWaProvider] = useState<'astracalls' | 'evolution' | 'meta' | 'manual'>('astracalls');
@@ -111,6 +118,22 @@ export default function Settings() {
       setMetaToken(s.metaToken || '');
       setMetaPhoneNumberId(s.metaPhoneNumberId || '');
       setMetaServerUrl(s.metaServerUrl || 'https://graph.facebook.com/v19.0');
+
+      // PIX values
+      if (s.pixKey) setPixKey(s.pixKey);
+      if (s.pixReceiverName) setPixReceiverName(s.pixReceiverName);
+      if (s.pixKeyType) setPixKeyType(s.pixKeyType);
+      if (s.autoAppendPix !== undefined) setAutoAppendPix(s.autoAppendPix);
+    }
+
+    // Carrega dados persistentes garantidos (reserva contra perda de dados)
+    if (userProfile?.uid) {
+      getPersistentBusinessData(userProfile.uid).then(biz => {
+        if (biz.pixKey) setPixKey(biz.pixKey);
+        if (biz.pixReceiverName) setPixReceiverName(biz.pixReceiverName);
+        if (biz.pixKeyType) setPixKeyType(biz.pixKeyType);
+        if (biz.autoAppendPix !== undefined) setAutoAppendPix(biz.autoAppendPix);
+      });
     }
 
     // Load local SMS Gateway setting
@@ -466,12 +489,40 @@ export default function Settings() {
     
     setLoading(true);
     try {
-      const currentSettings = userProfile.whatsappSettings || {};
+      // 1. Busca os dados mais recentes diretamente do banco para evitar perda de dados por concorrência ou cache defasado
+      const { data: liveUserRow } = await supabase
+        .from('users')
+        .select('whatsapp_settings')
+        .eq('id', userProfile.uid)
+        .maybeSingle();
+
+      const currentLive = (liveUserRow?.whatsapp_settings || {}) as any;
+      const localCurrent = (userProfile.whatsappSettings || {}) as any;
+
+      // Preserva explicitamente avisos fixos de clientes e cadastros periféricos
+      const preservedSecurityNotes = currentLive.client_security_notes || localCurrent.client_security_notes || {};
+      const preservedDevices = currentLive.devices || localCurrent.devices || [];
+      const preservedStores = currentLive.partnerStores || localCurrent.partnerStores || [];
+      const preservedTechs = currentLive.partnerTechnicians || localCurrent.partnerTechnicians || [];
+
+      // Chave PIX e Beneficiário com fallback garantido aos padrões oficiais
+      const effectivePixKey = (pixKey || '').trim() || currentLive.pixKey || localCurrent.pixKey || DEFAULT_PIX_KEY;
+      const effectivePixReceiver = (pixReceiverName || '').trim() || currentLive.pixReceiverName || localCurrent.pixReceiverName || DEFAULT_PIX_RECEIVER;
+
       const newSettings = {
-        ...currentSettings,
+        ...currentLive,
+        ...localCurrent,
         companyName,
         companyLogo,
         useSmsForReports,
+        pixKey: effectivePixKey,
+        pixReceiverName: effectivePixReceiver,
+        pixKeyType,
+        autoAppendPix,
+        client_security_notes: preservedSecurityNotes,
+        devices: preservedDevices,
+        partnerStores: preservedStores,
+        partnerTechnicians: preservedTechs,
         // Provider Selection
         provider: waProvider,
         useAstraCalls: waProvider === 'astracalls',
@@ -501,11 +552,20 @@ export default function Settings() {
       
       if (error) throw error;
 
+      // 2. Grava backup permanente em camada dupla (tabela settings + localStorage) para blindagem total contra apagamento
+      await savePersistentBusinessData(userProfile.uid, {
+        pixKey: effectivePixKey,
+        pixReceiverName: effectivePixReceiver,
+        pixKeyType,
+        autoAppendPix,
+        client_security_notes: preservedSecurityNotes
+      });
+
       if (userProfile) {
         userProfile.whatsappSettings = newSettings as any;
       }
       
-      alert('Configurações salvas com sucesso!');
+      alert('Configurações salvas com sucesso! A chave PIX e os avisos fixos estão preservados permanentemente.');
     } catch (error: any) {
       console.error(error);
       alert('Erro ao salvar as configurações: ' + error.message);
@@ -614,6 +674,83 @@ export default function Settings() {
                 }`}
               />
             </button>
+          </div>
+
+          {/* Dados Oficiais da Chave PIX e Beneficiário */}
+          <div className="mt-6 p-5 bg-gradient-to-br from-emerald-50/60 to-white rounded-xl border border-emerald-200 shadow-sm space-y-4">
+            <div className="flex items-center justify-between border-b border-emerald-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-emerald-600 text-white flex items-center justify-center font-bold text-xs shadow-sm">
+                  PIX
+                </div>
+                <div>
+                  <h3 className="font-bold text-gray-900 text-sm">Chave PIX da Empresa & Beneficiário</h3>
+                  <p className="text-xs text-gray-500">
+                    Dados permanentes anexados automaticamente nas cobranças, recibos e mensagens enviadas aos clientes.
+                  </p>
+                </div>
+              </div>
+              <span className="text-[11px] px-2 py-0.5 rounded font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                Proteção Permanente
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1">
+                  Tipo de Chave
+                </label>
+                <select
+                  value={pixKeyType}
+                  onChange={(e) => setPixKeyType(e.target.value)}
+                  className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-xs outline-none focus:ring-2 focus:ring-emerald-500"
+                >
+                  <option value="cnpj">CNPJ</option>
+                  <option value="cpf">CPF</option>
+                  <option value="phone">Telefone</option>
+                  <option value="email">E-mail</option>
+                  <option value="random">Chave Aleatória</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1">
+                  Chave PIX Oficial
+                </label>
+                <input
+                  type="text"
+                  value={pixKey}
+                  onChange={(e) => setPixKey(e.target.value)}
+                  placeholder="37666108000128"
+                  className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-xs font-mono font-medium outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1">
+                  Nome do Beneficiário / Titular
+                </label>
+                <input
+                  type="text"
+                  value={pixReceiverName}
+                  onChange={(e) => setPixReceiverName(e.target.value)}
+                  placeholder="Renivaldo Servin dos Santos Ltda "
+                  className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-xs font-medium outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-2">
+              <label className="text-xs text-gray-700 font-medium flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autoAppendPix}
+                  onChange={(e) => setAutoAppendPix(e.target.checked)}
+                  className="w-4 h-4 text-emerald-600 rounded border-gray-300 focus:ring-emerald-500"
+                />
+                Anexar automaticamente a chave PIX e beneficiário no final dos lembretes e mensagens de cobrança
+              </label>
+            </div>
           </div>
 
           <div className="pt-4 border-t border-gray-100">

@@ -832,7 +832,7 @@ setInterval(() => {
 
   app.post("/api/chat/upload", async (req, res) => {
     try {
-      const { mediaBase64, mimeType } = req.body;
+      const { mediaBase64, mimeType, fileName: customFileName } = req.body;
       if (!mediaBase64) {
         return res.status(400).json({ error: "Missing mediaBase64" });
       }
@@ -854,7 +854,13 @@ setInterval(() => {
       else if (mimeType?.includes('mp3') || mimeType?.includes('mpeg')) ext = 'mp3';
       else if (mimeType?.includes('pdf')) ext = 'pdf';
 
-      const fileName = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
+      let fileName = '';
+      if (customFileName && typeof customFileName === 'string') {
+        const sanitized = customFileName.trim().replace(/[^a-zA-Z0-9._-]/g, '_');
+        fileName = sanitized.endsWith(`.${ext}`) ? sanitized : `${sanitized}.${ext}`;
+      } else {
+        fileName = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
+      }
 
       const { error: uploadErr } = await supabaseAdmin.storage
         .from('chat-media')

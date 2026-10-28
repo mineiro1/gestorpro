@@ -9,6 +9,7 @@ import {
   Check, Send, FileText, Share2, Download
 } from 'lucide-react';
 import { generateReceiptImageBase64, downloadReceiptImage, copyReceiptImageToClipboard } from '../lib/receiptGenerator';
+import { getPersistentBusinessData, savePersistentBusinessData, DEFAULT_PIX_KEY, DEFAULT_PIX_RECEIVER } from '../lib/persistentBusinessData';
 
 interface ClientBilling {
   id: string;
@@ -137,42 +138,47 @@ export default function Billing() {
   useEffect(() => {
     async function loadSettings() {
       const targetAdmin = userProfile?.role === 'admin' ? userProfile.uid : userProfile?.adminId;
+      const persistent = await getPersistentBusinessData(targetAdmin);
       const s = await resolveAdminWhatsAppSettings(targetAdmin, userProfile);
-      if (s && Object.keys(s).length > 0) {
-        const isMeta = s.useMetaApi && s.provider === 'meta';
-        const isEvo = s.useEvolutionApi && s.provider === 'evolution';
-        const isAstra = s.provider === 'astracalls' || s.useAstracalls || (!isMeta && !isEvo);
+      
+      const isMeta = s?.useMetaApi && s?.provider === 'meta';
+      const isEvo = s?.useEvolutionApi && s?.provider === 'evolution';
+      const isAstra = s?.provider === 'astracalls' || s?.useAstracalls || (!isMeta && !isEvo);
 
-        setWaSettings((prev: any) => ({
-          ...prev,
-          companyName: s.companyName || '',
-          reminderDays: s.reminderDays ?? 3,
-          reminderMessage: s.reminderMessage || 'Olá {nome}, tudo bem? Passando para lembrar que sua mensalidade no valor de R$ {valor} vence no dia {vencimento}.',
-          delayedMessage: s.delayedMessage || 'Olá {nome}, tudo bem? Consta em nosso sistema que a sua mensalidade do dia {vencimento} no valor de R$ {valor} está pendente. Poderia verificá-la, por favor?',
-          reportMessage1: (s.reportMessage1 || 'Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}').replace(/https:\/\/www\.rspiscinas\.app\.br\/client-panel/gi, 'www.rspiscinas.app.br/client-panel'),
-          reportMessage2: (s.reportMessage2 || 'Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}').replace(/https:\/\/www\.rspiscinas\.app\.br\/client-panel/gi, 'www.rspiscinas.app.br/client-panel'),
-          receiptMessage: s.receiptMessage || 'Olá {nome}! Confirmamos o recebimento da sua mensalidade referente a {mes} no valor de R$ {valor}. Muito obrigado pela confiança e pontualidade! 💦✨\n\n*Comprovante de Quitação*\n• Cliente: {nome}\n• Valor Pago: R$ {valor}\n• Data: {data_pagamento}\n• Próximo Vencimento: {proximo_vencimento}',
-          onTheWayMessage: s.onTheWayMessage || 'Olá {nome}! Seu técnico {tecnico} já está a caminho da sua residência. Previsão de chegada: ~15 minutos.',
-          pixKey: s.pixKey || '',
-          pixReceiverName: s.pixReceiverName || '',
-          pixKeyType: s.pixKeyType || 'phone',
-          autoAppendPix: s.autoAppendPix !== false,
-          autoScheduleTime: s.autoScheduleTime || '09:00',
-          provider: isAstra ? 'astracalls' : (isEvo ? 'evolution' : (isMeta ? 'meta' : 'web')),
-          useAstracalls: isAstra,
-          astracallsUrl: s.astracallsUrl || 'https://calls.rspiscinas.app.br',
-          astracallsApiKey: s.astracallsApiKey || 'rs_piscinas_segredo_2026',
-          astracallsSessionId: s.astracallsSessionId || '8090cca3add0b8eb3e41efb9eec363e4',
-          useEvolutionApi: isEvo,
-          evolutionApiUrl: s.evolutionApiUrl || '',
-          evolutionApiKey: s.evolutionApiKey || '',
-          evolutionInstanceName: s.evolutionInstanceName || '',
-          useMetaApi: isMeta,
-          metaToken: s.metaToken || '',
-          metaPhoneNumberId: s.metaPhoneNumberId || '',
-          metaServerUrl: s.metaServerUrl || ''
-        }));
-      }
+      const effectivePixKey = s?.pixKey || persistent.pixKey || DEFAULT_PIX_KEY;
+      const effectivePixReceiver = s?.pixReceiverName || persistent.pixReceiverName || DEFAULT_PIX_RECEIVER;
+      const effectivePixKeyType = s?.pixKeyType || persistent.pixKeyType || 'cnpj';
+      const effectiveAutoAppend = s?.autoAppendPix !== undefined ? s.autoAppendPix : (persistent.autoAppendPix !== false);
+
+      setWaSettings((prev: any) => ({
+        ...prev,
+        companyName: s?.companyName || '',
+        reminderDays: s?.reminderDays ?? 3,
+        reminderMessage: s?.reminderMessage || 'Olá {nome}, tudo bem? Passando para lembrar que sua mensalidade no valor de R$ {valor} vence no dia {vencimento}.',
+        delayedMessage: s?.delayedMessage || 'Olá {nome}, tudo bem? Consta em nosso sistema que a sua mensalidade do dia {vencimento} no valor de R$ {valor} está pendente. Poderia verificá-la, por favor?',
+        reportMessage1: (s?.reportMessage1 || 'Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}').replace(/https:\/\/www\.rspiscinas\.app\.br\/client-panel/gi, 'www.rspiscinas.app.br/client-panel'),
+        reportMessage2: (s?.reportMessage2 || 'Olá,{Primeiro nome do cliente}! 😊 Passando para avisar que já estive aí e fiz a limpeza da sua piscina. 💦✨\nPara acompanhar o serviço executado acesse:\nwww.rspiscinas.app.br/client-panel\nLogin: {telefone de cadastro do cliente}\nSenha: {telefone de cadastro do cliente}').replace(/https:\/\/www\.rspiscinas\.app\.br\/client-panel/gi, 'www.rspiscinas.app.br/client-panel'),
+        receiptMessage: s?.receiptMessage || 'Olá {nome}! Confirmamos o recebimento da sua mensalidade referente a {mes} no valor de R$ {valor}. Muito obrigado pela confiança e pontualidade! 💦✨\n\n*Comprovante de Quitação*\n• Cliente: {nome}\n• Valor Pago: R$ {valor}\n• Data: {data_pagamento}\n• Próximo Vencimento: {proximo_vencimento}',
+        onTheWayMessage: s?.onTheWayMessage || 'Olá {nome}! Seu técnico {tecnico} já está a caminho da sua residência. Previsão de chegada: ~15 minutos.',
+        pixKey: effectivePixKey,
+        pixReceiverName: effectivePixReceiver,
+        pixKeyType: effectivePixKeyType,
+        autoAppendPix: effectiveAutoAppend,
+        autoScheduleTime: s?.autoScheduleTime || '09:00',
+        provider: isAstra ? 'astracalls' : (isEvo ? 'evolution' : (isMeta ? 'meta' : 'web')),
+        useAstracalls: isAstra,
+        astracallsUrl: s?.astracallsUrl || 'https://calls.rspiscinas.app.br',
+        astracallsApiKey: s?.astracallsApiKey || 'rs_piscinas_segredo_2026',
+        astracallsSessionId: s?.astracallsSessionId || '8090cca3add0b8eb3e41efb9eec363e4',
+        useEvolutionApi: isEvo,
+        evolutionApiUrl: s?.evolutionApiUrl || '',
+        evolutionApiKey: s?.evolutionApiKey || '',
+        evolutionInstanceName: s?.evolutionInstanceName || '',
+        useMetaApi: isMeta,
+        metaToken: s?.metaToken || '',
+        metaPhoneNumberId: s?.metaPhoneNumberId || '',
+        metaServerUrl: s?.metaServerUrl || ''
+      }));
     }
     if (userProfile?.uid) {
       loadSettings();
@@ -183,22 +189,48 @@ export default function Billing() {
     if (!userProfile?.uid) return;
     setSavingSettings(true);
     try {
-      const currentSettings = userProfile.whatsappSettings || {};
+      // 1. Busca os dados mais recentes do banco para não perder nada
+      const { data: liveUserRow } = await supabase
+        .from('users')
+        .select('whatsapp_settings')
+        .eq('id', userProfile.uid)
+        .maybeSingle();
+
+      const currentLive = (liveUserRow?.whatsapp_settings || {}) as any;
+      const localCurrent = (userProfile.whatsappSettings || {}) as any;
+
+      const effectivePixKey = (waSettings.pixKey || '').trim() || currentLive.pixKey || localCurrent.pixKey || DEFAULT_PIX_KEY;
+      const effectivePixReceiver = (waSettings.pixReceiverName || '').trim() || currentLive.pixReceiverName || localCurrent.pixReceiverName || DEFAULT_PIX_RECEIVER;
+      const preservedSecurityNotes = currentLive.client_security_notes || localCurrent.client_security_notes || {};
+
+      const newSettings = {
+        ...currentLive,
+        ...localCurrent,
+        ...waSettings,
+        pixKey: effectivePixKey,
+        pixReceiverName: effectivePixReceiver,
+        client_security_notes: preservedSecurityNotes
+      };
+
       const { error } = await supabase.from('users').update({
-        whatsapp_settings: {
-          ...currentSettings,
-          ...waSettings
-        }
+        whatsapp_settings: newSettings
       }).eq('id', userProfile.uid);
       if (error) throw error;
+
+      // 2. Grava backup permanente no Supabase settings + localStorage
+      await savePersistentBusinessData(userProfile.uid, {
+        pixKey: effectivePixKey,
+        pixReceiverName: effectivePixReceiver,
+        pixKeyType: waSettings.pixKeyType,
+        autoAppendPix: waSettings.autoAppendPix,
+        client_security_notes: preservedSecurityNotes
+      });
+
       if (userProfile) {
-        userProfile.whatsappSettings = {
-          ...currentSettings,
-          ...waSettings
-        };
+        userProfile.whatsappSettings = newSettings as any;
       }
       setSettingsModalOpen(false);
-      setReceiptToast({ text: 'Configurações e Chave PIX salvas com sucesso!' });
+      setReceiptToast({ text: 'Configurações e Chave PIX salvas e protegidas com sucesso!' });
       setTimeout(() => setReceiptToast(null), 4000);
     } catch (err: any) {
       console.error(err);

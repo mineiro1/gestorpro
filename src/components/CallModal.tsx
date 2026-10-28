@@ -193,11 +193,10 @@ export default function CallModal({ call, onClose }: CallModalProps) {
 
     let isCleanedUp = false;
 
-    const establishWebRTC = async () => {
-      if (!call.callId || call.callId.startsWith('call_')) return;
-
+    // 1. Inicia IMEDIATAMENTE a captura do microfone e gravação de áudio desde o primeiro segundo
+    const initMicrophoneAndRecording = async () => {
       try {
-        // 1. Capture microphone
+        if (micStreamRef.current) return;
         const micStream = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
@@ -211,7 +210,10 @@ export default function CallModal({ call, onClose }: CallModalProps) {
         }
         micStreamRef.current = micStream;
 
-        // Initialize AudioWorklet for local microphone volume level
+        // Inicia gravação imediatamente
+        startRecordingMixer(micStream);
+
+        // Medidor de volume do microfone local
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         if (AudioCtx) {
           const actx = new AudioCtx();
@@ -221,6 +223,28 @@ export default function CallModal({ call, onClose }: CallModalProps) {
           });
           localWorkletDisconnectRef.current = disconnect;
         }
+
+        // Se WebRTC já estiver pronto, conecta
+        if (pcRef.current && micStream.getAudioTracks().length > 0) {
+          micStream.getAudioTracks().forEach(track => pcRef.current?.addTrack(track, micStream));
+        }
+      } catch (err) {
+        console.warn('[Call Recording] Erro ao iniciar microfone/gravação:', err);
+      }
+    };
+
+    initMicrophoneAndRecording();
+
+    const establishWebRTC = async () => {
+      if (!call.callId || call.callId.startsWith('call_')) return;
+
+      try {
+        // Aguarda microfone se ainda estiver capturando
+        if (!micStreamRef.current) {
+          await initMicrophoneAndRecording();
+        }
+        const micStream = micStreamRef.current;
+        if (!micStream || isCleanedUp) return;
 
         // 2. Setup RTCPeerConnection
         const pc = new RTCPeerConnection({ iceServers: [] });
@@ -372,13 +396,20 @@ export default function CallModal({ call, onClose }: CallModalProps) {
                 reader.onloadend = async () => {
                   const base64data = reader.result as string;
                   try {
+                    const sanitize = (name: string) => (name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+                    const clientNamePart = sanitize(call.clientName || 'Cliente');
+                    const callerNamePart = sanitize(call.callerName || 'Colaborador');
+                    const dateStr = new Date().toISOString().slice(0, 10);
+                    const fileName = `${clientNamePart}_ligacao_${callerNamePart}_${dateStr}_${Date.now()}.webm`;
+
                     const uploadUrl = getApiUrl('/api/chat/upload');
                     const upRes = await fetch(uploadUrl, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({
                         mediaBase64: base64data,
-                        mimeType: mime
+                        mimeType: mime,
+                        fileName: fileName
                       })
                     });
                     if (upRes.ok) {

@@ -21,6 +21,7 @@ import { getApiUrl } from '../lib/apiConfig';
 import { fetchWeatherData, WeatherData } from '../lib/weatherService';
 import EmployeeMap from '../components/EmployeeMap';
 import exifr from 'exifr';
+import { getPersistentBusinessData, savePersistentBusinessData } from '../lib/persistentBusinessData';
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
@@ -782,7 +783,7 @@ export default function RoutesPage() {
           }
         }
 
-        // Avisos Fixos e Segurança do Imóvel dos clientes
+        // Avisos Fixos e Segurança do Imóvel dos clientes (Garantia permanente contra perda)
         let securityNotesByClient: Record<string, string> = {};
         try {
           const { data: adminUserRow } = await supabase
@@ -791,11 +792,22 @@ export default function RoutesPage() {
             .eq('id', adminId)
             .maybeSingle();
 
-          if (adminUserRow?.whatsapp_settings?.client_security_notes) {
+          if (adminUserRow?.whatsapp_settings?.client_security_notes && Object.keys(adminUserRow.whatsapp_settings.client_security_notes).length > 0) {
             securityNotesByClient = { ...adminUserRow.whatsapp_settings.client_security_notes };
+          } else {
+            const persistent = await getPersistentBusinessData(adminId);
+            if (persistent.client_security_notes && Object.keys(persistent.client_security_notes).length > 0) {
+              securityNotesByClient = { ...persistent.client_security_notes };
+            }
           }
         } catch (secErr) {
-          console.warn('[Avisos Fixos] Erro ao buscar avisos de segurança:', secErr);
+          console.warn('[Avisos Fixos] Erro ao buscar avisos de segurança no users, tentando backup permanente:', secErr);
+          try {
+            const persistent = await getPersistentBusinessData(adminId);
+            if (persistent.client_security_notes) {
+              securityNotesByClient = { ...persistent.client_security_notes };
+            }
+          } catch(e) {}
         }
 
         const finalResult = { 
@@ -1417,6 +1429,11 @@ useEffect(() => {
 
       if (error) throw error;
 
+      // Grava backup permanente em camada dupla
+      await savePersistentBusinessData(adminId, {
+        client_security_notes: updatedNotes
+      });
+
       queryClient.invalidateQueries({ queryKey: ['routeData'] });
       setSecurityModalOpen(false);
       setSelectedClientForSecurity(null);
@@ -1462,6 +1479,11 @@ useEffect(() => {
         .from('users')
         .update({ whatsapp_settings: updatedSettings })
         .eq('id', adminId);
+
+      // Atualiza o backup permanente
+      await savePersistentBusinessData(adminId, {
+        client_security_notes: updatedNotes
+      });
 
       queryClient.invalidateQueries({ queryKey: ['routeData'] });
       setSecurityModalOpen(false);
