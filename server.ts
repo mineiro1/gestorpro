@@ -89,6 +89,10 @@ async function startServer() {
   });
 
   // API Routes
+  app.get("/api/health", (req, res) => {
+    res.status(200).json({ status: "ok", uptime: Math.floor(process.uptime()), timestamp: new Date().toISOString() });
+  });
+
   app.get("/api/test-db", async (req, res) => {
     try {
       // test if we can read users without auth
