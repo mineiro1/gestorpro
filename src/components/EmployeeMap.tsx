@@ -171,9 +171,50 @@ export default function EmployeeMap({
     }
   }, [highlightedClientId, map, clients]);
 
-  if (!isAdmin && !isManager) return null;
+  // Extrai coordenadas do cliente suportando múltiplos formatos (lat/lng, latitude/longitude, location string/json)
+  const parseClientCoords = (client: any): { lat: number; lng: number } | null => {
+    if (!client) return null;
+    if (client.lat && client.lng && !isNaN(Number(client.lat)) && !isNaN(Number(client.lng))) {
+      return { lat: Number(client.lat), lng: Number(client.lng) };
+    }
+    if (client.latitude && client.longitude && !isNaN(Number(client.latitude)) && !isNaN(Number(client.longitude))) {
+      return { lat: Number(client.latitude), lng: Number(client.longitude) };
+    }
+    if (client.location) {
+      if (typeof client.location === 'object' && client.location.lat && client.location.lng) {
+        const lat = parseFloat(client.location.lat);
+        const lng = parseFloat(client.location.lng);
+        if (!isNaN(lat) && !isNaN(lng)) return { lat, lng };
+      } else if (typeof client.location === 'string') {
+        try {
+          const parsed = JSON.parse(client.location);
+          if (parsed && parsed.lat && parsed.lng) {
+            const lat = parseFloat(parsed.lat);
+            const lng = parseFloat(parsed.lng);
+            if (!isNaN(lat) && !isNaN(lng)) return { lat, lng };
+          }
+        } catch {
+          const parts = client.location.split(',');
+          if (parts.length >= 2) {
+            const lat = parseFloat(parts[0]);
+            const lng = parseFloat(parts[1]);
+            if (!isNaN(lat) && !isNaN(lng)) return { lat, lng };
+          }
+        }
+      }
+    }
+    return null;
+  };
 
-  const activeClients = clients.filter((c) => c.lat && c.lng);
+  const activeClients = useMemo(() => {
+    return clients
+      .map((c) => {
+        const coords = parseClientCoords(c);
+        return coords ? { ...c, lat: coords.lat, lng: coords.lng } : null;
+      })
+      .filter(Boolean) as Array<any>;
+  }, [clients]);
+
   const defaultCenter = { lat: -20.4697, lng: -54.6201 }; // Campo Grande - MS
 
   const mapCenter = combinedTechnicians.length > 0
@@ -251,8 +292,15 @@ export default function EmployeeMap({
             <Radio size={14} className="text-emerald-600 animate-pulse" />
             {Object.keys(liveTechnicians).length} Online agora
           </span>
-          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 text-slate-700 text-xs font-medium">
-            {activeClients.length} Piscinas no mapa
+          <span 
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border ${
+              activeClients.length > 0
+                ? 'bg-blue-50 text-blue-700 border-blue-200'
+                : 'bg-slate-100 text-slate-600 border-slate-200'
+            }`}
+            title="Quantidade de piscinas da rota com coordenadas GPS cadastradas. As piscinas sem GPS ganham coordenadas automaticamente assim que o técnico finaliza a primeira visita."
+          >
+            📍 {activeClients.length} de {clients.length} piscinas no mapa
           </span>
         </div>
       </div>

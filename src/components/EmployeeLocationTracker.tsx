@@ -3,16 +3,16 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { fleetRealtimeService, TechnicianTelemetry } from '../lib/fleetRealtime';
 import { 
-  startForegroundTrackingNotification, 
-  stopForegroundTrackingNotification 
-} from '../lib/pushNotifications';
+  nativeBackgroundGeolocation, 
+  GeoPoint 
+} from '../lib/backgroundGeolocationService';
 
 export { type TechnicianTelemetry } from '../lib/fleetRealtime';
 
 export default function EmployeeLocationTracker() {
   const { userProfile, isAdmin } = useAuth();
   const lastDbPersistTimeRef = useRef<number>(0);
-  const lastCoordsRef = useRef<GeolocationCoordinates | null>(null);
+  const lastCoordsRef = useRef<GeoPoint | null>(null);
 
   useEffect(() => {
     // Apenas colaboradores e gestores transmitem sua frota (e admin caso queira testar a telemetria)
@@ -22,19 +22,12 @@ export default function EmployeeLocationTracker() {
     // Determina o ID do administrador da conta
     const companyAdminId = isAdmin ? userProfile.uid : (userProfile.adminId || userProfile.uid);
 
-    // Ativa a notificação persistente no Android: "RS Piscinas - Sistema em execução."
-    startForegroundTrackingNotification().catch((err) => {
-      console.warn('[EmployeeLocationTracker] Falha ao iniciar notificação em segundo plano:', err);
-    });
-
-    let watchId: number;
-
-    const transmitPresence = async (coords: GeolocationCoordinates) => {
-      lastCoordsRef.current = coords;
+    const transmitPresence = async (point: GeoPoint) => {
+      lastCoordsRef.current = point;
 
       const activeClientName = localStorage.getItem('active_visit_client_name') || null;
-      const speedKmH = coords.speed !== null && coords.speed > 0 
-        ? Math.round(coords.speed * 3.6) 
+      const speedKmH = point.speed !== null && point.speed > 0 
+        ? Math.round(point.speed * 3.6) 
         : 0;
 
       const telemetry: TechnicianTelemetry = {
@@ -42,11 +35,11 @@ export default function EmployeeLocationTracker() {
         name: userProfile.name || 'Técnico',
         email: userProfile.email || '',
         role: userProfile.role || 'employee',
-        lat: coords.latitude,
-        lng: coords.longitude,
+        lat: point.latitude,
+        lng: point.longitude,
         speedKmH: speedKmH,
-        heading: coords.heading,
-        accuracy: coords.accuracy,
+        heading: point.bearing,
+        accuracy: point.accuracy,
         status: activeClientName ? 'em_atendimento' : 'deslocamento',
         currentClientName: activeClientName,
         updatedAt: new Date().toISOString(),
@@ -66,9 +59,9 @@ export default function EmployeeLocationTracker() {
         try {
           await supabase.from('users').update({
             last_location: {
-              lat: coords.latitude,
-              lng: coords.longitude,
-              accuracy: coords.accuracy,
+              lat: point.latitude,
+              lng: point.longitude,
+              accuracy: point.accuracy,
             },
             location_updated_at: new Date().toISOString(),
           }).eq('id', userProfile.uid);
@@ -87,33 +80,21 @@ export default function EmployeeLocationTracker() {
     window.addEventListener('active_visit_change', handleActiveVisitChange);
     window.addEventListener('storage', handleActiveVisitChange);
 
-    // Inicia o monitoramento de GPS de alta precisão
-    if ('geolocation' in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => transmitPresence(pos.coords),
-        (err) => console.warn('[FleetTracker] Posição inicial indisponível:', err?.message),
-        { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 }
-      );
-
-      watchId = navigator.geolocation.watchPosition(
-        (pos) => transmitPresence(pos.coords),
-        (err) => console.warn('[FleetTracker] Erro ao rastrear GPS contínuo:', err?.message),
-        {
-          enableHighAccuracy: true,
-          maximumAge: 10000,
-          timeout: 20000,
-        }
-      );
-    }
+    // Inicia o serviço nativo com Foreground Service e notificação fixa no Android
+    nativeBackgroundGeolocation.start((point) => {
+      transmitPresence(point);
+    }).catch((err) => {
+      console.warn('[EmployeeLocationTracker] Falha ao inicializar rastreamento nativo:', err);
+    });
 
     // Limpeza ao desmontar
     return () => {
       window.removeEventListener('active_visit_change', handleActiveVisitChange);
       window.removeEventListener('storage', handleActiveVisitChange);
 
-      if (watchId !== undefined && 'geolocation' in navigator) {
-        navigator.geolocation.clearWatch(watchId);
-      }
+      nativeBackgroundGeolocation.stop().catch((err) => {
+        console.warn('[EmployeeLocationTracker] Falha ao encerrar rastreador nativo:', err);
+      });
     };
   }, [userProfile?.uid, userProfile?.adminId, userProfile?.role, userProfile?.name, userProfile?.email, isAdmin]);
 

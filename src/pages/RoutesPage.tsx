@@ -2087,7 +2087,23 @@ useEffect(() => {
               savedToDb = true;
               if (insertedList && insertedList.length > 0) recordedVisitId = insertedList[0].id;
             }
-            
+
+            // Atualiza permanentemente a localização GPS da piscina no cadastro do cliente
+            if (locationData && locationData.lat && locationData.lng) {
+              (async () => {
+                try {
+                  await supabase
+                    .from('clients')
+                    .update({
+                      location: `${locationData.lat},${locationData.lng}`,
+                    })
+                    .eq('id', targetClient.id);
+                } catch {
+                  // Silenciosamente ignora falha secundária de geocoding
+                }
+              })();
+            }
+
             if (!needsReturn) {
               try {
                 await fetch(getApiUrl('/api/chat/close'), {
