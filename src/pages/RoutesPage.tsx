@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { useCall } from '../contexts/CallContext';
 import { openMap, openRouteMap, openWaze } from '../lib/maps';
-import { openWhatsApp, sendEvolutionMessage, sendMetaMessage, sendAstraCallsMessage, getEffectiveWhatsAppProvider, resolveAdminWhatsAppSettings, formatAstraCallsNumber } from '../lib/whatsapp';
+import { openWhatsApp, sendEvolutionMessage, sendMetaMessage, sendAstraCallsMessage, getEffectiveWhatsAppProvider, resolveAdminWhatsAppSettings, formatAstraCallsNumber, uploadMediaToPublicStorage } from '../lib/whatsapp';
 import { formatClientMessageTemplate } from '../lib/messageTemplates';
 import { notifyAdminAttendanceFinished } from '../lib/pushNotifications';
 import { getLocalDayUtcRange, checkDailyChatAvailability, evaluateSessionExpiry, markClientChatAsRead } from '../lib/chatSessionUtils';
@@ -480,12 +480,29 @@ export default function RoutesPage() {
         .eq('employee_id', selectedEmployee);
       if (jErr) throw jErr;
       
-      const allJobs = (jobsSnap || []).map(doc => ({ 
-        ...doc, 
-        isOneOffJob: true,
-        name: doc.client_name,
-        phone: doc.client_phone
-      })) as any[];
+      const allJobs = (jobsSnap || []).map(doc => {
+        let jobAddress = doc.address || '';
+        if (!jobAddress && doc.description) {
+          if (doc.description.includes('Endereço:')) {
+            const parts = doc.description.split('Endereço:');
+            jobAddress = parts[parts.length - 1].trim();
+          } else {
+            jobAddress = doc.description.trim();
+          }
+        }
+        let jobPhone = doc.client_phone || '';
+        if (!jobPhone && doc.description && doc.description.includes('Telefone:')) {
+          const after = doc.description.split('Telefone:')[1] || '';
+          jobPhone = after.split('Endereço:')[0]?.split('\n')[0]?.trim() || '';
+        }
+        return { 
+          ...doc, 
+          isOneOffJob: true,
+          name: doc.client_name || doc.title,
+          phone: jobPhone,
+          address: jobAddress
+        };
+      }) as any[];
       
 
       let currentDayOfWeek = '0';
@@ -1724,7 +1741,27 @@ useEffect(() => {
     
     // Captura o cliente em uma constante para evitar erros de referência nula
     const targetClient = { ...selectedClientForReport };
+    const currentReportPhotos = [...reportPhotos];
     setSubmittingReport(true);
+
+    // Upload prévio das fotos para obter URLs públicas permanentes
+    let uploadedPhotoUrls: string[] = [];
+    if (currentReportPhotos.length > 0) {
+      try {
+        const uploadPromises = currentReportPhotos.map(async (photo) => {
+          try {
+            return await uploadMediaToPublicStorage(photo, 'image/jpeg');
+          } catch (err) {
+            console.warn('[Fotos Relatório] Falha no upload de foto individual:', err);
+            return photo.startsWith('http') ? photo : '';
+          }
+        });
+        const results = await Promise.all(uploadPromises);
+        uploadedPhotoUrls = results.filter(Boolean);
+      } catch (uploadAllErr) {
+        console.warn('[Fotos Relatório] Falha no upload paralelo de fotos:', uploadAllErr);
+      }
+    }
 
     const handleWhatsApp = async () => {
       if (!sendWhatsApp) return;
@@ -1818,22 +1855,66 @@ useEffect(() => {
           console.warn('[WhatsApp Relatório] Erro ao buscar telefone em users:', uErr);
         }
 
-        const astraLoginNumber = formatAstraCallsNumber(userLoginPhone || targetClient.phone || targetClient.local_phone || cleanPhone) || cleanPhone;
-        const rawTemplate = useMessage2 ? msg2 : msg1;
-        const message = formatClientMessageTemplate(rawTemplate, {
-          name: targetClient.name || 'Cliente',
-          phone: cleanPhone || targetClient.phone || targetClient.local_phone || '',
-          local_phone: targetClient.local_phone || '',
-          user_phone: astraLoginNumber,
-          login_phone: astraLoginNumber
-        }, {
-          techName: userProfile?.name || 'Técnico',
-          companyName: currentSettings.companyName || userProfile?.whatsappSettings?.companyName || 'GestãoPro',
-          portalUrl: 'www.rspiscinas.app.br/client-panel'
-        });
+        let message = '';
+
+        if (targetClient.isOneOffJob) {
+          // ========================================================
+          // MENSAGEM ESPECÍFICA PARA SERVIÇO AVULSO (SEM PORTAL)
+          // ========================================================
+          const bizData = await getPersistentBusinessData(adminId);
+          const pixKey = bizData.pixKey || currentSettings.pixKey || '37666108000128';
+          const pixReceiver = bizData.pixReceiverName || currentSettings.pixReceiverName || 'Renivaldo Servin dos Santos Ltda ';
+          const jobPrice = targetClient.price ? Number(targetClient.price) : 0;
+          const techName = userProfile?.name || 'Técnico RS Piscinas';
+          const clientFirstName = (targetClient.name || 'Cliente').split(' ')[0];
+
+          let avulsoMsg = `Olá, *${clientFirstName}*! 😊\n\n`;
+          avulsoMsg += `Passando para avisar que a manutenção na sua piscina foi concluída com sucesso pela *RS Piscinas*! 💦✨\n\n`;
+          avulsoMsg += `👨‍🔧 *Técnico responsável:* ${techName}\n`;
+          avulsoMsg += `📅 *Data:* ${new Date().toLocaleDateString('pt-BR')}\n`;
+
+          if (jobPrice > 0) {
+            avulsoMsg += `\n💰 *Valor do Serviço:* R$ ${jobPrice.toFixed(2).replace('.', ',')}\n`;
+            avulsoMsg += `🔑 *Chave PIX (CNPJ):* ${pixKey}\n`;
+            avulsoMsg += `👤 *Favorecido:* ${pixReceiver}\n`;
+            avulsoMsg += `_Por gentileza, envie o comprovante de pagamento respondendo a esta mensagem._\n`;
+          }
+
+          // Inclusão dos links diretos das fotos da piscina na mensagem
+          if (uploadedPhotoUrls.length > 0) {
+            avulsoMsg += `\n📸 *Fotos do Atendimento:*\n`;
+            uploadedPhotoUrls.forEach((url, i) => {
+              avulsoMsg += `• Foto ${i + 1}: ${url}\n`;
+            });
+          }
+
+          avulsoMsg += `\nMuito obrigado pela confiança e ficamos à disposição! 🤝`;
+          message = avulsoMsg;
+        } else {
+          // ========================================================
+          // MENSAGEM PARA CLIENTE MENSAL (COM LINK E LOGIN DO PORTAL)
+          // ========================================================
+          const astraLoginNumber = formatAstraCallsNumber(userLoginPhone || targetClient.phone || targetClient.local_phone || cleanPhone) || cleanPhone;
+          const rawTemplate = useMessage2 ? msg2 : msg1;
+          message = formatClientMessageTemplate(rawTemplate, {
+            name: targetClient.name || 'Cliente',
+            phone: cleanPhone || targetClient.phone || targetClient.local_phone || '',
+            local_phone: targetClient.local_phone || '',
+            user_phone: astraLoginNumber,
+            login_phone: astraLoginNumber
+          }, {
+            techName: userProfile?.name || 'Técnico',
+            companyName: currentSettings.companyName || userProfile?.whatsappSettings?.companyName || 'GestãoPro',
+            portalUrl: 'www.rspiscinas.app.br/client-panel'
+          });
+        }
 
         const reportMsgClientId = `visit_rep_${targetClient.id}_${Date.now()}`;
         const effectiveProvider = getEffectiveWhatsAppProvider(currentSettings);
+
+        const primaryPhotoBase64 = currentReportPhotos[0] || undefined;
+        const primaryPhotoUrl = uploadedPhotoUrls[0] || undefined;
+        const hasPhotos = !!(primaryPhotoBase64 || primaryPhotoUrl);
 
         if (currentSettings.useSmsForReports) {
           await supabase.from('sms_queue').insert({
@@ -1843,10 +1924,10 @@ useEffect(() => {
           });
           console.log('Mensagem de relatório adicionada à fila de SMS.');
         } else if (effectiveProvider === 'manual') {
-          // Envio direto via WhatsApp Web / App no dispositivo
+          // Envio direto via WhatsApp Web / App no dispositivo com links diretos das fotos
           openWhatsApp(cleanPhone || targetClient.phone || clientPhone, message);
         } else {
-          // Envio via API (astracalls, meta, evolution)
+          // Envio via API (astracalls, meta, evolution) com anexo da mídia/foto
           let sent = false;
           try {
             const sendUrl = getApiUrl('/api/chat/send');
@@ -1859,7 +1940,10 @@ useEffect(() => {
                 clientId: targetClient.id,
                 waSettings: currentSettings,
                 senderName: userProfile?.name || 'Técnico',
-                message_client_id: reportMsgClientId
+                message_client_id: reportMsgClientId,
+                mediaBase64: primaryPhotoBase64,
+                mediaUrl: primaryPhotoUrl,
+                mimeType: hasPhotos ? 'image/jpeg' : undefined
               })
             });
             if (apiRes.ok) {
@@ -1867,6 +1951,32 @@ useEffect(() => {
               if (resData.success) {
                 sent = true;
                 console.log('[WhatsApp Relatório] Enviado com sucesso via servidor:', resData);
+
+                // Envio sequencial de fotos adicionais (se houver 2 ou mais fotos anexadas)
+                if (currentReportPhotos.length > 1) {
+                  for (let i = 1; i < currentReportPhotos.length; i++) {
+                    try {
+                      const extraPhotoMsgId = `visit_rep_photo_${targetClient.id}_${i}_${Date.now()}`;
+                      await fetch(sendUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          text: `📸 Foto ${i + 1} do Atendimento - RS Piscinas`,
+                          clientPhone: cleanPhone,
+                          clientId: targetClient.id,
+                          waSettings: currentSettings,
+                          senderName: userProfile?.name || 'Técnico',
+                          message_client_id: extraPhotoMsgId,
+                          mediaBase64: currentReportPhotos[i],
+                          mediaUrl: uploadedPhotoUrls[i] || undefined,
+                          mimeType: 'image/jpeg'
+                        })
+                      });
+                    } catch (extraPhotoErr) {
+                      console.warn(`[WhatsApp Relatório] Falha no envio da foto extra ${i + 1}:`, extraPhotoErr);
+                    }
+                  }
+                }
               }
             }
           } catch (serverErr) {
@@ -1877,13 +1987,22 @@ useEffect(() => {
           if (!sent) {
             try {
               if (effectiveProvider === 'astracalls') {
-                await sendAstraCallsMessage(cleanPhone, message, currentSettings, reportMsgClientId);
+                await sendAstraCallsMessage(cleanPhone, message, currentSettings, reportMsgClientId, primaryPhotoBase64, hasPhotos ? 'image/jpeg' : undefined);
+                for (let i = 1; i < currentReportPhotos.length; i++) {
+                  await sendAstraCallsMessage(cleanPhone, `📸 Foto ${i + 1} do Atendimento`, currentSettings, `extra_photo_${i}_${Date.now()}`, currentReportPhotos[i], 'image/jpeg').catch(() => {});
+                }
                 sent = true;
               } else if (effectiveProvider === 'meta') {
-                await sendMetaMessage(clientPhone, message, currentSettings, reportMsgClientId);
+                await sendMetaMessage(clientPhone, message, currentSettings, reportMsgClientId, primaryPhotoBase64, hasPhotos ? 'image/jpeg' : undefined);
+                for (let i = 1; i < currentReportPhotos.length; i++) {
+                  await sendMetaMessage(clientPhone, `📸 Foto ${i + 1} do Atendimento`, currentSettings, `extra_photo_${i}_${Date.now()}`, currentReportPhotos[i], 'image/jpeg').catch(() => {});
+                }
                 sent = true;
               } else if (effectiveProvider === 'evolution') {
-                await sendEvolutionMessage(clientPhone, message, currentSettings, reportMsgClientId);
+                await sendEvolutionMessage(clientPhone, message, currentSettings, reportMsgClientId, primaryPhotoBase64, hasPhotos ? 'image/jpeg' : undefined);
+                for (let i = 1; i < currentReportPhotos.length; i++) {
+                  await sendEvolutionMessage(clientPhone, `📸 Foto ${i + 1} do Atendimento`, currentSettings, `extra_photo_${i}_${Date.now()}`, currentReportPhotos[i], 'image/jpeg').catch(() => {});
+                }
                 sent = true;
               }
             } catch (directErr) {
@@ -2029,10 +2148,14 @@ useEffect(() => {
         try {
           if (targetClient.isOneOffJob) {
             // Avulso Update
+            let fullReport = finalNotes;
+            if (uploadedPhotoUrls.length > 0) {
+              fullReport += `\n\n📸 Fotos do Atendimento:\n` + uploadedPhotoUrls.map((u, i) => `• Foto ${i + 1}: ${u}`).join('\n');
+            }
             const { error: oneOffError } = await supabase.from('oneoffjobs').update({
               status: needsReturn ? 'em_andamento' : 'concluido',
               return_date: needsReturn ? returnDate : null,
-              report: finalNotes,
+              report: fullReport,
               updated_at: finalVisitDate
             }).eq('id', targetClient.id);
             if (oneOffError) throw oneOffError;
