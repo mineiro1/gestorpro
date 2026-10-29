@@ -189,6 +189,10 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         }
       });
 
+      // Filtro defensivo de duplicatas no frontend (por external_id ou hash de conteúdo temporal)
+      const seenClientContentSlots = new Set<string>();
+      const seenExtIds = new Set<string>();
+
       (loadedMsgs || []).forEach((m) => {
         if (m && m.id && m.sender_type !== 'read') {
           let meta: any = {};
@@ -201,6 +205,22 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
             map.delete(`temp-${clientMsgId}`);
             map.delete(`msg_${clientMsgId}`);
           }
+
+          const extId = meta.external_id || meta.astra_id;
+          if (extId) {
+            if (seenExtIds.has(extId)) return;
+            seenExtIds.add(extId);
+          }
+
+          if (m.sender_type === 'client') {
+            const timeSlot = Math.floor(new Date(m.created_at).getTime() / 5000);
+            const contentSlot = `${(m.content || '').trim()}_${timeSlot}`;
+            if (seenClientContentSlots.has(contentSlot)) {
+              return;
+            }
+            seenClientContentSlots.add(contentSlot);
+          }
+
           map.set(m.id, m);
         }
       });

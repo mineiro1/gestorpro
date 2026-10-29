@@ -471,10 +471,19 @@ setInterval(() => {
       const digits = String(rawPhone).replace(/\D/g, '');
       if (!digits) return { synced: 0, reason: 'no_phone' };
 
+      // Coleta todas as variações brasileiras de telefone do cliente (com/sem 55, com/sem 9)
+      const clientPhoneVariations = new Set<string>();
+      if (client.phone) {
+        getBrazilianPhoneVariations(client.phone).all.forEach(p => clientPhoneVariations.add(p));
+      }
+      if (client.local_phone) {
+        getBrazilianPhoneVariations(client.local_phone).all.forEach(p => clientPhoneVariations.add(p));
+      }
+
       const ddd = digits.length >= 10 ? digits.slice(-10, -8) : '67';
       const num8 = digits.slice(-8);
 
-      const chatIds = new Set<string>([
+      const targetChatIds = new Set<string>([
         `55${ddd}${num8}@s.whatsapp.net`,
         `55${ddd}9${num8}@s.whatsapp.net`,
         `55${ddd}${num8}@c.us`,
@@ -490,56 +499,55 @@ setInterval(() => {
           if (Array.isArray(contacts)) {
             const matchedContacts = contacts.filter((c: any) => {
               const cNum = String(c.number || c.id || '').replace(/\D/g, '');
-              return cNum.endsWith(num8) || (cNum.length >= 10 && cNum.includes(num8));
+              return cNum.endsWith(num8) || (cNum.length >= 8 && clientPhoneVariations.has(cNum));
             });
 
-            const knownNames = new Set<string>();
             for (const mc of matchedContacts) {
-              if (mc.id) chatIds.add(mc.id);
-              if (mc.jid) chatIds.add(mc.jid);
-              const n = (mc.name || mc.pushName || mc.pushname || mc.fullName || '').trim().toLowerCase();
-              if (n && n.length >= 3) knownNames.add(n);
-            }
-
-            const normClientName = (client.name || '').trim().toLowerCase();
-            if (normClientName && normClientName.length >= 3) knownNames.add(normClientName);
-
-            for (const c of contacts) {
-              const isLid = c.id?.includes('@lid') || c.jid?.includes('@lid');
-              if (!isLid) continue;
-              const cName = (c.name || c.pushName || c.pushname || c.fullName || '').trim().toLowerCase();
-              if (!cName || cName.length < 3) continue;
-
-              let matches = false;
-              for (const kn of knownNames) {
-                if (cName === kn || cName.includes(kn) || kn.includes(cName)) {
-                  matches = true;
-                  break;
-                }
-              }
-              if (matches) {
-                if (c.id) chatIds.add(c.id);
-                if (c.jid) chatIds.add(c.jid);
-              }
+              if (mc.id) targetChatIds.add(mc.id);
+              if (mc.jid) targetChatIds.add(mc.jid);
             }
           }
         }
       } catch (e) {}
 
-      const { data: currentMsgs } = await supabaseAdmin.from('chat_messages').select('id, media_url, sender_type').eq('session_id', session.id);
+      const { data: currentMsgs } = await supabaseAdmin
+        .from('chat_messages')
+        .select('id, content, media_url, created_at, sender_type')
+        .eq('session_id', session.id);
+
       const existingExtIds = new Set<string>();
+      const existingContentHashes = new Set<string>();
+
       (currentMsgs || []).forEach((m: any) => {
         try {
           const meta = typeof m.media_url === 'string' && m.media_url.startsWith('{') ? JSON.parse(m.media_url) : {};
           if (meta.external_id) existingExtIds.add(String(meta.external_id));
           if (meta.astra_id) existingExtIds.add(String(meta.astra_id));
         } catch (e) {}
+        if (m.content) {
+          const t = new Date(m.created_at).getTime();
+          existingContentHashes.add(`${String(m.content).trim()}_${Math.floor(t / 5000)}`);
+        }
       });
 
+      const sessionEndMs = sessionStartMs + 30 * 60 * 1000;
       let newInsertedCount = 0;
-      for (const cid of chatIds) {
+
+      // Realiza busca direcionada no AstraCalls com limite de segurança
+      const endpointsToTry: string[] = [
+        `${astracallsUrl}/api/sessions/${astraSessionId}/messages?chatId=${encodeURIComponent(`55${ddd}9${num8}@s.whatsapp.net`)}&limit=30`,
+        `${astracallsUrl}/api/sessions/${astraSessionId}/messages?chatId=${encodeURIComponent(`55${ddd}${num8}@s.whatsapp.net`)}&limit=30`
+      ];
+
+      for (const tId of targetChatIds) {
+        if (tId.includes('@lid')) {
+          endpointsToTry.push(`${astracallsUrl}/api/sessions/${astraSessionId}/messages?chatId=${encodeURIComponent(tId)}&limit=30`);
+        }
+      }
+
+      for (const endpoint of endpointsToTry) {
         try {
-          const mRes = await fetch(`${astracallsUrl}/api/sessions/${astraSessionId}/messages?chatId=${encodeURIComponent(cid)}&limit=15`, {
+          const mRes = await fetch(endpoint, {
             headers: { 'X-Api-Key': astracallsApiKey }
           });
           if (!mRes.ok) continue;
@@ -547,21 +555,88 @@ setInterval(() => {
           if (!Array.isArray(msgs)) continue;
 
           for (const m of msgs) {
-            if (m.fromMe) continue;
-            if (m.timestamp < sessionStartMs) continue;
-            const extId = String(m.id || '');
-            if (extId && existingExtIds.has(extId)) continue;
+            // 1. Descartar mensagens enviadas por nós (colaborador/admin)
+            const isFromMe = Boolean(
+              m.key?.fromMe === true || 
+              m.fromMe === true || 
+              m.direction === 'outbound' || 
+              m.direction === 'outgoing'
+            );
+            if (isFromMe) continue;
 
-            let content = m.body || m.text || m.message || '';
+            // 2. Extrair remetente e ignorar grupos, canais e status
+            const remoteJid = String(m.key?.remoteJid || m.remoteJid || m.from || m.chatId || m.chat || m.sender || '').trim();
+            if (!remoteJid) continue;
+            if (remoteJid.includes('@g.us') || remoteJid.includes('broadcast') || remoteJid.includes('@newsletter')) {
+              continue;
+            }
+
+            // 3. REGRA ESTRITA: Validar se a mensagem pertence realmente a este cliente específico
+            const senderDigits = cleanJidToPhone(remoteJid);
+            const isTargetJid = targetChatIds.has(remoteJid);
+            const isMatchingPhone = senderDigits && (
+              clientPhoneVariations.has(senderDigits) ||
+              isMatchingClientPhone(client.phone, senderDigits) ||
+              isMatchingClientPhone(client.local_phone, senderDigits)
+            );
+
+            if (!isTargetJid && !isMatchingPhone) {
+              // Mensagem de terceiros (pizzaria, contatos pessoais, outros clientes) -> IGNORA COMPLETAMENTE!
+              continue;
+            }
+
+            // 4. REGRA DOS 30 MINUTOS: timestamp deve estar estritamente dentro da janela de 30 minutos
+            let rawTs = m.messageTimestamp || m.timestamp;
+            let msgTimeMs = 0;
+            if (typeof rawTs === 'number') {
+              msgTimeMs = rawTs < 10000000000 ? rawTs * 1000 : rawTs;
+            } else if (typeof rawTs === 'string') {
+              const num = Number(rawTs);
+              if (!isNaN(num) && num > 0) {
+                msgTimeMs = num < 10000000000 ? num * 1000 : num;
+              } else {
+                msgTimeMs = new Date(rawTs).getTime();
+              }
+            }
+            if (!msgTimeMs || isNaN(msgTimeMs)) {
+              msgTimeMs = Date.now();
+            }
+
+            if (msgTimeMs < sessionStartMs || msgTimeMs > sessionEndMs) {
+              // Fora da janela de atendimento -> descarta
+              continue;
+            }
+
+            // 5. Extração robusta do ID único (Baileys m.key.id, AstraCalls m.id, etc.)
+            const extId = String(m.key?.id || m.id || m.messageId || m.keyId || '').trim();
+            if (extId && existingExtIds.has(extId)) {
+              // Já processada -> ignora duplicata
+              continue;
+            }
+
+            // 6. Extrair conteúdo textual ou de mídia
+            const msgObj = m.message || m.msgContent || m;
+            const extracted = extractMessageData(msgObj);
+            let content = extracted.content || m.body || m.text || m.message || '';
+            let mediaUrl = extracted.mediaUrl || m.mediaUrl || m.url || '';
+
             if (m.type === 'audio' && !content) content = '🎵 Mensagem de Áudio';
             if (m.type === 'image' && !content) content = '📸 Imagem';
             if (m.type === 'video' && !content) content = '🎥 Vídeo';
             if (m.type === 'document' && !content) content = '📄 Documento';
-            if (!content) continue;
+
+            if (!content && !mediaUrl) continue;
+
+            // 7. Deduplicação por hash de conteúdo dentro da janela temporal de 5 segundos
+            const contentHash = `${String(content).trim()}_${Math.floor(msgTimeMs / 5000)}`;
+            if (existingContentHashes.has(contentHash)) {
+              continue;
+            }
 
             const meta = {
               external_id: extId || undefined,
               astra_id: extId || undefined,
+              url: mediaUrl || undefined,
               status: 'read'
             };
 
@@ -569,12 +644,13 @@ setInterval(() => {
               session_id: session.id,
               sender_type: 'client',
               content: String(content),
-              media_url: JSON.stringify(meta),
-              created_at: new Date(m.timestamp).toISOString()
+              media_url: mediaUrl || JSON.stringify(meta),
+              created_at: new Date(msgTimeMs).toISOString()
             });
 
             if (!insErr) {
-              existingExtIds.add(extId);
+              if (extId) existingExtIds.add(extId);
+              existingContentHashes.add(contentHash);
               newInsertedCount++;
             }
           }
@@ -612,7 +688,7 @@ setInterval(() => {
         }
       }
 
-      return { synced: newInsertedCount, success: true, chatIds: Array.from(chatIds) };
+      return { synced: newInsertedCount, success: true, chatIds: Array.from(targetChatIds) };
     } catch (err: any) {
       return { synced: 0, error: err.message };
     }
@@ -672,8 +748,8 @@ setInterval(() => {
         return res.json({ success: true, messages: [] });
       }
 
-      // Retorna APENAS as mensagens da sessão aberta ativa atual
-      const { data: loadedMsgs, error } = await supabaseAdmin
+      // Retorna APENAS as mensagens da sessão aberta ativa atual com deduplicação rigorosa
+      const { data: rawLoadedMsgs, error } = await supabaseAdmin
         .from('chat_messages')
         .select('*')
         .eq('session_id', activeSession.id)
@@ -684,7 +760,44 @@ setInterval(() => {
         return res.status(500).json({ error: error.message });
       }
 
-      return res.json({ success: true, messages: loadedMsgs || [] });
+      const uniqueMsgs: any[] = [];
+      const seenExtIds = new Set<string>();
+      const seenContentSlots = new Set<string>();
+      const duplicateIdsToDelete: string[] = [];
+
+      for (const m of (rawLoadedMsgs || [])) {
+        let meta: any = {};
+        try {
+          if (typeof m.media_url === 'string' && m.media_url.startsWith('{')) {
+            meta = JSON.parse(m.media_url);
+          }
+        } catch(e) {}
+
+        const extId = meta.external_id || meta.astra_id || '';
+        const msgTime = new Date(m.created_at).getTime();
+        const contentSlot = `${m.sender_type}_${(m.content || '').trim()}_${Math.floor(msgTime / 5000)}`;
+
+        let isDuplicate = false;
+        if (extId && seenExtIds.has(extId)) {
+          isDuplicate = true;
+        } else if (m.sender_type === 'client' && seenContentSlots.has(contentSlot)) {
+          isDuplicate = true;
+        }
+
+        if (isDuplicate) {
+          duplicateIdsToDelete.push(m.id);
+        } else {
+          if (extId) seenExtIds.add(extId);
+          if (m.sender_type === 'client') seenContentSlots.add(contentSlot);
+          uniqueMsgs.push(m);
+        }
+      }
+
+      if (duplicateIdsToDelete.length > 0) {
+        supabaseAdmin.from('chat_messages').delete().in('id', duplicateIdsToDelete).catch(() => {});
+      }
+
+      return res.json({ success: true, messages: uniqueMsgs });
     } catch (e: any) {
       console.error("[/api/chat/messages] Erro inesperado:", e);
       return res.status(500).json({ error: e.message });
@@ -2504,29 +2617,6 @@ setInterval(() => {
       }
     }
 
-    // 4. Se houver apenas uma sessão ativa aberta no momento no app, associar o LID a essa sessão
-    try {
-      const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-      const { data: openSess } = await supabaseAdmin
-        .from('chat_sessions')
-        .select('id, client_id')
-        .eq('status', 'open')
-        .gte('created_at', thirtyMinAgo);
-
-      if (openSess && openSess.length === 1) {
-        const singleClientId = openSess[0].client_id;
-        const cli = allTargets.find((t: any) => t.id === singleClientId);
-        if (cli?.phone) {
-          const resolved = cleanJidToPhone(cli.phone);
-          if (resolved) {
-            console.log(`[LID Resolver] Associado LID ${cleanLid} ao cliente da única sessão ativa em andamento: ${cli.name} (${resolved})`);
-            lidToRealPhoneCache.set(cleanLid, resolved);
-            return resolved;
-          }
-        }
-      }
-    } catch (e) {}
-
     return null;
   }
 
@@ -3045,6 +3135,9 @@ setInterval(() => {
       }
 
       let rawRemote = msgData.key?.remoteJid || msgData.remoteJid || msgData.chat || msgData.chatId || msgData.from || msgData.sender || msgData.phone || msgData.to || body.chat || body.from || body.chatId || "";
+      if (!rawRemote || rawRemote.includes('@g.us') || rawRemote.includes('broadcast') || rawRemote.includes('@newsletter')) {
+        return res.status(200).json({ success: true, ignored: 'group_or_broadcast' });
+      }
       const cleanIncoming = cleanJidToPhone(rawRemote);
 
       let extracted = extractMessageData(msgData.message || msgData);
