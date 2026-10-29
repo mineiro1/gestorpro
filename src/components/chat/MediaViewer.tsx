@@ -54,7 +54,8 @@ export const MediaViewer = ({ url, alt, className, onLoad }: { url: string, alt:
     return <div className={`flex items-center justify-center bg-red-50 text-red-400 text-sm p-4 ${className}`}>Mídia indisponível</div>;
   }
 
-  const isVideo = mediaData.startsWith('data:video') || mediaData.endsWith('.mp4') || mediaData.endsWith('.mov') || mediaData.endsWith('.webm') || url.includes('video');
+  const isVideo = mediaData.startsWith('data:video') || mediaData.endsWith('.mp4') || mediaData.endsWith('.mov') || mediaData.endsWith('.webm') || url.includes('video') || mediaData.includes('.mp4');
+  const isDocument = mediaData.endsWith('.pdf') || mediaData.endsWith('.doc') || mediaData.endsWith('.docx') || mediaData.endsWith('.xls') || mediaData.endsWith('.xlsx') || url.includes('document') || url.includes('.pdf') || url.includes('inbound_document');
 
   if (isVideo) {
     return (
@@ -62,15 +63,38 @@ export const MediaViewer = ({ url, alt, className, onLoad }: { url: string, alt:
         src={mediaData}
         controls
         playsInline
+        preload="metadata"
         className={className}
         onLoadedData={onLoad}
       />
     );
   }
 
+  if (isDocument) {
+    return (
+      <a 
+        href={mediaData} 
+        target="_blank" 
+        rel="noopener noreferrer" 
+        className="flex items-center gap-3 p-3 bg-slate-50 hover:bg-slate-100 text-slate-800 rounded-xl transition-all border border-slate-200/80 shadow-xs max-w-full md:max-w-[280px]"
+      >
+        <span className="text-2xl shrink-0">📄</span>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-semibold truncate text-slate-800">{alt && !alt.startsWith('data:') ? alt : 'Documento Anexo'}</p>
+          <p className="text-[10px] text-slate-500 font-medium">Toque para abrir / baixar</p>
+        </div>
+      </a>
+    );
+  }
+
   return (
-    <a href={mediaData} target="_blank" rel="noopener noreferrer">
-      <img src={mediaData} alt={alt} className={className} onLoad={onLoad} />
+    <a href={mediaData} target="_blank" rel="noopener noreferrer" className="block overflow-hidden rounded-lg">
+      <img 
+        src={mediaData} 
+        alt={alt && !alt.startsWith('data:') ? alt : 'Mídia recebida'} 
+        className={className} 
+        onLoad={onLoad} 
+      />
     </a>
   );
 };

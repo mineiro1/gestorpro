@@ -189,9 +189,9 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
         }
       });
 
-      // Filtro defensivo de duplicatas no frontend (por external_id ou hash de conteúdo temporal)
-      const seenClientContentSlots = new Set<string>();
+      // Filtro defensivo de duplicatas no frontend (por external_id ou proximidade temporal de conteúdo)
       const seenExtIds = new Set<string>();
+      const uniqueFilteredList: any[] = [];
 
       (loadedMsgs || []).forEach((m) => {
         if (m && m.id && m.sender_type !== 'read') {
@@ -212,15 +212,20 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
             seenExtIds.add(extId);
           }
 
-          if (m.sender_type === 'client') {
-            const timeSlot = Math.floor(new Date(m.created_at).getTime() / 5000);
-            const contentSlot = `${(m.content || '').trim()}_${timeSlot}`;
-            if (seenClientContentSlots.has(contentSlot)) {
-              return;
-            }
-            seenClientContentSlots.add(contentSlot);
+          const cleanContent = (m.content || '').trim();
+          const mTime = new Date(m.created_at).getTime();
+
+          if (cleanContent && m.sender_type === 'client') {
+            const isDup = uniqueFilteredList.some(u => {
+              if (u.sender_type !== 'client') return false;
+              if ((u.content || '').trim() !== cleanContent) return false;
+              const uTime = new Date(u.created_at).getTime();
+              return Math.abs(uTime - mTime) < 20000;
+            });
+            if (isDup) return;
           }
 
+          uniqueFilteredList.push(m);
           map.set(m.id, m);
         }
       });
@@ -230,14 +235,52 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       );
     },
     enabled: !!isOpen && !!clientId && !!session?.id,
-    refetchInterval: 2500,
+    refetchInterval: 3000,
     refetchOnWindowFocus: true,
-    staleTime: 1000,
+    staleTime: 1500,
   });
+
+  // Mensagens com deduplicação final em tempo de exibição para garantia visual absoluta
+  const displayedMessages = useMemo(() => {
+    const result: any[] = [];
+    const seenExt = new Set<string>();
+
+    for (const msg of messages) {
+      if (!msg) continue;
+      let meta: any = {};
+      try {
+        if (typeof msg.media_url === 'string' && msg.media_url.startsWith('{')) {
+          meta = JSON.parse(msg.media_url);
+        }
+      } catch (e) {}
+
+      const extId = meta.external_id || meta.astra_id;
+      if (extId) {
+        if (seenExt.has(extId)) continue;
+        seenExt.add(extId);
+      }
+
+      const content = (msg.content || '').trim();
+      const msgTime = new Date(msg.created_at).getTime();
+
+      if (content && msg.sender_type === 'client') {
+        const isDuplicate = result.some(r => {
+          if (r.sender_type !== 'client') return false;
+          if ((r.content || '').trim() !== content) return false;
+          const rTime = new Date(r.created_at).getTime();
+          return Math.abs(rTime - msgTime) < 20000;
+        });
+        if (isDuplicate) continue;
+      }
+
+      result.push(msg);
+    }
+    return result;
+  }, [messages]);
 
   // Mensagens do colaborador que ainda não foram confirmadas como lidas
   const unreadTechMsgIds = useMemo(() => {
-    return messages
+    return displayedMessages
       .filter((m) => {
         if (m.sender_type !== 'tech') return false;
         let status = 'sent';
@@ -249,7 +292,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       })
       .map((m) => m.id)
       .filter(Boolean);
-  }, [messages]);
+  }, [displayedMessages]);
 
   // 3. Sincronização Ativa de Mensagens do Cliente e Status de Entrega/Leitura
   const runSyncStatus = useCallback(async () => {
@@ -394,12 +437,54 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
             list = list.filter(m => !m.id || !String(m.id).startsWith('temp-') || m.content !== newMsg.content);
           }
 
+          let newMeta: any = {};
+          try {
+            if (typeof newMsg.media_url === 'string' && newMsg.media_url.startsWith('{')) {
+              newMeta = JSON.parse(newMsg.media_url);
+            }
+          } catch(e) {}
+          const newExtId = newMeta.external_id || newMeta.astra_id || '';
+          const newTime = new Date(newMsg.created_at).getTime();
+          const cleanNewContent = (newMsg.content || '').trim();
+
+          // 1. Já existe por ID exato?
           const idx = list.findIndex((m) => m.id === newMsg.id);
           if (idx >= 0) {
             list[idx] = { ...list[idx], ...newMsg };
-          } else {
-            list.push(newMsg);
+            return list;
           }
+
+          // 2. Já existe por external_id?
+          if (newExtId) {
+            const extIdx = list.findIndex(m => {
+              let mMeta: any = {};
+              try {
+                if (typeof m.media_url === 'string' && m.media_url.startsWith('{')) {
+                  mMeta = JSON.parse(m.media_url);
+                }
+              } catch(e) {}
+              return (mMeta.external_id || mMeta.astra_id) === newExtId;
+            });
+            if (extIdx >= 0) {
+              list[extIdx] = { ...list[extIdx], ...newMsg };
+              return list;
+            }
+          }
+
+          // 3. Já existe por conteúdo dentro de 20 segundos para mensagens do cliente?
+          if (newMsg.sender_type === 'client' && cleanNewContent) {
+            const contentDup = list.some(m => {
+              if (m.sender_type !== 'client') return false;
+              if ((m.content || '').trim() !== cleanNewContent) return false;
+              const mTime = new Date(m.created_at).getTime();
+              return Math.abs(mTime - newTime) < 20000;
+            });
+            if (contentDup) {
+              return list;
+            }
+          }
+
+          list.push(newMsg);
           return list.sort(
             (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
           );
@@ -1089,12 +1174,12 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
 
         {/* Messages Body */}
         <div ref={messagesContainerRef} className="flex-1 p-4 overflow-y-auto space-y-3 bg-gray-50/60">
-          {loadingMessages && messages.length === 0 ? (
+          {loadingMessages && displayedMessages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-gray-400 gap-2">
               <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
               <p className="text-xs font-medium">Carregando mensagens...</p>
             </div>
-          ) : messages.length === 0 ? (
+          ) : displayedMessages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-gray-400 space-y-2">
               <MessageCircle size={40} className="stroke-[1.5] text-gray-300" />
               <p className="text-sm font-medium">Nenhuma mensagem nesta conversa.</p>
@@ -1103,8 +1188,8 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
               </p>
             </div>
           ) : (
-            messages.map((msg: any) => {
-              const deliveryStatus = parseMessageStatus(msg, messages);
+            displayedMessages.map((msg: any) => {
+              const deliveryStatus = parseMessageStatus(msg, displayedMessages);
               let realMediaUrl = '';
               let parsedMeta: any = {};
               try {
@@ -1153,18 +1238,20 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
                     {realMediaUrl ? (
                       isAudioMsg ? (
                         <div className="space-y-1">
-                          <p className={`text-xs ${msg.sender_type === 'tech' ? 'text-white/90' : 'text-slate-700'}`}>{msg.content || '🎤 Mensagem de voz'}</p>
+                          {msg.content && !['🎵 Mensagem de Áudio', '🎵 Áudio recebido', '🎤 Mensagem de voz', '🎵 Áudio'].includes(msg.content.trim()) && (
+                            <p className={`text-xs ${msg.sender_type === 'tech' ? 'text-white/90' : 'text-slate-700'}`}>{msg.content}</p>
+                          )}
                           <AudioViewer url={realMediaUrl} className="max-w-[220px] md:max-w-[300px]" />
                         </div>
                       ) : (
                         <div className="space-y-1">
                           <MediaViewer 
                             url={realMediaUrl} 
-                            alt="Mídia" 
+                            alt={msg.content || "Mídia"} 
                             onLoad={() => scrollToBottom(false)}
                             className="max-w-full md:max-w-[300px] max-h-[300px] object-cover rounded-lg cursor-pointer hover:opacity-90" 
                           />
-                          {msg.content && msg.content !== '📸 Foto' && msg.content !== '🎥 Vídeo' && (
+                          {msg.content && !['📸 Foto', '🎥 Vídeo', '📸 Imagem', '📸 Imagem recebida', '🎥 Vídeo recebido', '🎵 Mensagem de Áudio', '🎵 Áudio recebido', '📄 Documento'].includes(msg.content.trim()) && (
                             <p className={`text-sm whitespace-pre-wrap ${msg.sender_type === 'tech' ? 'text-white' : 'text-slate-900'}`}>{msg.content}</p>
                           )}
                         </div>

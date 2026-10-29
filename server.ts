@@ -5,6 +5,7 @@ import cors from "cors";
 import { MercadoPagoConfig, Preference, Payment } from "mercadopago";
 import * as dotenv from 'dotenv';
 import fs from 'fs';
+import crypto from 'crypto';
 import { createClient } from '@supabase/supabase-js';
 
 dotenv.config();
@@ -427,8 +428,151 @@ setInterval(() => {
   // Executar limpeza contínua a cada 30 segundos
   setInterval(cleanupExpiredAndClosedChatMessages, 30000);
 
+  // Mutex e caches globais para impedir concorrência e duplicação de mensagens AstraCalls
+  const activeSyncSessions = new Set<string>();
+  const globalProcessedAstraIds = new Map<string, number>();
+  const globalProcessedContentHashes = new Map<string, number>();
+
+  function pruneGlobalProcessedSets() {
+    const now = Date.now();
+    for (const [k, time] of globalProcessedAstraIds.entries()) {
+      if (now - time > 15 * 60 * 1000) globalProcessedAstraIds.delete(k);
+    }
+    for (const [k, time] of globalProcessedContentHashes.entries()) {
+      if (now - time > 15 * 60 * 1000) globalProcessedContentHashes.delete(k);
+    }
+  }
+
+  // Cache em memória de mídias baixadas/processadas do WhatsApp para evitar downloads repetidos
+  const downloadedMediaCache = new Map<string, string>();
+
+  async function decryptWhatsAppBuffer(encBuffer: Buffer, mediaKeyBase64: string, type: 'image' | 'audio' | 'video' | 'document'): Promise<Buffer> {
+    const mediaKey = Buffer.from(mediaKeyBase64, 'base64');
+    const infoMap: Record<string, string> = {
+      image: 'WhatsApp Image Keys',
+      audio: 'WhatsApp Audio Keys',
+      video: 'WhatsApp Video Keys',
+      document: 'WhatsApp Document Keys'
+    };
+    const info = infoMap[type] || 'WhatsApp Image Keys';
+    const expanded = Buffer.from(crypto.hkdfSync('sha256', mediaKey, Buffer.alloc(32), info, 112));
+    const iv = expanded.subarray(0, 16);
+    const cipherKey = expanded.subarray(16, 48);
+    const ciphertext = encBuffer.subarray(0, encBuffer.length - 10);
+    const decipher = crypto.createDecipheriv('aes-256-cbc', cipherKey, iv);
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  }
+
+  async function resolveAndUploadWhatsAppMedia(rawMsg: any, messageIdKey?: string): Promise<{ mediaUrl?: string; thumbnail?: string }> {
+    try {
+      if (messageIdKey && downloadedMediaCache.has(messageIdKey)) {
+        return { mediaUrl: downloadedMediaCache.get(messageIdKey)! };
+      }
+
+      let inner: any = null;
+      let mediaType: 'image' | 'audio' | 'video' | 'document' | null = null;
+      let ext = 'bin';
+      let mime = 'application/octet-stream';
+
+      const candidate = rawMsg?.raw || rawMsg?.message || rawMsg?.msgContent || rawMsg;
+      
+      let unwrapped = candidate;
+      if (unwrapped?.ephemeralMessage?.message) unwrapped = unwrapped.ephemeralMessage.message;
+      if (unwrapped?.viewOnceMessage?.message) unwrapped = unwrapped.viewOnceMessage.message;
+      if (unwrapped?.viewOnceMessageV2?.message) unwrapped = unwrapped.viewOnceMessageV2.message;
+      if (unwrapped?.documentWithCaptionMessage?.message) unwrapped = unwrapped.documentWithCaptionMessage.message;
+
+      if (unwrapped?.imageMessage) {
+        inner = unwrapped.imageMessage;
+        mediaType = 'image';
+        ext = 'jpg';
+        mime = inner.mimetype || 'image/jpeg';
+      } else if (unwrapped?.audioMessage) {
+        inner = unwrapped.audioMessage;
+        mediaType = 'audio';
+        ext = 'ogg';
+        mime = inner.mimetype || 'audio/ogg';
+      } else if (unwrapped?.videoMessage) {
+        inner = unwrapped.videoMessage;
+        mediaType = 'video';
+        ext = 'mp4';
+        mime = inner.mimetype || 'video/mp4';
+      } else if (unwrapped?.documentMessage) {
+        inner = unwrapped.documentMessage;
+        mediaType = 'document';
+        ext = (inner.fileName?.split('.').pop() || 'pdf').toLowerCase().replace(/[^a-z0-9]/g, '');
+        mime = inner.mimetype || 'application/pdf';
+      }
+
+      const directUrl = rawMsg.mediaUrl || rawMsg.url || inner?.url || inner?.URL;
+      if (directUrl && (directUrl.startsWith('http://') || directUrl.startsWith('https://')) && !directUrl.includes('whatsapp.net')) {
+        if (messageIdKey) downloadedMediaCache.set(messageIdKey, directUrl);
+        return { mediaUrl: directUrl };
+      }
+
+      let thumbnail = '';
+      if (inner?.JPEGThumbnail) {
+        thumbnail = `data:image/jpeg;base64,${inner.JPEGThumbnail}`;
+      }
+
+      if (!inner || !mediaType) {
+        return thumbnail ? { mediaUrl: thumbnail, thumbnail } : {};
+      }
+
+      const downloadUrl = inner.URL || inner.url || (inner.directPath ? `https://mmg.whatsapp.net${inner.directPath}` : '');
+      const mediaKey = inner.mediaKey;
+
+      if (downloadUrl && mediaKey) {
+        try {
+          const resp = await fetch(downloadUrl);
+          if (resp.ok) {
+            const encBuffer = Buffer.from(await resp.arrayBuffer());
+            const decryptedBuffer = await decryptWhatsAppBuffer(encBuffer, mediaKey, mediaType);
+
+            const fileName = `wa_${mediaType}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${ext}`;
+            const { error: uploadErr } = await supabaseAdmin.storage
+              .from('chat-media')
+              .upload(fileName, decryptedBuffer, {
+                contentType: mime,
+                upsert: true
+              });
+
+            if (!uploadErr) {
+              const { data: pubData } = supabaseAdmin.storage.from('chat-media').getPublicUrl(fileName);
+              if (pubData?.publicUrl) {
+                if (messageIdKey) downloadedMediaCache.set(messageIdKey, pubData.publicUrl);
+                return { mediaUrl: pubData.publicUrl, thumbnail };
+              }
+            } else {
+              console.warn('[WhatsApp Media Storage] Erro ao enviar para o bucket chat-media:', uploadErr.message);
+            }
+          }
+        } catch (dlErr: any) {
+          console.warn('[WhatsApp Media Storage] Falha no download/descriptografia:', dlErr.message);
+        }
+      }
+
+      if (thumbnail && mediaType === 'image') {
+        if (messageIdKey) downloadedMediaCache.set(messageIdKey, thumbnail);
+        return { mediaUrl: thumbnail, thumbnail };
+      }
+
+      return { thumbnail };
+    } catch (err: any) {
+      console.warn('[WhatsApp Media Processor] Erro no processamento de mídia:', err.message);
+      return {};
+    }
+  }
+
   // Sincronização direta e bidirecional de mensagens AstraCalls para sessões ativas (< 30 min)
   async function syncAstraCallsIncomingMessages({ clientId, sessionId, waSettings }: { clientId?: string; sessionId?: string; waSettings?: any } = {}) {
+    const lockKey = String(sessionId || clientId || 'default');
+    if (activeSyncSessions.has(lockKey)) {
+      return { synced: 0, reason: 'already_syncing' };
+    }
+    activeSyncSessions.add(lockKey);
+    pruneGlobalProcessedSets();
+
     try {
       const astracallsUrl = (waSettings?.astracallsUrl || process.env.ASTRACALLS_URL || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
       const astracallsApiKey = waSettings?.astracallsApiKey || process.env.ASTRACALLS_API_KEY || 'rs_piscinas_segredo_2026';
@@ -490,6 +634,13 @@ setInterval(() => {
         `55${ddd}9${num8}@c.us`
       ]);
 
+      // Mapeia LIDs conhecidos que apontam para as variações de telefone deste cliente
+      for (const [lid, realPhone] of lidToRealPhoneCache.entries()) {
+        if (clientPhoneVariations.has(realPhone) || isMatchingClientPhone(client.phone, realPhone)) {
+          targetChatIds.add(`${lid}@lid`);
+        }
+      }
+
       try {
         const cRes = await fetch(`${astracallsUrl}/api/sessions/${astraSessionId}/contacts`, {
           headers: { 'X-Api-Key': astracallsApiKey }
@@ -497,14 +648,21 @@ setInterval(() => {
         if (cRes.ok) {
           const contacts = await cRes.json();
           if (Array.isArray(contacts)) {
-            const matchedContacts = contacts.filter((c: any) => {
-              const cNum = String(c.number || c.id || '').replace(/\D/g, '');
-              return cNum.endsWith(num8) || (cNum.length >= 8 && clientPhoneVariations.has(cNum));
-            });
+            const clientNameLower = (client.name || '').trim().toLowerCase();
 
-            for (const mc of matchedContacts) {
-              if (mc.id) targetChatIds.add(mc.id);
-              if (mc.jid) targetChatIds.add(mc.jid);
+            for (const c of contacts) {
+              const cNum = String(c.number || c.id || '').replace(/\D/g, '');
+              const cName = (c.name || c.pushName || c.pushname || c.fullName || '').trim().toLowerCase();
+              const isMatchByPhone = cNum.endsWith(num8) || (cNum.length >= 8 && clientPhoneVariations.has(cNum));
+              const isMatchByName = clientNameLower.length >= 3 && cName && (cName === clientNameLower || cName.includes(clientNameLower) || clientNameLower.includes(cName));
+
+              if (isMatchByPhone || isMatchByName) {
+                if (c.id) targetChatIds.add(c.id);
+                if (c.jid) targetChatIds.add(c.jid);
+                if (cNum && c.id?.includes('@lid')) {
+                  lidToRealPhoneCache.set(cNum, client.phone || digits);
+                }
+              }
             }
           }
         }
@@ -526,23 +684,17 @@ setInterval(() => {
         } catch (e) {}
         if (m.content) {
           const t = new Date(m.created_at).getTime();
-          existingContentHashes.add(`${String(m.content).trim()}_${Math.floor(t / 5000)}`);
+          existingContentHashes.add(`${session.id}_${String(m.content).trim()}_${Math.floor(t / 20000)}`);
         }
       });
 
       const sessionEndMs = sessionStartMs + 30 * 60 * 1000;
       let newInsertedCount = 0;
 
-      // Realiza busca direcionada no AstraCalls com limite de segurança
-      const endpointsToTry: string[] = [
-        `${astracallsUrl}/api/sessions/${astraSessionId}/messages?chatId=${encodeURIComponent(`55${ddd}9${num8}@s.whatsapp.net`)}&limit=30`,
-        `${astracallsUrl}/api/sessions/${astraSessionId}/messages?chatId=${encodeURIComponent(`55${ddd}${num8}@s.whatsapp.net`)}&limit=30`
-      ];
-
+      // Realiza busca direcionada nos chats mapeados para este cliente
+      const endpointsToTry: string[] = [];
       for (const tId of targetChatIds) {
-        if (tId.includes('@lid')) {
-          endpointsToTry.push(`${astracallsUrl}/api/sessions/${astraSessionId}/messages?chatId=${encodeURIComponent(tId)}&limit=30`);
-        }
+        endpointsToTry.push(`${astracallsUrl}/api/sessions/${astraSessionId}/messages?chatId=${encodeURIComponent(tId)}&limit=25&raw=true`);
       }
 
       for (const endpoint of endpointsToTry) {
@@ -573,11 +725,12 @@ setInterval(() => {
 
             // 3. REGRA ESTRITA: Validar se a mensagem pertence realmente a este cliente específico
             const senderDigits = cleanJidToPhone(remoteJid);
-            const isTargetJid = targetChatIds.has(remoteJid);
-            const isMatchingPhone = senderDigits && (
-              clientPhoneVariations.has(senderDigits) ||
-              isMatchingClientPhone(client.phone, senderDigits) ||
-              isMatchingClientPhone(client.local_phone, senderDigits)
+            const resolvedSender = lidToRealPhoneCache.get(senderDigits) || senderDigits;
+            const isTargetJid = targetChatIds.has(remoteJid) || targetChatIds.has(`${senderDigits}@lid`) || targetChatIds.has(`${senderDigits}@s.whatsapp.net`);
+            const isMatchingPhone = resolvedSender && (
+              clientPhoneVariations.has(resolvedSender) ||
+              isMatchingClientPhone(client.phone, resolvedSender) ||
+              isMatchingClientPhone(client.local_phone, resolvedSender)
             );
 
             if (!isTargetJid && !isMatchingPhone) {
@@ -603,22 +756,39 @@ setInterval(() => {
             }
 
             if (msgTimeMs < sessionStartMs || msgTimeMs > sessionEndMs) {
-              // Fora da janela de atendimento -> descarta
+              // Fora da janela de atendimento de 30 minutos -> descarta
               continue;
             }
 
             // 5. Extração robusta do ID único (Baileys m.key.id, AstraCalls m.id, etc.)
             const extId = String(m.key?.id || m.id || m.messageId || m.keyId || '').trim();
-            if (extId && existingExtIds.has(extId)) {
+            if (extId && (existingExtIds.has(extId) || globalProcessedAstraIds.has(extId))) {
               // Já processada -> ignora duplicata
               continue;
             }
 
             // 6. Extrair conteúdo textual ou de mídia
-            const msgObj = m.message || m.msgContent || m;
+            const msgObj = m.raw || m.message || m.msgContent || m;
             const extracted = extractMessageData(msgObj);
             let content = extracted.content || m.body || m.text || m.message || '';
             let mediaUrl = extracted.mediaUrl || m.mediaUrl || m.url || '';
+
+            // Se for mensagem com mídia (áudio, imagem, vídeo ou documento), descriptografa e envia para o storage
+            const hasRawMedia = Boolean(
+              m.raw?.imageMessage || m.raw?.audioMessage || m.raw?.videoMessage || m.raw?.documentMessage ||
+              m.message?.imageMessage || m.message?.audioMessage || m.message?.videoMessage || m.message?.documentMessage ||
+              m.type === 'audio' || m.type === 'image' || m.type === 'video' || m.type === 'document' ||
+              m.imageMessage || m.audioMessage || m.videoMessage || m.documentMessage
+            );
+
+            if (hasRawMedia) {
+              const mediaRes = await resolveAndUploadWhatsAppMedia(m, extId);
+              if (mediaRes.mediaUrl) {
+                mediaUrl = mediaRes.mediaUrl;
+              } else if (mediaRes.thumbnail && !mediaUrl) {
+                mediaUrl = mediaRes.thumbnail;
+              }
+            }
 
             if (m.type === 'audio' && !content) content = '🎵 Mensagem de Áudio';
             if (m.type === 'image' && !content) content = '📸 Imagem';
@@ -627,9 +797,60 @@ setInterval(() => {
 
             if (!content && !mediaUrl) continue;
 
-            // 7. Deduplicação por hash de conteúdo dentro da janela temporal de 5 segundos
-            const contentHash = `${String(content).trim()}_${Math.floor(msgTimeMs / 5000)}`;
-            if (existingContentHashes.has(contentHash)) {
+            // 7. Deduplicação em memória por hash de conteúdo dentro da janela temporal de 20 segundos
+            const contentHash = `${session.id}_${String(content).trim()}_${Math.floor(msgTimeMs / 20000)}`;
+            if (existingContentHashes.has(contentHash) || globalProcessedContentHashes.has(contentHash)) {
+              continue;
+            }
+
+            // 8. Checagem atômica defensiva no banco de dados para evitar inserções concorrentes
+            const { data: dbDups } = await supabaseAdmin
+              .from('chat_messages')
+              .select('id, content, media_url, created_at')
+              .eq('session_id', session.id)
+              .eq('sender_type', 'client')
+              .order('created_at', { ascending: false })
+              .limit(10);
+
+            const isAlreadyInDb = (dbDups || []).some((dm: any) => {
+              if (extId && typeof dm.media_url === 'string' && dm.media_url.includes(extId)) return true;
+              if ((dm.content || '').trim() === String(content).trim()) {
+                const diff = Math.abs(new Date(dm.created_at).getTime() - msgTimeMs);
+                if (diff < 20000) return true;
+              }
+              return false;
+            });
+
+            if (isAlreadyInDb) {
+              if (extId) {
+                existingExtIds.add(extId);
+                globalProcessedAstraIds.set(extId, Date.now());
+              }
+              existingContentHashes.add(contentHash);
+              globalProcessedContentHashes.set(contentHash, Date.now());
+
+              // REPARAÇÃO RETROATIVA: Se a mensagem já estava no banco sem a URL de mídia, atualiza agora
+              if (mediaUrl) {
+                const existingWithoutMedia = (dbDups || []).find((dm: any) => {
+                  let parsed: any = {};
+                  try {
+                    if (typeof dm.media_url === 'string' && dm.media_url.startsWith('{')) {
+                      parsed = JSON.parse(dm.media_url);
+                    }
+                  } catch (e) {}
+                  const hasNoUrl = !parsed.url && (!dm.media_url || dm.media_url.startsWith('{'));
+                  const isMatch = (extId && dm.media_url?.includes(extId)) || ((dm.content || '').trim() === String(content).trim());
+                  return isMatch && hasNoUrl;
+                });
+
+                if (existingWithoutMedia) {
+                  let currentMeta: any = {};
+                  try { currentMeta = JSON.parse(existingWithoutMedia.media_url); } catch (e) {}
+                  await supabaseAdmin.from('chat_messages').update({
+                    media_url: JSON.stringify({ ...currentMeta, url: mediaUrl })
+                  }).eq('id', existingWithoutMedia.id);
+                }
+              }
               continue;
             }
 
@@ -644,13 +865,17 @@ setInterval(() => {
               session_id: session.id,
               sender_type: 'client',
               content: String(content),
-              media_url: mediaUrl || JSON.stringify(meta),
+              media_url: JSON.stringify(meta),
               created_at: new Date(msgTimeMs).toISOString()
             });
 
             if (!insErr) {
-              if (extId) existingExtIds.add(extId);
+              if (extId) {
+                existingExtIds.add(extId);
+                globalProcessedAstraIds.set(extId, Date.now());
+              }
               existingContentHashes.add(contentHash);
+              globalProcessedContentHashes.set(contentHash, Date.now());
               newInsertedCount++;
             }
           }
@@ -691,6 +916,8 @@ setInterval(() => {
       return { synced: newInsertedCount, success: true, chatIds: Array.from(targetChatIds) };
     } catch (err: any) {
       return { synced: 0, error: err.message };
+    } finally {
+      activeSyncSessions.delete(lockKey);
     }
   }
 
@@ -762,7 +989,6 @@ setInterval(() => {
 
       const uniqueMsgs: any[] = [];
       const seenExtIds = new Set<string>();
-      const seenContentSlots = new Set<string>();
       const duplicateIdsToDelete: string[] = [];
 
       for (const m of (rawLoadedMsgs || [])) {
@@ -775,26 +1001,37 @@ setInterval(() => {
 
         const extId = meta.external_id || meta.astra_id || '';
         const msgTime = new Date(m.created_at).getTime();
-        const contentSlot = `${m.sender_type}_${(m.content || '').trim()}_${Math.floor(msgTime / 5000)}`;
+        const cleanContent = (m.content || '').trim();
 
         let isDuplicate = false;
         if (extId && seenExtIds.has(extId)) {
           isDuplicate = true;
-        } else if (m.sender_type === 'client' && seenContentSlots.has(contentSlot)) {
-          isDuplicate = true;
+        } else if (cleanContent) {
+          // Checagem robusta de duplicidade por conteúdo dentro de 25 segundos
+          const existingMatch = uniqueMsgs.find(u => {
+            if (u.sender_type !== m.sender_type) return false;
+            if ((u.content || '').trim() !== cleanContent) return false;
+            const uTime = new Date(u.created_at).getTime();
+            return Math.abs(uTime - msgTime) < 25000;
+          });
+          if (existingMatch) {
+            isDuplicate = true;
+          }
         }
 
         if (isDuplicate) {
           duplicateIdsToDelete.push(m.id);
         } else {
           if (extId) seenExtIds.add(extId);
-          if (m.sender_type === 'client') seenContentSlots.add(contentSlot);
           uniqueMsgs.push(m);
         }
       }
 
       if (duplicateIdsToDelete.length > 0) {
-        supabaseAdmin.from('chat_messages').delete().in('id', duplicateIdsToDelete).catch(() => {});
+        console.log(`[/api/chat/messages] Removendo ${duplicateIdsToDelete.length} mensagens duplicadas do banco de dados.`);
+        try {
+          await supabaseAdmin.from('chat_messages').delete().in('id', duplicateIdsToDelete);
+        } catch (delErr) {}
       }
 
       return res.json({ success: true, messages: uniqueMsgs });
@@ -2639,19 +2876,19 @@ setInterval(() => {
     if (rawMsg.caption) return { content: rawMsg.caption, mediaUrl: '' };
 
     if (rawMsg.audioMessage) {
-      return { content: '🎵 Áudio recebido', mediaUrl: rawMsg.audioMessage.url || rawMsg.audioMessage.directPath || '' };
+      return { content: '🎵 Mensagem de Áudio', mediaUrl: rawMsg.audioMessage.url || rawMsg.audioMessage.URL || rawMsg.audioMessage.directPath || '' };
     }
     if (rawMsg.imageMessage) {
-      return { content: rawMsg.imageMessage.caption || '📸 Imagem recebida', mediaUrl: rawMsg.imageMessage.url || rawMsg.imageMessage.directPath || '' };
+      return { content: rawMsg.imageMessage.caption || '📸 Imagem', mediaUrl: rawMsg.imageMessage.url || rawMsg.imageMessage.URL || rawMsg.imageMessage.directPath || '' };
     }
     if (rawMsg.videoMessage) {
-      return { content: rawMsg.videoMessage.caption || '🎥 Vídeo recebido', mediaUrl: rawMsg.videoMessage.url || rawMsg.videoMessage.directPath || '' };
+      return { content: rawMsg.videoMessage.caption || '🎥 Vídeo', mediaUrl: rawMsg.videoMessage.url || rawMsg.videoMessage.URL || rawMsg.videoMessage.directPath || '' };
     }
     if (rawMsg.documentMessage) {
-      return { content: `📄 Documento: ${rawMsg.documentMessage.fileName || rawMsg.documentMessage.title || 'Arquivo'}`, mediaUrl: rawMsg.documentMessage.url || '' };
+      return { content: `📄 Documento: ${rawMsg.documentMessage.fileName || rawMsg.documentMessage.title || 'Arquivo'}`, mediaUrl: rawMsg.documentMessage.url || rawMsg.documentMessage.URL || '' };
     }
     if (rawMsg.stickerMessage) {
-      return { content: '🏷️ Figurinha recebida', mediaUrl: rawMsg.stickerMessage.url || '' };
+      return { content: '🏷️ Figurinha', mediaUrl: rawMsg.stickerMessage.url || rawMsg.stickerMessage.URL || '' };
     }
 
     if (rawMsg.buttonsResponseMessage?.selectedButtonId || rawMsg.buttonsResponseMessage?.selectedDisplayText) {
@@ -2872,11 +3109,17 @@ setInterval(() => {
         return res.status(200).send("EVENT_RECEIVED");
       }
 
+      const wameMeta = {
+        external_id: externalMsgId || undefined,
+        url: mediaUrl || undefined,
+        status: 'read'
+      };
+
       await supabaseAdmin.from('chat_messages').insert({
          session_id: activeSession.id,
          sender_type: 'client',
          content: content,
-         media_url: mediaUrl
+         media_url: JSON.stringify(wameMeta)
       });
 
       // Cliente respondeu: marca mensagens anteriores enviadas pelo colaborador como lidas
@@ -2963,8 +3206,19 @@ setInterval(() => {
       else if (typeof body.message === 'string') content = body.message;
       
       let mediaUrl = "";
-      if (msgData.message?.audioMessage) content = "🎵 Mensagem de Áudio";
-      else if (msgData.message?.imageMessage) content = "📷 Imagem";
+      if (msgData.message?.audioMessage || msgData.message?.imageMessage || msgData.message?.videoMessage || msgData.message?.documentMessage) {
+        const mediaRes = await resolveAndUploadWhatsAppMedia(msgData, externalMsgId);
+        if (mediaRes.mediaUrl) {
+          mediaUrl = mediaRes.mediaUrl;
+        } else if (mediaRes.thumbnail) {
+          mediaUrl = mediaRes.thumbnail;
+        }
+      }
+
+      if (msgData.message?.audioMessage && !content) content = "🎵 Mensagem de Áudio";
+      else if (msgData.message?.imageMessage && !content) content = "📸 Imagem";
+      else if (msgData.message?.videoMessage && !content) content = "🎥 Vídeo";
+      else if (msgData.message?.documentMessage && !content) content = "📄 Documento";
 
       if (!content && !mediaUrl) return res.status(200).send("OK");
 
@@ -3043,11 +3297,17 @@ setInterval(() => {
         return res.status(200).send("OK");
       }
 
+      const evoMeta = {
+        external_id: externalMsgId || undefined,
+        url: mediaUrl || undefined,
+        status: 'read'
+      };
+
       await supabaseAdmin.from('chat_messages').insert({
          session_id: activeSession.id,
          sender_type: 'client',
          content: content,
-         media_url: mediaUrl
+         media_url: JSON.stringify(evoMeta)
       });
 
       // Cliente respondeu: marca mensagens anteriores enviadas pelo colaborador como lidas
@@ -3140,10 +3400,26 @@ setInterval(() => {
       }
       const cleanIncoming = cleanJidToPhone(rawRemote);
 
-      let extracted = extractMessageData(msgData.message || msgData);
+      let extracted = extractMessageData(msgData.raw || msgData.message || msgData);
       let content = extracted.content || msgData.body || msgData.text || msgData.message || msgData.content || body.body || body.text || body.message || "";
       let mediaUrl = extracted.mediaUrl || msgData.mediaUrl || msgData.url || "";
       let externalMsgId = String(msgData.key?.id || msgData.id || body.id || body.messageId || "");
+
+      const hasRawMedia = Boolean(
+        msgData.raw?.imageMessage || msgData.raw?.audioMessage || msgData.raw?.videoMessage || msgData.raw?.documentMessage ||
+        msgData.message?.imageMessage || msgData.message?.audioMessage || msgData.message?.videoMessage || msgData.message?.documentMessage ||
+        msgData.type === 'audio' || msgData.type === 'image' || msgData.type === 'video' || msgData.type === 'document' ||
+        msgData.imageMessage || msgData.audioMessage || msgData.videoMessage || msgData.documentMessage
+      );
+
+      if (hasRawMedia) {
+        const mediaRes = await resolveAndUploadWhatsAppMedia(msgData, externalMsgId);
+        if (mediaRes.mediaUrl) {
+          mediaUrl = mediaRes.mediaUrl;
+        } else if (mediaRes.thumbnail && !mediaUrl) {
+          mediaUrl = mediaRes.thumbnail;
+        }
+      }
 
       if (msgData.type === 'audio' && !content) content = "🎵 Mensagem de Áudio";
       if (msgData.type === 'image' && !content) content = "📸 Imagem";
@@ -3231,6 +3507,32 @@ setInterval(() => {
       }
 
       if (activeSession) {
+        if (externalMsgId && globalProcessedAstraIds.has(externalMsgId)) {
+          return res.status(200).json({ success: true, duplicate: true });
+        }
+
+        const { data: recentMsgs } = await supabaseAdmin
+          .from('chat_messages')
+          .select('id, content, media_url, created_at')
+          .eq('session_id', activeSession.id)
+          .eq('sender_type', 'client')
+          .order('created_at', { ascending: false })
+          .limit(10);
+
+        const isDup = (recentMsgs || []).some((rm: any) => {
+          if (externalMsgId && typeof rm.media_url === 'string' && rm.media_url.includes(externalMsgId)) return true;
+          if ((rm.content || '').trim() === String(content).trim()) {
+            const diff = Math.abs(new Date(rm.created_at).getTime() - now);
+            if (diff < 20000) return true;
+          }
+          return false;
+        });
+
+        if (isDup) {
+          if (externalMsgId) globalProcessedAstraIds.set(externalMsgId, Date.now());
+          return res.status(200).json({ success: true, duplicate: true });
+        }
+
         const metadataPayload = {
           external_id: externalMsgId || undefined,
           astra_id: externalMsgId || undefined,
@@ -3244,6 +3546,8 @@ setInterval(() => {
            content: String(content),
            media_url: JSON.stringify(metadataPayload)
         });
+
+        if (externalMsgId) globalProcessedAstraIds.set(externalMsgId, Date.now());
 
         // Cliente respondeu: marca mensagens anteriores do tech como lidas
         const { data: unreadTech } = await supabaseAdmin
