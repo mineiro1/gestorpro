@@ -91,6 +91,14 @@ const RootRoute = () => {
   }
   
   if (Capacitor.isNativePlatform()) {
+    try {
+      if ((window as any).cordova && (window as any).cordova.plugins && (window as any).cordova.plugins.backgroundMode) {
+         (window as any).cordova.plugins.backgroundMode.enable();
+         (window as any).cordova.plugins.backgroundMode.on('activate', function() {
+            (window as any).cordova.plugins.backgroundMode.disableWebViewOptimizations(); 
+         });
+      }
+    } catch(e) {}
     return <Navigate to="/login" replace />;
   }
   
@@ -100,32 +108,6 @@ const RootRoute = () => {
 export default function App() {
 
   React.useEffect(() => {
-    // Inicialização global de background mode nativo para manter GPS ativo com tela apagada
-    if (Capacitor.isNativePlatform()) {
-      try {
-        if ((window as any).cordova && (window as any).cordova.plugins && (window as any).cordova.plugins.backgroundMode) {
-          const bg = (window as any).cordova.plugins.backgroundMode;
-          bg.enable();
-          bg.setDefaults({
-            title: 'RS Piscinas',
-            text: 'Serviço em execução',
-            icon: 'icon',
-            color: '0284c7',
-            resume: true,
-            hidden: false,
-            silent: false,
-          });
-          bg.on('activate', function() {
-            if (typeof bg.disableWebViewOptimizations === 'function') {
-              bg.disableWebViewOptimizations();
-            }
-          });
-        }
-      } catch (e) {
-        console.warn('[App] Erro ao habilitar backgroundMode nativo:', e);
-      }
-    }
-
     const params = new URLSearchParams(window.location.search);
     const paymentId = params.get('payment_id');
     const status = params.get('status');
