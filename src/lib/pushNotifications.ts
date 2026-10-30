@@ -441,21 +441,29 @@ export async function sendTestPushNotification(adminId: string): Promise<{ succe
 /**
  * Inicia ou atualiza a notificação persistente na barra de status do Android
  * Título: RS Piscinas
- * Texto: Sistema em execução.
- * Modo silencioso de baixa prioridade (sem som, sem vibração)
+ * Texto: Serviço em execução
+ * Mantém o processo nativo e GPS ativos em segundo plano e tela bloqueada.
  */
 export async function startForegroundTrackingNotification(): Promise<void> {
   if (!Capacitor.isNativePlatform()) return;
 
   try {
-    // Garante a existência do canal silencioso
+    // Garante que permissões de notificação estejam concedidas no Android 13+
+    try {
+      const permStatus = await LocalNotifications.checkPermissions();
+      if (permStatus.display !== 'granted') {
+        await LocalNotifications.requestPermissions();
+      }
+    } catch {}
+
+    // Garante a existência do canal com visibilidade permanente
     try {
       await LocalNotifications.createChannel({
         id: 'foreground_service_silent',
         name: 'Serviço em Segundo Plano (RS Piscinas)',
         description: 'Mantém o sistema em execução e a localização ativa durante a jornada de trabalho',
-        importance: 2, // Low importance
-        visibility: 0,
+        importance: 3, // Default importance (visível na barra de status e tela de bloqueio)
+        visibility: 1, // Public on lockscreen
         sound: '',
         vibration: false,
         lights: false,
@@ -470,7 +478,7 @@ export async function startForegroundTrackingNotification(): Promise<void> {
         {
           id: 99991, // ID fixo exclusivo para o serviço de segundo plano
           title: 'RS Piscinas',
-          body: 'Sistema em execução.',
+          body: 'Serviço em execução',
           channelId: 'foreground_service_silent',
           ongoing: true, // Notificação fixa (o usuário não fecha por engano)
           autoCancel: false,
@@ -479,7 +487,7 @@ export async function startForegroundTrackingNotification(): Promise<void> {
         }
       ]
     });
-    console.log('[ForegroundNotification] Notificação persistente ativa: RS Piscinas - Sistema em execução.');
+    console.log('[ForegroundNotification] Notificação persistente ativa: RS Piscinas - Serviço em execução');
   } catch (err) {
     console.warn('[ForegroundNotification] Falha ao registrar notificação persistente:', err);
   }
@@ -500,3 +508,4 @@ export async function stopForegroundTrackingNotification(): Promise<void> {
     console.warn('[ForegroundNotification] Falha ao cancelar notificação persistente:', err);
   }
 }
+
