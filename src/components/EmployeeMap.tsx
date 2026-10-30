@@ -281,7 +281,7 @@ export default function EmployeeMap({
             </h2>
             <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-1">
               <ShieldCheck size={13} className="text-emerald-600" />
-              Notificação do Android ativa: <strong className="text-slate-700">RS Piscinas • Sistema em execução.</strong>
+              Notificação do Android ativa: <strong className="text-slate-700">RS Piscinas • Serviço em execução</strong>
             </p>
           </div>
         </div>

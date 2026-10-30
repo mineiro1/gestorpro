@@ -1,5 +1,6 @@
 import { registerPlugin, Capacitor } from '@capacitor/core';
 import type { BackgroundGeolocationPlugin, Location } from '@capacitor-community/background-geolocation';
+import { startForegroundTrackingNotification, stopForegroundTrackingNotification } from './pushNotifications';
 
 const BackgroundGeolocation = registerPlugin<BackgroundGeolocationPlugin>('BackgroundGeolocation');
 
@@ -20,11 +21,12 @@ class NativeBackgroundGeolocationService {
   private webWatchId: number | null = null;
   private wakeLock: any = null;
   private isRunning: boolean = false;
+  private lastWebCallbackTime: number = 0;
 
   /**
    * Inicia o monitoramento de GPS com suporte a segundo plano mesmo com a tela bloqueada.
-   * No Android (Capacitor), executa o serviço nativo com notificação contínua.
-   * No navegador web, executa o watchPosition com WakeLock.
+   * No Android (Capacitor), executa o serviço nativo com notificação contínua ("Serviço em execução").
+   * No navegador web, executa o watchPosition com WakeLock e controle de frequência.
    */
   public async start(callback: LocationCallback): Promise<void> {
     if (this.isRunning) return;
@@ -34,13 +36,16 @@ class NativeBackgroundGeolocationService {
     if (Capacitor.isNativePlatform()) {
       try {
         console.log('[NativeGeo] Inicializando Foreground Service nativo de GPS no Android...');
+        // Ativa a notificação fixa contínua do Android ("RS Piscinas • Serviço em execução")
+        await startForegroundTrackingNotification();
+
         this.watcherId = await BackgroundGeolocation.addWatcher(
           {
             backgroundTitle: 'RS Piscinas',
-            backgroundMessage: 'Sistema em execução.',
+            backgroundMessage: 'Serviço em execução',
             requestPermissions: true,
             stale: false,
-            distanceFilter: 10, // Atualiza a cada 10 metros de deslocamento
+            distanceFilter: 15, // Atualiza a cada 15 metros para máxima estabilidade e economia de bateria
           },
           (position?: Location, error?: any) => {
             if (error) {
@@ -93,6 +98,12 @@ class NativeBackgroundGeolocationService {
 
       this.webWatchId = navigator.geolocation.watchPosition(
         (pos) => {
+          const now = Date.now();
+          if (now - this.lastWebCallbackTime < 6000) {
+            return; // Throttling leve para não sobrecarregar o navegador em abas web
+          }
+          this.lastWebCallbackTime = now;
+
           callback({
             latitude: pos.coords.latitude,
             longitude: pos.coords.longitude,
@@ -124,6 +135,10 @@ class NativeBackgroundGeolocationService {
       }
       this.watcherId = null;
     }
+
+    try {
+      await stopForegroundTrackingNotification();
+    } catch {}
 
     if (this.webWatchId !== null && 'geolocation' in navigator) {
       navigator.geolocation.clearWatch(this.webWatchId);
