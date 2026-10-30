@@ -1528,6 +1528,7 @@ useEffect(() => {
       e.stopPropagation();
       e.preventDefault();
     }
+    if (!isAdmin && !isManager) return;
     if (routeClients.length === 0) {
       alert('Não há clientes carregados nesta rota para repassar.');
       return;
@@ -2493,7 +2494,7 @@ useEffect(() => {
                 <Share2 size={18} className="mr-2" />
                 Compartilhar PDF
               </button>
-              {routeClients.length > 0 && !isOrderingMode && (
+              {(isAdmin || isManager) && routeClients.length > 0 && !isOrderingMode && (
                 <button
                   type="button"
                   onClick={() => handleOpenHandoff()}
@@ -2864,15 +2865,17 @@ useEffect(() => {
                               );
                             })()}
 
-                            {/* Botão Repasse de Emergência (Hand-off) */}
-                            <button
-                              type="button"
-                              onClick={(e) => handleOpenHandoff(client.id, e)}
-                              className="p-1 text-indigo-600 hover:bg-indigo-100 rounded-md transition-colors"
-                              title="Repassar este cliente para outro técnico (Hand-off)"
-                            >
-                              <ArrowRightLeft size={20} />
-                            </button>
+                            {/* Botão Repasse de Emergência (Hand-off) - Apenas Gestores e Administradores */}
+                            {(isAdmin || isManager) && (
+                              <button
+                                type="button"
+                                onClick={(e) => handleOpenHandoff(client.id, e)}
+                                className="p-1 text-indigo-600 hover:bg-indigo-100 rounded-md transition-colors"
+                                title="Repassar este cliente para outro técnico (Hand-off)"
+                              >
+                                <ArrowRightLeft size={20} />
+                              </button>
+                            )}
                           </div>
                           {isCompleted && (
                             <motion.span 
@@ -2977,7 +2980,7 @@ useEffect(() => {
             </div>
           )}
 
-          {routeClients.length > 0 && (
+          {(isAdmin || isManager) && routeClients.length > 0 && (
             <div className="mt-8">
                <EmployeeMap clients={routeClients} highlightedClientId={highlightedClientId} />
             </div>
