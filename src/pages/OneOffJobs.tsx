@@ -107,8 +107,8 @@ function normalizeDateForInput(dateStr: string | null | undefined): string {
 function extractPhotoUrls(text: string | null | undefined): string[] {
   if (!text) return [];
   const urlRegex = /(https?:\/\/[^\s]+)/g;
-  const matches = text.match(urlRegex) || [];
-  return matches.filter(url => 
+  const matches = (text.match(urlRegex) || []) as string[];
+  return matches.filter((url: string) => 
     url.includes('/chat-media/') || 
     url.includes('supabase.co/storage') || 
     /\.(jpeg|jpg|png|webp|gif)(\?.*)?$/i.test(url)

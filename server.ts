@@ -4366,13 +4366,124 @@ await getMessaging().send({
     }
   });
 
-  // Endpoint autônomo de varredura (Sweep) para checar e notificar visitas recentes pendentes
-  app.all(['/api/cron/sync-visits', '/api/notifications/sweep-recent-visits'], async (req, res) => {
+  // In-memory cache de telemetria da frota para sincronização contínua (mesmo em segundo plano)
+  const serverFleetTelemetry = new Map<string, any>();
+
+  app.post("/api/fleet/telemetry", async (req, res) => {
     try {
-      await runOnlineDatabaseWatcher();
-      return res.json({ success: true, processed: true });
-    } catch (e: any) {
-      return res.status(500).json({ error: e.message });
+      const { userId, adminId, name, email, role, lat, lng, speedKmH, heading, accuracy, status, currentClientName } = req.body || {};
+      if (!userId || lat === undefined || lng === undefined) {
+        return res.status(400).json({ error: "Missing userId or coordinates" });
+      }
+
+      const nowIso = new Date().toISOString();
+      const telemetryObj = {
+        userId,
+        adminId: adminId || null,
+        name: name || 'Técnico',
+        email: email || '',
+        role: role || 'employee',
+        lat: Number(lat),
+        lng: Number(lng),
+        speedKmH: Number(speedKmH || 0),
+        heading: heading !== null && heading !== undefined ? Number(heading) : null,
+        accuracy: Number(accuracy || 0),
+        status: status || 'deslocamento',
+        currentClientName: currentClientName || null,
+        updatedAt: nowIso
+      };
+
+      serverFleetTelemetry.set(userId, telemetryObj);
+
+      // Atualiza de forma assíncrona no Supabase
+      (async () => {
+        try {
+          await supabaseAdmin.from('users').update({
+            last_location: {
+              lat: Number(lat),
+              lng: Number(lng),
+              accuracy: Number(accuracy || 0)
+            },
+            location_updated_at: nowIso
+          }).eq('id', userId);
+        } catch (err: any) {
+          console.warn('[FleetServer] Erro ao persistir telemetria:', err?.message || err);
+        }
+      })();
+
+      return res.json({ success: true, timestamp: nowIso });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/fleet/telemetry", async (req, res) => {
+    try {
+      const adminId = String(req.query?.adminId || '');
+      const telemetryMap: Record<string, any> = {};
+
+      // 1. Dados em memória do servidor (tempo real contínuo)
+      for (const [uId, tel] of serverFleetTelemetry.entries()) {
+        if (!adminId || tel.adminId === adminId || tel.userId === adminId) {
+          telemetryMap[uId] = tel;
+        }
+      }
+
+      // 2. Complementa com dados históricos do banco se necessário
+      if (adminId) {
+        const { data: dbUsers } = await supabaseAdmin
+          .from('users')
+          .select('id, name, email, role, last_location, location_updated_at')
+          .or(`admin_id.eq.${adminId},id.eq.${adminId}`);
+
+        if (dbUsers) {
+          for (const u of dbUsers) {
+            if (!telemetryMap[u.id] && u.last_location) {
+              let lat: number | null = null;
+              let lng: number | null = null;
+              if (typeof u.last_location === 'object' && u.last_location !== null) {
+                lat = parseFloat(u.last_location.lat);
+                lng = parseFloat(u.last_location.lng);
+              } else if (typeof u.last_location === 'string') {
+                try {
+                  const parsed = JSON.parse(u.last_location);
+                  lat = parseFloat(parsed.lat);
+                  lng = parseFloat(parsed.lng);
+                } catch {
+                  const parts = u.last_location.split(',');
+                  if (parts.length >= 2) {
+                    lat = parseFloat(parts[0]);
+                    lng = parseFloat(parts[1]);
+                  }
+                }
+              }
+
+              if (lat !== null && lng !== null && !isNaN(lat) && !isNaN(lng)) {
+                telemetryMap[u.id] = {
+                  userId: u.id,
+                  adminId,
+                  name: u.name || 'Colaborador',
+                  email: u.email || '',
+                  role: u.role || 'employee',
+                  lat,
+                  lng,
+                  speedKmH: 0,
+                  heading: null,
+                  accuracy: 0,
+                  status: 'deslocamento',
+                  currentClientName: null,
+                  updatedAt: u.location_updated_at || '',
+                  isLive: u.location_updated_at ? (Date.now() - new Date(u.location_updated_at).getTime() < 180000) : false
+                };
+              }
+            }
+          }
+        }
+      }
+
+      return res.json({ success: true, telemetry: telemetryMap });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
     }
   });
 

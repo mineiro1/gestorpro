@@ -16,27 +16,127 @@ export interface GeoPoint {
 
 export type LocationCallback = (point: GeoPoint) => void;
 
+/**
+ * Âncora de Áudio Silencioso e MediaSession para manter o navegador acordado
+ * mesmo com a tela do celular desligada ou aplicativo em segundo plano.
+ */
+class BackgroundAudioKeepAlive {
+  private audio: HTMLAudioElement | null = null;
+  private isRunning: boolean = false;
+  private boundUserInteractionHandler: (() => void) | null = null;
+
+  public start() {
+    if (this.isRunning) return;
+    this.isRunning = true;
+
+    try {
+      // Pequeno áudio WAV silencioso codificado em base64 (1 segundo de silêncio)
+      const silentWavBase64 = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+      const audio = new Audio(silentWavBase64);
+      audio.loop = true;
+      audio.volume = 0.01; // Quase inaudível, mas garante canal de áudio aberto no SO
+
+      const attemptPlay = () => {
+        audio.play().then(() => {
+          this.setupMediaSession();
+        }).catch((err) => {
+          console.warn('[AudioKeepAlive] Autoplay aguardando interação do usuário:', err?.message || err);
+        });
+      };
+
+      attemptPlay();
+
+      // Interação do usuário caso o navegador exija gesto para iniciar áudio
+      const onUserInteraction = () => {
+        if (this.isRunning && audio.paused) {
+          audio.play().then(() => this.setupMediaSession()).catch(() => {});
+        }
+      };
+      this.boundUserInteractionHandler = onUserInteraction;
+      window.addEventListener('click', onUserInteraction, { passive: true });
+      window.addEventListener('touchstart', onUserInteraction, { passive: true });
+
+      this.audio = audio;
+    } catch (err) {
+      console.warn('[AudioKeepAlive] Erro ao iniciar áudio de segundo plano:', err);
+    }
+  }
+
+  private setupMediaSession() {
+    if ('mediaSession' in navigator) {
+      try {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: 'RS Piscinas',
+          artist: 'Serviço em execução',
+          album: 'Rastreamento em Tempo Real Ativo',
+          artwork: [
+            { src: '/Rs_Piscinas-removebg-preview.png', sizes: '96x96', type: 'image/png' },
+            { src: '/Rs_Piscinas-removebg-preview.png', sizes: '192x192', type: 'image/png' }
+          ]
+        });
+        navigator.mediaSession.playbackState = 'playing';
+
+        // Mantém a notificação ativa no Android mesmo que o usuário pressione botões de controle
+        navigator.mediaSession.setActionHandler('play', () => {
+          this.audio?.play();
+          navigator.mediaSession.playbackState = 'playing';
+        });
+        navigator.mediaSession.setActionHandler('pause', () => {
+          // Não pausa o áudio de serviço para não derrubar o GPS em segundo plano
+          this.audio?.play();
+          navigator.mediaSession.playbackState = 'playing';
+        });
+      } catch (e) {
+        console.warn('[AudioKeepAlive] Erro ao configurar MediaSession:', e);
+      }
+    }
+  }
+
+  public stop() {
+    this.isRunning = false;
+    if (this.boundUserInteractionHandler) {
+      window.removeEventListener('click', this.boundUserInteractionHandler);
+      window.removeEventListener('touchstart', this.boundUserInteractionHandler);
+      this.boundUserInteractionHandler = null;
+    }
+    if (this.audio) {
+      try {
+        this.audio.pause();
+        this.audio.src = '';
+      } catch {}
+      this.audio = null;
+    }
+    if ('mediaSession' in navigator) {
+      try {
+        navigator.mediaSession.playbackState = 'none';
+      } catch {}
+    }
+  }
+}
+
 class NativeBackgroundGeolocationService {
   private watcherId: string | null = null;
   private webWatchId: number | null = null;
   private wakeLock: any = null;
   private isRunning: boolean = false;
-  private lastWebCallbackTime: number = 0;
+  private lastCallbackTime: number = 0;
+  private audioKeepAlive = new BackgroundAudioKeepAlive();
+  private timerWorker: Worker | null = null;
 
   /**
-   * Inicia o monitoramento de GPS com suporte a segundo plano mesmo com a tela bloqueada.
-   * No Android (Capacitor), executa o serviço nativo com notificação contínua ("Serviço em execução").
-   * No navegador web, executa o watchPosition com WakeLock e controle de frequência.
+   * Inicia o monitoramento de GPS contínuo garantido com suporte a tela desligada
+   * e aplicativo em segundo plano tanto em navegadores/PWA quanto em APK nativo.
    */
   public async start(callback: LocationCallback): Promise<void> {
     if (this.isRunning) return;
     this.isRunning = true;
 
-    // 1. Execução nativa no Android / iOS via Capacitor
+    // 1. Ativa a âncora de áudio e MediaSession ("Serviço em execução")
+    this.audioKeepAlive.start();
+
+    // 2. Execução nativa no Android / iOS via Capacitor (se for APK)
     if (Capacitor.isNativePlatform()) {
       try {
-        console.log('[NativeGeo] Inicializando Foreground Service nativo de GPS no Android...');
-        // Ativa a notificação fixa contínua do Android ("RS Piscinas • Serviço em execução")
         await startForegroundTrackingNotification();
 
         this.watcherId = await BackgroundGeolocation.addWatcher(
@@ -45,7 +145,7 @@ class NativeBackgroundGeolocationService {
             backgroundMessage: 'Serviço em execução',
             requestPermissions: true,
             stale: false,
-            distanceFilter: 15, // Atualiza a cada 15 metros para máxima estabilidade e economia de bateria
+            distanceFilter: 10,
           },
           (position?: Location, error?: any) => {
             if (error) {
@@ -53,83 +153,126 @@ class NativeBackgroundGeolocationService {
               return;
             }
             if (position) {
-              callback({
-                latitude: position.latitude,
-                longitude: position.longitude,
-                accuracy: position.accuracy,
-                speed: position.speed,
-                bearing: position.bearing,
-                altitude: position.altitude,
-                time: position.time,
-              });
+              this.handleNewPoint(position, callback);
             }
           }
         );
-        console.log(`[NativeGeo] Foreground Service nativo ativo com sucesso. Watcher ID: ${this.watcherId}`);
-        return;
+        console.log(`[NativeGeo] Foreground Service nativo ativo. Watcher ID: ${this.watcherId}`);
       } catch (nativeErr) {
         console.warn('[NativeGeo] Falha ao acionar watcher nativo, utilizando fallback web:', nativeErr);
       }
     }
 
-    // 2. Fallback Web / PWA
+    // 3. Fallback Web / PWA robusto (WakeLock)
     if ('wakeLock' in navigator) {
       try {
         this.wakeLock = await (navigator as any).wakeLock.request('screen');
+        document.addEventListener('visibilitychange', async () => {
+          if (this.isRunning && document.visibilityState === 'visible' && 'wakeLock' in navigator) {
+            try {
+              this.wakeLock = await (navigator as any).wakeLock.request('screen');
+            } catch {}
+          }
+        });
       } catch {}
     }
 
+    // 4. Inicia Web Worker para ticks de segundo plano não bloqueados pelo navegador
+    try {
+      const workerBlob = new Blob([`
+        let timer = null;
+        self.onmessage = function(e) {
+          if (e.data === 'START') {
+            if (timer) clearInterval(timer);
+            timer = setInterval(function() {
+              self.postMessage('TICK');
+            }, 10000); // 10 segundos
+          } else if (e.data === 'STOP') {
+            if (timer) clearInterval(timer);
+            timer = null;
+          }
+        };
+      `], { type: 'application/javascript' });
+
+      const workerUrl = URL.createObjectURL(workerBlob);
+      const worker = new Worker(workerUrl);
+
+      worker.onmessage = () => {
+        if (!this.isRunning) return;
+        // Se já se passaram mais de 8 segundos desde o último fix de GPS, força uma leitura ativa
+        const now = Date.now();
+        if (now - this.lastCallbackTime >= 8000 && 'geolocation' in navigator) {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => this.handleNewPoint(pos.coords, callback),
+            (err) => console.warn('[BackgroundWorker] Leitura periódica:', err?.message || err),
+            { enableHighAccuracy: true, timeout: 8000, maximumAge: 5000 }
+          );
+        }
+      };
+
+      worker.postMessage('START');
+      this.timerWorker = worker;
+    } catch (workerErr) {
+      console.warn('[BackgroundWorker] Não foi possível instanciar Worker de segundo plano:', workerErr);
+    }
+
+    // 5. WatchPosition contínuo padrão
     if ('geolocation' in navigator) {
+      // Primeira coordenada imediata
       navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          callback({
-            latitude: pos.coords.latitude,
-            longitude: pos.coords.longitude,
-            accuracy: pos.coords.accuracy,
-            speed: pos.coords.speed,
-            bearing: pos.coords.heading,
-            altitude: pos.coords.altitude,
-            time: pos.timestamp,
-          });
-        },
+        (pos) => this.handleNewPoint(pos.coords, callback),
         (err) => console.warn('[WebGeo] Posição inicial:', err.message),
-        { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 }
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 }
       );
 
       this.webWatchId = navigator.geolocation.watchPosition(
-        (pos) => {
-          const now = Date.now();
-          if (now - this.lastWebCallbackTime < 6000) {
-            return; // Throttling leve para não sobrecarregar o navegador em abas web
-          }
-          this.lastWebCallbackTime = now;
-
-          callback({
-            latitude: pos.coords.latitude,
-            longitude: pos.coords.longitude,
-            accuracy: pos.coords.accuracy,
-            speed: pos.coords.speed,
-            bearing: pos.coords.heading,
-            altitude: pos.coords.altitude,
-            time: pos.timestamp,
-          });
-        },
+        (pos) => this.handleNewPoint(pos.coords, callback),
         (err) => console.warn('[WebGeo] Watch error:', err.message),
-        { enableHighAccuracy: true, timeout: 20000, maximumAge: 10000 }
+        { enableHighAccuracy: true, timeout: 20000, maximumAge: 5000 }
       );
     }
   }
 
+  private handleNewPoint(coords: any, callback: LocationCallback) {
+    const now = Date.now();
+    // Limite mínimo de 4 segundos entre disparos para não sobrecarregar
+    if (now - this.lastCallbackTime < 4000) {
+      return;
+    }
+    this.lastCallbackTime = now;
+
+    callback({
+      latitude: coords.latitude,
+      longitude: coords.longitude,
+      accuracy: coords.accuracy,
+      speed: coords.speed ?? null,
+      bearing: coords.heading ?? coords.bearing ?? null,
+      altitude: coords.altitude ?? null,
+      time: coords.time ?? coords.timestamp ?? now,
+    });
+  }
+
   /**
-   * Encerra o serviço nativo de segundo plano e libera a CPU
+   * Encerra todos os serviços de segundo plano, áudio e libera recursos
    */
   public async stop(): Promise<void> {
     this.isRunning = false;
 
+    // Para áudio keep-alive e MediaSession
+    this.audioKeepAlive.stop();
+
+    // Para Web Worker
+    if (this.timerWorker) {
+      try {
+        this.timerWorker.postMessage('STOP');
+        this.timerWorker.terminate();
+      } catch {}
+      this.timerWorker = null;
+    }
+
     if (this.watcherId) {
       try {
         await BackgroundGeolocation.removeWatcher({ id: this.watcherId });
-        console.log('[NativeGeo] Serviço nativo de geolocalização encerrado.');
       } catch (err) {
         console.warn('[NativeGeo] Erro ao remover watcher nativo:', err);
       }
@@ -153,9 +296,6 @@ class NativeBackgroundGeolocationService {
     }
   }
 
-  /**
-   * Abre a tela nativa de configurações de permissões do aplicativo no Android
-   */
   public async openSettings(): Promise<void> {
     if (Capacitor.isNativePlatform()) {
       try {

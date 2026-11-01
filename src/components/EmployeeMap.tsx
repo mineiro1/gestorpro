@@ -39,84 +39,44 @@ export default function EmployeeMap({
 } = {}) {
   const { userProfile, isAdmin, isManager } = useAuth();
   const [liveTechnicians, setLiveTechnicians] = useState<Record<string, TechnicianTelemetry>>({});
-  const [offlineEmployees, setOfflineEmployees] = useState<TechnicianMarkerData[]>([]);
+  const [httpTechnicians, setHttpTechnicians] = useState<Record<string, any>>({});
   const [map, setMap] = useState<L.Map | null>(null);
 
   const companyAdminId = isAdmin ? userProfile?.uid : (userProfile?.adminId || userProfile?.uid);
 
-  // 1. Carrega o estado histórico do banco de dados para técnicos que estiverem offline
+  // 1. Sincronização contínua de telemetria do servidor (garante atualização ininterrupta mesmo com celular em segundo plano ou tela desligada)
   useEffect(() => {
     if (!companyAdminId || (!isAdmin && !isManager)) return;
 
-    const fetchHistoricalUsers = async () => {
+    let isMounted = true;
+    const fetchTelemetry = async () => {
       try {
-        const { data, error } = await supabase
-          .from('users')
-          .select('id, name, email, role, last_location, location_updated_at')
-          .or(`admin_id.eq.${companyAdminId},id.eq.${companyAdminId}`);
-
-        if (error || !data) return;
-
-        const fallbackList: TechnicianMarkerData[] = [];
-
-        data.forEach((u: any) => {
-          let lat: number | null = null;
-          let lng: number | null = null;
-
-          if (u.last_location) {
-            if (typeof u.last_location === 'object' && u.last_location !== null) {
-              lat = parseFloat(u.last_location.lat);
-              lng = parseFloat(u.last_location.lng);
-            } else if (typeof u.last_location === 'string') {
-              try {
-                const parsed = JSON.parse(u.last_location);
-                lat = parseFloat(parsed.lat);
-                lng = parseFloat(parsed.lng);
-              } catch {
-                const parts = u.last_location.split(',');
-                if (parts.length >= 2) {
-                  lat = parseFloat(parts[0]);
-                  lng = parseFloat(parts[1]);
-                }
-              }
-            }
-          }
-
-          if (lat !== null && lng !== null && !isNaN(lat) && !isNaN(lng)) {
-            fallbackList.push({
-              id: u.id,
-              name: u.name || 'Colaborador',
-              email: u.email || '',
-              role: u.role || 'employee',
-              lat,
-              lng,
-              speedKmH: 0,
-              heading: null,
-              status: 'offline',
-              currentClientName: null,
-              updatedAt: u.location_updated_at || '',
-              isLive: false,
-            });
-          }
-        });
-
-        setOfflineEmployees(fallbackList);
+        const res = await fetch(`/api/fleet/telemetry?adminId=${companyAdminId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (isMounted && data.success && data.telemetry) {
+          setHttpTechnicians(data.telemetry);
+        }
       } catch (err) {
-        console.warn('[EmployeeMap] Erro ao carregar posições históricas:', err);
+        // Silencioso para não interromper a interface
       }
     };
 
-    fetchHistoricalUsers();
+    fetchTelemetry();
+    const interval = setInterval(fetchTelemetry, 6000); // Polling a cada 6 segundos
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
   }, [companyAdminId, isAdmin, isManager]);
 
   // 2. Assinatura do Canal Realtime Presence (Ao Vivo via FleetRealtimeService)
   useEffect(() => {
     if (!companyAdminId || (!isAdmin && !isManager)) return;
 
-    // Inicializa o canal singleton de forma segura com callbacks registrados antes do subscribe
     fleetRealtimeService.initChannel(companyAdminId, userProfile?.uid);
 
-    // Registra o ouvinte para sincronizações de presença em tempo real
     const unsubscribe = fleetRealtimeService.subscribeListener((activeMap) => {
       setLiveTechnicians({ ...activeMap });
     });
@@ -127,39 +87,58 @@ export default function EmployeeMap({
     };
   }, [companyAdminId, isAdmin, isManager, userProfile?.uid]);
 
-  // 3. Mescla técnicos ao vivo (Presence) com os que estão offline (Banco de dados)
+  // 3. Mescla técnicos combinando WebSocket com telemetria HTTP contínua
   const combinedTechnicians = useMemo(() => {
-    const list: TechnicianMarkerData[] = [];
-    const liveUserIds = new Set<string>();
+    const mapByUser: Record<string, TechnicianMarkerData> = {};
 
-    // Primeiro, adiciona todos que estão com WebSocket conectado em tempo real
-    Object.values(liveTechnicians).forEach((tel) => {
-      liveUserIds.add(tel.userId);
-      list.push({
-        id: tel.userId,
-        name: tel.name,
-        email: tel.email,
-        role: tel.role,
-        lat: tel.lat,
-        lng: tel.lng,
-        speedKmH: tel.speedKmH,
-        heading: tel.heading,
-        status: tel.status === 'em_atendimento' ? 'em_atendimento' : 'deslocamento',
-        currentClientName: tel.currentClientName,
-        updatedAt: tel.updatedAt,
-        isLive: true,
-      });
+    // A) Aplica dados do servidor (inclui transmissões em segundo plano com tela desligada)
+    Object.values(httpTechnicians).forEach((hTech: any) => {
+      const isRecent = hTech.updatedAt 
+        ? (Date.now() - new Date(hTech.updatedAt).getTime() < 300000) // Ativo nos últimos 5 minutos
+        : false;
+
+      mapByUser[hTech.userId] = {
+        id: hTech.userId,
+        name: hTech.name,
+        email: hTech.email,
+        role: hTech.role,
+        lat: hTech.lat,
+        lng: hTech.lng,
+        speedKmH: hTech.speedKmH || 0,
+        heading: hTech.heading,
+        status: hTech.status === 'em_atendimento' ? 'em_atendimento' : 'deslocamento',
+        currentClientName: hTech.currentClientName,
+        updatedAt: hTech.updatedAt,
+        isLive: isRecent,
+      };
     });
 
-    // Em seguida, adiciona quem está offline caso tenha registro histórico salvo
-    offlineEmployees.forEach((emp) => {
-      if (!liveUserIds.has(emp.id)) {
-        list.push(emp);
+    // B) Prioriza WebSocket se o timestamp do WebSocket for igual ou mais recente
+    Object.values(liveTechnicians).forEach((tel) => {
+      const existing = mapByUser[tel.userId];
+      const wsTime = tel.updatedAt ? new Date(tel.updatedAt).getTime() : 0;
+      const httpTime = existing?.updatedAt ? new Date(existing.updatedAt).getTime() : 0;
+
+      if (!existing || wsTime >= httpTime) {
+        mapByUser[tel.userId] = {
+          id: tel.userId,
+          name: tel.name,
+          email: tel.email,
+          role: tel.role,
+          lat: tel.lat,
+          lng: tel.lng,
+          speedKmH: tel.speedKmH,
+          heading: tel.heading,
+          status: tel.status === 'em_atendimento' ? 'em_atendimento' : 'deslocamento',
+          currentClientName: tel.currentClientName,
+          updatedAt: tel.updatedAt,
+          isLive: true,
+        };
       }
     });
 
-    return list;
-  }, [liveTechnicians, offlineEmployees]);
+    return Object.values(mapByUser);
+  }, [liveTechnicians, httpTechnicians]);
 
   // 4. Centraliza no cliente quando solicitado
   useEffect(() => {

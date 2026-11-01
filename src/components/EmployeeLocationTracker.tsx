@@ -24,7 +24,7 @@ export default function EmployeeLocationTracker() {
   const { userProfile, isAdmin } = useAuth();
   const [isServiceActive, setIsServiceActive] = useState(false);
 
-  // Armazena referências estáveis para evitar reinicializações desnecessárias do efeito
+  // Armazena referências estáveis para evitar reinicializações do ciclo de vida
   const userProfileRef = useRef(userProfile);
   userProfileRef.current = userProfile;
   const isAdminRef = useRef(isAdmin);
@@ -33,7 +33,6 @@ export default function EmployeeLocationTracker() {
   const lastCoordsRef = useRef<GeoPoint | null>(null);
   const lastTransmitTimeRef = useRef<number>(0);
   const lastPointRef = useRef<{ lat: number; lng: number } | null>(null);
-  const lastDbPersistTimeRef = useRef<number>(0);
   const isTransmittingRef = useRef<boolean>(false);
 
   useEffect(() => {
@@ -65,13 +64,13 @@ export default function EmployeeLocationTracker() {
       }
 
       // THROTTLING INTELIGENTE (Zero travamento do navegador):
-      // 1. Limite mínimo de 8 segundos entre transmissões WebSocket
-      if (!force && timeSinceLast < 8000) {
+      // 1. Limite mínimo de 6 segundos entre transmissões
+      if (!force && timeSinceLast < 6000) {
         return;
       }
 
-      // 2. Se moveu menos de 10 metros, envia no máximo uma vez a cada 30 segundos (heartbeat suave)
-      if (!force && distanceMoved < 10 && timeSinceLast < 30000) {
+      // 2. Se parado ou pouca movimentação (< 8m), atualiza o relógio a cada 15 segundos
+      if (!force && distanceMoved < 8 && timeSinceLast < 15000) {
         return;
       }
 
@@ -94,6 +93,8 @@ export default function EmployeeLocationTracker() {
           ? Math.round(point.speed * 3.6) 
           : 0;
 
+        const nowIso = new Date().toISOString();
+
         const telemetry: TechnicianTelemetry = {
           userId: prof.uid,
           name: prof.name || 'Técnico',
@@ -106,15 +107,38 @@ export default function EmployeeLocationTracker() {
           accuracy: point.accuracy,
           status: activeClientName ? 'em_atendimento' : 'deslocamento',
           currentClientName: activeClientName,
-          updatedAt: new Date().toISOString(),
+          updatedAt: nowIso,
         };
 
-        // A) Transmissão em memória via Realtime WebSocket
-        await fleetRealtimeService.track(companyAdminId, telemetry);
+        // A) Transmissão via Realtime WebSocket (Entrega instantânea se conectado)
+        try {
+          await fleetRealtimeService.track(companyAdminId, telemetry);
+        } catch (wsErr) {
+          // Ignora falha transitória do WebSocket
+        }
 
-        // B) Checkpoint no banco a cada 10 minutos (600.000 ms)
-        if (now - lastDbPersistTimeRef.current >= 600000 && navigator.onLine) {
-          lastDbPersistTimeRef.current = now;
+        // B) Transmissão HTTP REST contínua (Garante entrega mesmo com WebSocket suspenso em tela apagada)
+        try {
+          await fetch('/api/fleet/telemetry', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              userId: prof.uid,
+              adminId: companyAdminId,
+              name: prof.name || 'Técnico',
+              email: prof.email || '',
+              role: prof.role || 'employee',
+              lat: point.latitude,
+              lng: point.longitude,
+              speedKmH: speedKmH,
+              heading: point.bearing,
+              accuracy: point.accuracy,
+              status: activeClientName ? 'em_atendimento' : 'deslocamento',
+              currentClientName: activeClientName,
+            })
+          });
+        } catch (httpErr) {
+          // Fallback direto no Supabase se o fetch local falhar
           try {
             await supabase.from('users').update({
               last_location: {
@@ -122,12 +146,12 @@ export default function EmployeeLocationTracker() {
                 lng: point.longitude,
                 accuracy: point.accuracy,
               },
-              location_updated_at: new Date().toISOString(),
+              location_updated_at: nowIso,
             }).eq('id', prof.uid);
           } catch {}
         }
       } catch (err) {
-        console.warn('[FleetTracker] Falha ao sincronizar presença no WebSocket:', err);
+        console.warn('[FleetTracker] Falha geral ao despachar telemetria:', err);
       } finally {
         isTransmittingRef.current = false;
       }
@@ -142,7 +166,7 @@ export default function EmployeeLocationTracker() {
     window.addEventListener('active_visit_change', handleActiveVisitChange);
     window.addEventListener('storage', handleActiveVisitChange);
 
-    // Inicia o serviço com Foreground Service nativo e notificação contínua
+    // Inicia o serviço com Foreground Service nativo, Áudio Keep-Alive e Web Worker
     nativeBackgroundGeolocation.start((point) => {
       if (isMounted) {
         setIsServiceActive(true);
