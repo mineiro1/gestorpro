@@ -3,7 +3,7 @@
   "appName": "RS PISCINA",
   "webDir": "dist",
   "server": {
-    "url": "https://www.rspiscinas.app.br",
+    "url": "https://rspiscinas.app.br",
     "cleartext": true
   },
   "plugins": {

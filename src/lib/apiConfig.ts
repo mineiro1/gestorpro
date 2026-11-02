@@ -1,6 +1,6 @@
 import { Capacitor } from '@capacitor/core';
 
-export const PROD_API_BASE_URL = 'https://www.rspiscinas.app.br';
+export const PROD_API_BASE_URL = 'https://rspiscinas.app.br';
 
 /**
  * Retorna a URL completa para chamadas de API, garantindo funcionamento tanto

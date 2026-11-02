@@ -98,6 +98,13 @@ export default function ExpensesPage() {
         .on('postgres_changes', { 
           event: '*', 
           schema: 'public', 
+          table: 'expenses' 
+        }, () => {
+          loadExpenses();
+        })
+        .on('postgres_changes', { 
+          event: '*', 
+          schema: 'public', 
           table: 'settings' 
         }, (payload: any) => {
           const rowId = payload?.new?.id || payload?.old?.id || '';
