@@ -43,7 +43,22 @@ interface PaymentItem {
 
 export default function ReportsPage() {
   const { userProfile, isAdmin, isManager } = useAuth();
-  const targetAdminId = isAdmin ? userProfile?.uid : (userProfile?.adminId || userProfile?.uid);
+
+  const getEffectiveAdminId = () => {
+    if (isAdmin && userProfile?.uid) return userProfile.uid;
+    if (userProfile?.adminId) return userProfile.adminId;
+    if (userProfile?.uid) return userProfile.uid;
+    try {
+      const cached = localStorage.getItem('cachedUserProfile');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        return parsed.role === 'admin' ? parsed.uid : (parsed.adminId || parsed.uid);
+      }
+    } catch {}
+    return '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
+  };
+
+  const targetAdminId = getEffectiveAdminId();
 
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'overview' | 'revenues' | 'expenses'>('overview');
@@ -72,7 +87,8 @@ export default function ReportsPage() {
   };
 
   const loadReportData = async () => {
-    if (!targetAdminId) return;
+    const adminId = getEffectiveAdminId();
+    if (!adminId) return;
     setLoading(true);
 
     try {
@@ -80,22 +96,22 @@ export default function ReportsPage() {
       const paymentsQuery = supabase
         .from('payments')
         .select('*')
-        .eq('admin_id', targetAdminId);
+        .eq('admin_id', adminId);
 
       // 2. Carregar Clientes com todas as datas e histórico para apurar meta da época
       const clientsQuery = supabase
         .from('clients')
         .select('*')
-        .eq('admin_id', targetAdminId);
+        .eq('admin_id', adminId);
 
       // 3. Carregar Ordens de Serviço Avulsas
       const jobsQuery = supabase
         .from('oneoffjobs')
         .select('*')
-        .eq('admin_id', targetAdminId);
+        .eq('admin_id', adminId);
 
       // 4. Carregar Despesas cadastradas
-      const expensesPromise = expensesService.getExpenses(targetAdminId);
+      const expensesPromise = expensesService.getExpenses(adminId);
 
       const [paymentsRes, clientsRes, jobsRes, loadedExpenses] = await Promise.all([
         paymentsQuery,

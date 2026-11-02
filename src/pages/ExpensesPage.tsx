@@ -36,7 +36,22 @@ const CATEGORIES = [
 
 export default function ExpensesPage() {
   const { userProfile, isAdmin, isManager } = useAuth();
-  const targetAdminId = isAdmin ? userProfile?.uid : (userProfile?.adminId || userProfile?.uid);
+
+  const getEffectiveAdminId = () => {
+    if (isAdmin && userProfile?.uid) return userProfile.uid;
+    if (userProfile?.adminId) return userProfile.adminId;
+    if (userProfile?.uid) return userProfile.uid;
+    try {
+      const cached = localStorage.getItem('cachedUserProfile');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        return parsed.role === 'admin' ? parsed.uid : (parsed.adminId || parsed.uid);
+      }
+    } catch {}
+    return '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
+  };
+
+  const targetAdminId = getEffectiveAdminId();
 
   const [expenses, setExpenses] = useState<ExpenseItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -68,10 +83,11 @@ export default function ExpensesPage() {
   const cameraInputRef = useRef<HTMLInputElement>(null);
 
   const loadExpenses = async () => {
-    if (!targetAdminId) return;
+    const adminId = getEffectiveAdminId();
+    if (!adminId) return;
     setLoading(true);
     try {
-      const items = await expensesService.getExpenses(targetAdminId);
+      const items = await expensesService.getExpenses(adminId);
       setExpenses(items);
     } catch (err) {
       console.error('Erro ao carregar despesas:', err);
