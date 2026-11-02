@@ -14,7 +14,7 @@ export interface ExpenseItem {
 
 const LOCAL_STORAGE_KEY = 'rs_expenses_cache';
 
-function getLocalCache(adminId: string): ExpenseItem[] {
+export function getLocalCache(adminId: string): ExpenseItem[] {
   try {
     const raw = localStorage.getItem(`${LOCAL_STORAGE_KEY}_${adminId}`);
     if (raw) return JSON.parse(raw);
@@ -22,26 +22,25 @@ function getLocalCache(adminId: string): ExpenseItem[] {
   return [];
 }
 
-function setLocalCache(adminId: string, items: ExpenseItem[]) {
+export function setLocalCache(adminId: string, items: ExpenseItem[]) {
   try {
     localStorage.setItem(`${LOCAL_STORAGE_KEY}_${adminId}`, JSON.stringify(items));
   } catch {}
 }
 
 export const expensesService = {
+  getLocalCache,
+  setLocalCache,
+
   /**
-   * Busca todas as despesas da empresa com tripla redundância:
-   * 1. Consulta direta na tabela 'expenses' do Supabase (funciona nativamente no Android e Web)
-   * 2. Rota de API via getApiUrl (consolidação do servidor)
-   * 3. Fallback na tabela 'settings' (linhas expense_*) e 'users.whatsapp_settings.expenses'
-   * 4. Cache local offline (localStorage)
+   * Busca todas as despesas da empresa.
+   * Se a consulta à tabela 'expenses' responder com sucesso (mesmo que vazia []),
+   * esse resultado é a FONTE DE VERDADE e sincroniza imediatamente o cache local.
    */
   async getExpenses(adminId: string): Promise<ExpenseItem[]> {
     if (!adminId) return [];
 
-    const expensesMap = new Map<string, ExpenseItem>();
-
-    // 1. Consulta DIRETA na tabela 'expenses' do Supabase
+    // 1. Consulta DIRETA na tabela 'expenses' do Supabase (Fonte de Verdade Primária)
     try {
       const { data: dbRows, error: dbErr } = await supabase
         .from('expenses')
@@ -49,22 +48,20 @@ export const expensesService = {
         .eq('admin_id', adminId)
         .order('date', { ascending: false });
 
-      if (!dbErr && Array.isArray(dbRows) && dbRows.length > 0) {
-        dbRows.forEach((r: any) => {
-          const item: ExpenseItem = {
-            id: r.id,
-            adminId: r.admin_id || adminId,
-            description: r.description || '',
-            amount: Number(r.amount) || 0,
-            date: r.date || '',
-            category: r.category || 'Geral',
-            receiptUrl: r.receipt_url || r.receiptUrl || null,
-            created_at: r.created_at || new Date().toISOString()
-          };
-          expensesMap.set(item.id, item);
-        });
+      // Se a resposta veio sem erro, dbRows é a verdade absoluta do banco
+      if (!dbErr && Array.isArray(dbRows)) {
+        const list: ExpenseItem[] = dbRows.map((r: any) => ({
+          id: r.id,
+          adminId: r.admin_id || adminId,
+          description: r.description || '',
+          amount: Number(r.amount) || 0,
+          date: r.date || '',
+          category: r.category || 'Geral',
+          receiptUrl: r.receipt_url || r.receiptUrl || null,
+          created_at: r.created_at || new Date().toISOString()
+        })).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 
-        const list = Array.from(expensesMap.values()).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+        // Salva a verdade exata no cache local (se vazio, limpa qualquer resíduo)
         setLocalCache(adminId, list);
         return list;
       }
@@ -72,17 +69,24 @@ export const expensesService = {
       console.warn('[ExpensesService] Falha ao consultar tabela expenses no Supabase:', dbErr);
     }
 
-    // 2. Consulta via API do Servidor (usando getApiUrl para compatibilidade com Android APK e Web)
+    // 2. Consulta via API do Servidor (consolidação do backend)
     try {
       const apiUrl = getApiUrl(`/api/expenses?adminId=${adminId}`);
       const res = await fetch(apiUrl);
       if (res.ok) {
         const data = await res.json();
-        if (data.success && Array.isArray(data.expenses) && data.expenses.length > 0) {
-          data.expenses.forEach((item: ExpenseItem) => {
-            if (item && item.id) expensesMap.set(item.id, item);
-          });
-          const list = Array.from(expensesMap.values()).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+        if (data.success && Array.isArray(data.expenses)) {
+          const list: ExpenseItem[] = data.expenses.map((item: any) => ({
+            id: item.id,
+            adminId: item.adminId || adminId,
+            description: item.description || '',
+            amount: Number(item.amount) || 0,
+            date: item.date || '',
+            category: item.category || 'Geral',
+            receiptUrl: item.receiptUrl || null,
+            created_at: item.created_at || new Date().toISOString()
+          })).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
           setLocalCache(adminId, list);
           return list;
         }
@@ -91,79 +95,17 @@ export const expensesService = {
       console.warn('[ExpensesService] Falha na API do servidor:', apiErr);
     }
 
-    // 3. Fallback na tabela 'settings' (backup em linhas individuais expense_*)
-    try {
-      const { data: settingRows } = await supabase
-        .from('settings')
-        .select('id, monthlyprice, updated_at')
-        .like('id', 'expense_%');
-
-      if (settingRows && settingRows.length > 0) {
-        for (const row of settingRows) {
-          try {
-            const rawId = row.id || '';
-            const parts = rawId.split('__meta_');
-            if (parts.length > 1) {
-              const b64 = parts[1];
-              const jsonStr = decodeURIComponent(escape(atob(b64)));
-              const parsed = JSON.parse(jsonStr);
-              if (parsed && parsed.id && (parsed.adminId === adminId || !parsed.adminId)) {
-                expensesMap.set(parsed.id, {
-                  ...parsed,
-                  amount: Number(parsed.amount) || Number(row.monthlyprice) || 0
-                });
-              }
-            }
-          } catch {}
-        }
-      }
-    } catch (setErr) {
-      console.warn('[ExpensesService] Erro ao ler backup em settings:', setErr);
-    }
-
-    // 4. Fallback no campo 'users.whatsapp_settings.expenses'
-    try {
-      const { data: userRow } = await supabase
-        .from('users')
-        .select('whatsapp_settings')
-        .eq('id', adminId)
-        .maybeSingle();
-
-      const waExpenses = userRow?.whatsapp_settings?.expenses;
-      if (Array.isArray(waExpenses) && waExpenses.length > 0) {
-        waExpenses.forEach((exp: any) => {
-          if (exp && exp.id && !expensesMap.has(exp.id)) {
-            expensesMap.set(exp.id, {
-              ...exp,
-              amount: Number(exp.amount) || 0
-            });
-          }
-        });
-      }
-    } catch (userErr) {
-      console.warn('[ExpensesService] Erro ao ler users:', userErr);
-    }
-
-    if (expensesMap.size > 0) {
-      const list = Array.from(expensesMap.values()).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-      setLocalCache(adminId, list);
-      return list;
-    }
-
-    // 5. Fallback final: Cache local offline
-    const cached = getLocalCache(adminId);
-    if (cached.length > 0) return cached;
-
-    return [];
+    // 3. Fallback de emergência exclusivo para offline (sem internet no aparelho)
+    return getLocalCache(adminId);
   },
 
   /**
    * Salva uma nova despesa ou atualiza existente simultaneamente em:
-   * - Tabela dedicada 'expenses' do Supabase
-   * - Tabela 'settings' (backup redundante)
-   * - Tabela 'users.whatsapp_settings.expenses'
-   * - Rota de API via getApiUrl
+   * - Tabela dedicada 'expenses' do Supabase (autoritativa)
+   * - Tabela 'users.whatsapp_settings.expenses' (redundância)
+   * - Servidor backend via getApiUrl
    * - Cache local offline
+   * - Broadcast Realtime para todos os outros aparelhos
    */
   async saveExpense(expense: Omit<ExpenseItem, 'id' | 'created_at'> & { id?: string }): Promise<ExpenseItem> {
     const expenseId = expense.id || `exp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
@@ -173,7 +115,7 @@ export const expensesService = {
       created_at: new Date().toISOString()
     };
 
-    // 1. Atualização otimista no cache local
+    // 1. Atualização imediata no cache local
     const cached = getLocalCache(expense.adminId);
     const existingIdx = cached.findIndex(e => e.id === expenseId);
     if (existingIdx >= 0) {
@@ -202,37 +144,13 @@ export const expensesService = {
       if (insErr) {
         console.warn('[ExpensesService] Erro ao salvar na tabela expenses:', insErr.message);
       } else {
-        console.log('[ExpensesService] Despesa salva com sucesso na tabela expenses do Supabase!');
+        console.log('[ExpensesService] Despesa salva na tabela expenses do Supabase!');
       }
     } catch (dbErr) {
       console.warn('[ExpensesService] Falha direta na tabela expenses:', dbErr);
     }
 
-    // 3. Gravação redundante na tabela 'settings'
-    try {
-      const metaObj = {
-        id: fullExpense.id,
-        adminId: expense.adminId,
-        description: fullExpense.description,
-        amount: fullExpense.amount,
-        date: fullExpense.date,
-        category: fullExpense.category || 'Geral',
-        receiptUrl: fullExpense.receiptUrl || null,
-        created_at: fullExpense.created_at
-      };
-      const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(metaObj))));
-      const rowId = `expense_${fullExpense.id}__meta_${b64}`;
-
-      await supabase.from('settings').upsert({
-        id: rowId,
-        monthlyprice: fullExpense.amount,
-        updated_at: new Date().toISOString()
-      });
-    } catch (setErr) {
-      console.warn('[ExpensesService] Erro ao salvar backup em settings:', setErr);
-    }
-
-    // 4. Gravação na tabela 'users.whatsapp_settings.expenses'
+    // 3. Gravação na tabela 'users.whatsapp_settings.expenses'
     try {
       const { data: userRow } = await supabase
         .from('users')
@@ -257,15 +175,23 @@ export const expensesService = {
       console.warn('[ExpensesService] Erro ao salvar em users:', userErr);
     }
 
-    // 5. Dispara sincronização com o backend (sem bloquear em caso de offline/rede restrita)
+    // 4. Notifica o backend
     try {
       const apiUrl = getApiUrl('/api/expenses');
       fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(fullExpense)
-      }).catch(err => {
-        console.warn('[ExpensesService] Sincronização secundária com backend em segundo plano:', err);
+      }).catch(() => {});
+    } catch {}
+
+    // 5. Envia Broadcast Realtime para sincronização instantânea em outros aparelhos
+    try {
+      const channel = supabase.channel(`realtime-expenses-${expense.adminId}`);
+      await channel.send({
+        type: 'broadcast',
+        event: 'expense_saved',
+        payload: fullExpense
       });
     } catch {}
 
@@ -273,37 +199,63 @@ export const expensesService = {
   },
 
   /**
-   * Deleta uma despesa em todas as camadas (tabela expenses, settings, users, backend e cache)
+   * Deleta uma despesa em todas as camadas (tabela expenses, settings, users, backend e cache local)
+   * Dispara broadcast para que todos os outros aparelhos (celulares e PCs) removam instantaneamente da tela.
    */
   async deleteExpense(id: string, adminId: string): Promise<boolean> {
     if (!id || !adminId) return false;
 
-    // 1. Atualização otimista no cache local
+    // 1. Remoção imediata no cache local do dispositivo que executou a ação
     const cached = getLocalCache(adminId).filter(e => e.id !== id);
     setLocalCache(adminId, cached);
 
-    // 2. Remoção DIRETA na tabela 'expenses'
+    // 2. Remoção DIRETA na tabela 'expenses' (autoritativa)
     try {
-      await supabase.from('expenses').delete().eq('id', id);
+      const { error: delErr } = await supabase.from('expenses').delete().eq('id', id);
+      if (delErr) {
+        console.warn('[ExpensesService] Erro ao deletar da tabela expenses:', delErr.message);
+      } else {
+        console.log(`[ExpensesService] Despesa ${id} excluída da tabela 'expenses'`);
+      }
     } catch (dbErr) {
-      console.warn('[ExpensesService] Erro ao deletar da tabela expenses:', dbErr);
+      console.warn('[ExpensesService] Exceção ao deletar da tabela expenses:', dbErr);
     }
 
-    // 3. Remoção na tabela 'settings'
+    // 3. Remoção na tabela 'settings' (limpeza profunda de registros legados)
     try {
       const { data: rows } = await supabase
         .from('settings')
         .select('id')
-        .like('id', `expense_${id}%`);
+        .like('id', 'expense_%');
 
       if (rows && rows.length > 0) {
-        await supabase.from('settings').delete().in('id', rows.map(r => r.id));
+        const idsToDelete: string[] = [];
+        for (const r of rows) {
+          if (r.id.includes(id)) {
+            idsToDelete.push(r.id);
+          } else if (r.id.includes('__meta_')) {
+            try {
+              const b64 = r.id.split('__meta_')[1];
+              const parsed = JSON.parse(decodeURIComponent(escape(atob(b64))));
+              if (parsed.id === id) idsToDelete.push(r.id);
+            } catch {}
+          } else if (r.id.startsWith(`expense_${adminId}_`)) {
+            try {
+              const b64 = r.id.replace(`expense_${adminId}_`, '');
+              const parsed = JSON.parse(decodeURIComponent(escape(atob(b64))));
+              if (parsed.id === id) idsToDelete.push(r.id);
+            } catch {}
+          }
+        }
+        if (idsToDelete.length > 0) {
+          await supabase.from('settings').delete().in('id', idsToDelete);
+        }
       }
     } catch (setErr) {
-      console.warn('[ExpensesService] Erro ao deletar da tabela settings:', setErr);
+      console.warn('[ExpensesService] Erro ao deletar de settings:', setErr);
     }
 
-    // 4. Remoção na tabela 'users'
+    // 4. Remoção na tabela 'users' (whatsapp_settings.expenses)
     try {
       const { data: userRow } = await supabase
         .from('users')
@@ -328,6 +280,16 @@ export const expensesService = {
       const apiUrl = getApiUrl(`/api/expenses/${id}?adminId=${adminId}`);
       fetch(apiUrl, { method: 'DELETE' }).catch(() => {});
     } catch {}
+
+    // 6. Broadcast Realtime para todos os outros dispositivos conectados
+    try {
+      const channel = supabase.channel(`realtime-expenses-${adminId}`);
+      await channel.send({
+        type: 'broadcast',
+        event: 'expense_deleted',
+        payload: { id, adminId }
+      });
+    } catch (bcErr) {}
 
     return true;
   },

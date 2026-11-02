@@ -91,34 +91,60 @@ export default function ExpensesPage() {
     };
     document.addEventListener('visibilitychange', handleVisibility);
 
-    // Canal Realtime do Supabase para refletir despesas cadastradas no celular/PC em tempo real
+    // Canal Realtime do Supabase para refletir despesas cadastradas e excluídas em tempo real entre celular e computador
     let channel: any = null;
     if (targetAdminId) {
       channel = supabase.channel(`realtime-expenses-${targetAdminId}`)
+        // 1. Escuta eventos de transmissão instantânea (Broadcast) entre dispositivos conectados
+        .on('broadcast', { event: 'expense_deleted' }, (payload: any) => {
+          const deletedId = payload?.payload?.id || payload?.id;
+          if (deletedId) {
+            console.log(`[Expenses Realtime] Despesa excluída em outro dispositivo: ${deletedId}`);
+            setExpenses(prev => prev.filter(item => item.id !== deletedId));
+            expensesService.setLocalCache(
+              targetAdminId,
+              expensesService.getLocalCache(targetAdminId).filter(e => e.id !== deletedId)
+            );
+          }
+        })
+        .on('broadcast', { event: 'expense_saved' }, (payload: any) => {
+          const savedItem = payload?.payload || payload;
+          if (savedItem && savedItem.id) {
+            console.log(`[Expenses Realtime] Nova despesa recebida de outro dispositivo: ${savedItem.id}`);
+            setExpenses(prev => {
+              const idx = prev.findIndex(item => item.id === savedItem.id);
+              let nextList: ExpenseItem[];
+              if (idx >= 0) {
+                nextList = [...prev];
+                nextList[idx] = savedItem;
+              } else {
+                nextList = [savedItem, ...prev];
+              }
+              return nextList.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+            });
+            const currentCache = expensesService.getLocalCache(targetAdminId);
+            const cIdx = currentCache.findIndex(e => e.id === savedItem.id);
+            if (cIdx >= 0) currentCache[cIdx] = savedItem;
+            else currentCache.unshift(savedItem);
+            expensesService.setLocalCache(targetAdminId, currentCache);
+          }
+        })
+        // 2. Escuta alterações no nível de tabela do Postgres
         .on('postgres_changes', { 
           event: '*', 
           schema: 'public', 
           table: 'expenses' 
-        }, () => {
-          loadExpenses();
-        })
-        .on('postgres_changes', { 
-          event: '*', 
-          schema: 'public', 
-          table: 'settings' 
         }, (payload: any) => {
-          const rowId = payload?.new?.id || payload?.old?.id || '';
-          if (rowId.startsWith('expense_')) {
+          if (payload?.eventType === 'DELETE' && payload?.old?.id) {
+            const delId = payload.old.id;
+            setExpenses(prev => prev.filter(item => item.id !== delId));
+            expensesService.setLocalCache(
+              targetAdminId,
+              expensesService.getLocalCache(targetAdminId).filter(e => e.id !== delId)
+            );
+          } else {
             loadExpenses();
           }
-        })
-        .on('postgres_changes', { 
-          event: 'UPDATE', 
-          schema: 'public', 
-          table: 'users', 
-          filter: `id=eq.${targetAdminId}` 
-        }, () => {
-          loadExpenses();
         })
         .subscribe();
     }
@@ -194,12 +220,16 @@ export default function ExpensesPage() {
   const handleDeleteExpense = async (id: string) => {
     if (!targetAdminId) return;
     try {
-      await expensesService.deleteExpense(id, targetAdminId);
+      // 1. Atualização otimista imediata da interface
       setExpenses(prev => prev.filter(item => item.id !== id));
       setDeletingId(null);
+
+      // 2. Exclusão em profundidade no banco de dados, servidor e cache
+      await expensesService.deleteExpense(id, targetAdminId);
     } catch (err) {
       console.error('Erro ao excluir despesa:', err);
       alert('Erro ao excluir o lançamento.');
+      loadExpenses();
     }
   };
 
