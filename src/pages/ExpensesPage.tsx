@@ -96,6 +96,16 @@ export default function ExpensesPage() {
     if (targetAdminId) {
       channel = supabase.channel(`realtime-expenses-${targetAdminId}`)
         .on('postgres_changes', { 
+          event: '*', 
+          schema: 'public', 
+          table: 'settings' 
+        }, (payload: any) => {
+          const rowId = payload?.new?.id || payload?.old?.id || '';
+          if (rowId.startsWith('expense_')) {
+            loadExpenses();
+          }
+        })
+        .on('postgres_changes', { 
           event: 'UPDATE', 
           schema: 'public', 
           table: 'users', 

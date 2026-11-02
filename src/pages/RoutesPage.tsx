@@ -21,7 +21,7 @@ import { getApiUrl } from '../lib/apiConfig';
 import { fetchWeatherData, WeatherData } from '../lib/weatherService';
 import EmployeeMap from '../components/EmployeeMap';
 import exifr from 'exifr';
-import { getPersistentBusinessData, savePersistentBusinessData } from '../lib/persistentBusinessData';
+import { getPersistentBusinessData, savePersistentBusinessData, deletePersistentSecurityNote } from '../lib/persistentBusinessData';
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
@@ -818,11 +818,11 @@ export default function RoutesPage() {
             .eq('id', adminId)
             .maybeSingle();
 
-          if (adminUserRow?.whatsapp_settings?.client_security_notes && Object.keys(adminUserRow.whatsapp_settings.client_security_notes).length > 0) {
+          if (adminUserRow?.whatsapp_settings?.client_security_notes !== undefined && adminUserRow?.whatsapp_settings?.client_security_notes !== null) {
             securityNotesByClient = { ...adminUserRow.whatsapp_settings.client_security_notes };
           } else {
             const persistent = await getPersistentBusinessData(adminId);
-            if (persistent.client_security_notes && Object.keys(persistent.client_security_notes).length > 0) {
+            if (persistent.client_security_notes) {
               securityNotesByClient = { ...persistent.client_security_notes };
             }
           }
@@ -868,12 +868,12 @@ export default function RoutesPage() {
   const lastVisitByClient = queryData?.lastVisitByClient || {};
   const securityNotesByClient = queryData?.securityNotesByClient || {};
 
-// Sincroniza avisos fixos locais
-useEffect(() => {
-  if (queryData?.securityNotesByClient) {
-    setLocalSecurityNotes(prev => ({ ...queryData.securityNotesByClient, ...prev }));
-  }
-}, [queryData?.securityNotesByClient]);
+  // Sincroniza avisos fixos locais
+  useEffect(() => {
+    if (queryData?.securityNotesByClient !== undefined) {
+      setLocalSecurityNotes(queryData.securityNotesByClient || {});
+    }
+  }, [queryData?.securityNotesByClient]);
 
   // Sincroniza automaticamente as mensagens não lidas reais
   useEffect(() => {
@@ -1413,35 +1413,47 @@ useEffect(() => {
 
   const handleSaveSecurityNote = async () => {
     if (!selectedClientForSecurity || !userProfile) return;
+    const cid = selectedClientForSecurity.id;
+    const trimmed = securityNoteInput.trim();
+
+    // Se o usuário apagou todo o texto e clicou em salvar, executa exclusão permanente
+    if (!trimmed) {
+      await handleDeleteSecurityNote();
+      return;
+    }
+
     setSavingSecurityNote(true);
     try {
       const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
-      const cid = selectedClientForSecurity.id;
-      const trimmed = securityNoteInput.trim();
 
-      // Atualização otimista imediata na UI
-      setLocalSecurityNotes(prev => {
-        const next = { ...prev };
-        if (trimmed) next[cid] = trimmed;
-        else delete next[cid];
-        return next;
+      // 1. Atualização otimista imediata na UI
+      setLocalSecurityNotes(prev => ({
+        ...prev,
+        [cid]: trimmed
+      }));
+
+      // 2. Atualiza cache do React Query imediatamente
+      queryClient.setQueriesData({ queryKey: ['routeData'] }, (oldData: any) => {
+        if (!oldData) return oldData;
+        return {
+          ...oldData,
+          securityNotesByClient: {
+            ...(oldData.securityNotesByClient || {}),
+            [cid]: trimmed
+          }
+        };
       });
 
-      // Busca whatsapp_settings atual para atualizar com o mapa de avisos de clientes
+      // 3. Busca whatsapp_settings atual para atualizar com o mapa de avisos de clientes
       const { data: userRow } = await supabase
         .from('users')
         .select('whatsapp_settings')
         .eq('id', adminId)
-        .single();
+        .maybeSingle();
 
       const currentSettings = userRow?.whatsapp_settings || {};
       const existingNotes = currentSettings.client_security_notes || {};
-      const updatedNotes = { ...existingNotes };
-      if (trimmed) {
-        updatedNotes[cid] = trimmed;
-      } else {
-        delete updatedNotes[cid];
-      }
+      const updatedNotes = { ...existingNotes, [cid]: trimmed };
 
       const updatedSettings = {
         ...currentSettings,
@@ -1455,10 +1467,24 @@ useEffect(() => {
 
       if (error) throw error;
 
-      // Grava backup permanente em camada dupla
+      // 4. Grava backup permanente em camada dupla
       await savePersistentBusinessData(adminId, {
         client_security_notes: updatedNotes
       });
+
+      // 5. Atualiza cache local da rota no localStorage
+      try {
+        const cacheKey = `cached_routes_${adminId}_${selectedEmployee}_${routeDate}`;
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          parsed.securityNotesByClient = {
+            ...(parsed.securityNotesByClient || {}),
+            [cid]: trimmed
+          };
+          localStorage.setItem(cacheKey, JSON.stringify(parsed));
+        }
+      } catch (e) {}
 
       queryClient.invalidateQueries({ queryKey: ['routeData'] });
       setSecurityModalOpen(false);
@@ -1479,44 +1505,34 @@ useEffect(() => {
       const adminId = isAdmin ? userProfile.uid : userProfile.adminId;
       const cid = selectedClientForSecurity.id;
 
+      // 1. Atualização otimista imediata no estado local
       setLocalSecurityNotes(prev => {
         const next = { ...prev };
         delete next[cid];
         return next;
       });
 
-      const { data: userRow } = await supabase
-        .from('users')
-        .select('whatsapp_settings')
-        .eq('id', adminId)
-        .single();
-
-      const currentSettings = userRow?.whatsapp_settings || {};
-      const existingNotes = currentSettings.client_security_notes || {};
-      const updatedNotes = { ...existingNotes };
-      delete updatedNotes[cid];
-
-      const updatedSettings = {
-        ...currentSettings,
-        client_security_notes: updatedNotes
-      };
-
-      await supabase
-        .from('users')
-        .update({ whatsapp_settings: updatedSettings })
-        .eq('id', adminId);
-
-      // Atualiza o backup permanente
-      await savePersistentBusinessData(adminId, {
-        client_security_notes: updatedNotes
+      // 2. Atualiza cache do React Query imediatamente
+      queryClient.setQueriesData({ queryKey: ['routeData'] }, (oldData: any) => {
+        if (!oldData) return oldData;
+        const updatedNotes = { ...(oldData.securityNotesByClient || {}) };
+        delete updatedNotes[cid];
+        return {
+          ...oldData,
+          securityNotesByClient: updatedNotes
+        };
       });
 
+      // 3. Executa a exclusão definitiva em todas as camadas permanentes (users, backup settings e localStorage)
+      await deletePersistentSecurityNote(adminId, cid);
+
+      // 4. Invalida queries e fecha modal
       queryClient.invalidateQueries({ queryKey: ['routeData'] });
       setSecurityModalOpen(false);
       setSelectedClientForSecurity(null);
     } catch (err: any) {
       console.error('Erro ao excluir aviso:', err);
-      alert('Erro ao excluir aviso.');
+      alert('Erro ao excluir aviso: ' + (err.message || 'Erro inesperado'));
     } finally {
       setSavingSecurityNote(false);
     }

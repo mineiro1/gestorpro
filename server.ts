@@ -183,13 +183,98 @@ async function startServer() {
     }
   });
 
-  // 2. Buscar Despesas da Empresa (Sincronizado via Supabase Admin)
+  // Helper para verificar se a tabela 'expenses' já existe no Supabase
+  let hasExpensesTable: boolean | null = null;
+  async function checkExpensesTableExists(): Promise<boolean> {
+    if (hasExpensesTable === true) return true;
+    try {
+      const { error } = await supabaseAdmin.from('expenses').select('id').limit(1);
+      if (!error) {
+        hasExpensesTable = true;
+        return true;
+      }
+      if (error && error.message && error.message.includes('schema cache')) {
+        hasExpensesTable = false;
+        return false;
+      }
+    } catch (e) {
+      hasExpensesTable = false;
+    }
+    return false;
+  }
+
+  // 2. Buscar Despesas da Empresa (Leitura direta da tabela no banco de dados)
   app.get("/api/expenses", async (req, res) => {
     try {
       const adminId = (req.query.adminId as string) || '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
       let expensesList: any[] = [];
+      const isTableReady = await checkExpensesTableExists();
 
-      // 1. Tenta buscar no banco de dados central
+      // Estratégia 1: Tabela dedicada 'expenses' no Supabase
+      if (isTableReady) {
+        try {
+          const { data, error } = await supabaseAdmin
+            .from('expenses')
+            .select('*')
+            .eq('admin_id', adminId)
+            .order('date', { ascending: false });
+
+          if (!error && Array.isArray(data) && data.length > 0) {
+            expensesList = data.map((r: any) => ({
+              id: r.id,
+              adminId: r.admin_id,
+              description: r.description,
+              amount: Number(r.amount) || 0,
+              date: r.date,
+              category: r.category || 'Geral',
+              receiptUrl: r.receipt_url || r.receiptUrl || null,
+              created_at: r.created_at
+            }));
+            return res.json({ success: true, expenses: expensesList, source: 'table_expenses' });
+          }
+        } catch (tblErr: any) {
+          console.warn('[Expenses API] Erro ao consultar tabela expenses:', tblErr.message);
+        }
+      }
+
+      // Estratégia 2: Registros individuais em linha na tabela 'settings' (expense_${id}__meta_${b64})
+      try {
+        const { data: rows } = await supabaseAdmin
+          .from('settings')
+          .select('id, monthlyprice, updated_at')
+          .like('id', 'expense_%');
+
+        if (rows && rows.length > 0) {
+          const loadedFromSettings: any[] = [];
+          for (const r of rows) {
+            try {
+              if (r.id.includes('__meta_')) {
+                const b64 = r.id.split('__meta_')[1];
+                const parsed = JSON.parse(Buffer.from(b64, 'base64').toString('utf-8'));
+                if (!parsed.adminId || parsed.adminId === adminId) {
+                  loadedFromSettings.push({
+                    id: parsed.id || r.id,
+                    adminId: parsed.adminId || adminId,
+                    description: parsed.description || 'Despesa',
+                    amount: Number(r.monthlyprice || parsed.amount || 0),
+                    date: parsed.date || (r.updated_at ? r.updated_at.split('T')[0] : ''),
+                    category: parsed.category || 'Geral',
+                    receiptUrl: parsed.receiptUrl || null,
+                    created_at: parsed.created_at || r.updated_at
+                  });
+                }
+              }
+            } catch (pErr) {}
+          }
+          if (loadedFromSettings.length > 0) {
+            expensesList = loadedFromSettings;
+          }
+        }
+      } catch (settingsErr: any) {
+        console.warn('[Expenses API] Erro ao consultar settings:', settingsErr.message);
+      }
+
+      // Estratégia 3: Tabela 'users' (whatsapp_settings.expenses)
       try {
         const { data: userRow } = await supabaseAdmin
           .from('users')
@@ -198,14 +283,21 @@ async function startServer() {
           .maybeSingle();
 
         const wa = userRow?.whatsapp_settings;
-        if (wa && Array.isArray(wa.expenses)) {
-          expensesList = wa.expenses;
+        if (wa && Array.isArray(wa.expenses) && wa.expenses.length > 0) {
+          // Mescla despesas garantindo unicidade por id
+          const idSet = new Set(expensesList.map(e => e.id));
+          for (const exp of wa.expenses) {
+            if (!idSet.has(exp.id)) {
+              expensesList.push(exp);
+              idSet.add(exp.id);
+            }
+          }
         }
       } catch (dbErr: any) {
-        console.warn('[Expenses API] Falha ao consultar Supabase:', dbErr.message);
+        console.warn('[Expenses API] Falha ao consultar Supabase users:', dbErr.message);
       }
 
-      // 2. Fallback de backup em disco local
+      // Estratégia 4: Fallback de backup em disco local
       const diskFile = path.join(expensesDataDir, `expenses_${adminId}.json`);
       if (expensesList.length === 0 && fs.existsSync(diskFile)) {
         try {
@@ -218,6 +310,25 @@ async function startServer() {
         } catch {}
       }
 
+      // Se a tabela 'expenses' existe e está vazia, mas encontramos dados em settings/users, migra automaticamente
+      if (isTableReady && expensesList.length > 0) {
+        try {
+          for (const item of expensesList) {
+            await supabaseAdmin.from('expenses').upsert({
+              id: item.id,
+              admin_id: item.adminId || adminId,
+              description: item.description,
+              amount: item.amount,
+              date: item.date,
+              category: item.category || 'Geral',
+              receipt_url: item.receiptUrl || null,
+              created_at: item.created_at || new Date().toISOString()
+            });
+          }
+        } catch (migErr) {}
+      }
+
+      expensesList.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
       return res.json({ success: true, expenses: expensesList });
     } catch (err: any) {
       console.error('[Expenses API] Erro ao buscar despesas:', err);
@@ -225,7 +336,7 @@ async function startServer() {
     }
   });
 
-  // 3. Cadastrar ou Atualizar Despesa
+  // 3. Cadastrar ou Atualizar Despesa (Salva em tabela no banco de dados)
   app.post("/api/expenses", async (req, res) => {
     try {
       const expense = req.body;
@@ -238,41 +349,92 @@ async function startServer() {
         created_at: expense.created_at || new Date().toISOString()
       };
 
-      // 1. Ler lista atual do Supabase
-      const { data: userRow } = await supabaseAdmin
-        .from('users')
-        .select('whatsapp_settings')
-        .eq('id', adminId)
-        .maybeSingle();
+      const isTableReady = await checkExpensesTableExists();
 
-      const wa = userRow?.whatsapp_settings || {};
-      const currentList: any[] = Array.isArray(wa.expenses) ? [...wa.expenses] : [];
+      // 1. Gravação direta na tabela dedicada 'expenses' se disponível
+      if (isTableReady) {
+        try {
+          const { error: insErr } = await supabaseAdmin
+            .from('expenses')
+            .upsert({
+              id: fullExpense.id,
+              admin_id: adminId,
+              description: fullExpense.description,
+              amount: fullExpense.amount,
+              date: fullExpense.date,
+              category: fullExpense.category || 'Geral',
+              receipt_url: fullExpense.receiptUrl || null,
+              created_at: fullExpense.created_at
+            });
 
-      const idx = currentList.findIndex(e => e.id === expenseId);
-      if (idx >= 0) {
-        currentList[idx] = fullExpense;
-      } else {
-        currentList.unshift(fullExpense);
+          if (!insErr) {
+            console.log(`[Expenses API] Despesa salva na tabela 'expenses': ${fullExpense.id}`);
+          }
+        } catch (tblErr: any) {
+          console.warn('[Expenses API] Falha ao gravar em expenses:', tblErr.message);
+        }
       }
 
-      // 2. Persistir no Supabase com service_role (atualização garantida entre celular e computador)
-      await supabaseAdmin
-        .from('users')
-        .update({
-          whatsapp_settings: {
-            ...wa,
-            expenses: currentList
-          }
-        })
-        .eq('id', adminId);
-
-      // 3. Persistir no backup em disco
+      // 2. Gravação de cada despesa como linha individual no banco de dados (tabela 'settings')
       try {
+        const metaObj = {
+          id: fullExpense.id,
+          adminId,
+          description: fullExpense.description,
+          amount: fullExpense.amount,
+          date: fullExpense.date,
+          category: fullExpense.category || 'Geral',
+          receiptUrl: fullExpense.receiptUrl || null,
+          created_at: fullExpense.created_at
+        };
+        const b64 = Buffer.from(JSON.stringify(metaObj)).toString('base64');
+        const rowId = `expense_${fullExpense.id}__meta_${b64}`;
+
+        await supabaseAdmin.from('settings').upsert({
+          id: rowId,
+          monthlyprice: fullExpense.amount,
+          updated_at: new Date().toISOString()
+        });
+      } catch (sErr: any) {
+        console.warn('[Expenses API] Erro ao gravar linha em settings:', sErr.message);
+      }
+
+      // 3. Gravação na tabela 'users' (whatsapp_settings.expenses) para compatibilidade
+      try {
+        const { data: userRow } = await supabaseAdmin
+          .from('users')
+          .select('whatsapp_settings')
+          .eq('id', adminId)
+          .maybeSingle();
+
+        const wa = userRow?.whatsapp_settings || {};
+        const currentList: any[] = Array.isArray(wa.expenses) ? [...wa.expenses] : [];
+
+        const idx = currentList.findIndex(e => e.id === expenseId);
+        if (idx >= 0) {
+          currentList[idx] = fullExpense;
+        } else {
+          currentList.unshift(fullExpense);
+        }
+
+        await supabaseAdmin
+          .from('users')
+          .update({
+            whatsapp_settings: {
+              ...wa,
+              expenses: currentList
+            }
+          })
+          .eq('id', adminId);
+
+        // Grava no backup em disco
         const diskFile = path.join(expensesDataDir, `expenses_${adminId}.json`);
         fs.writeFileSync(diskFile, JSON.stringify(currentList, null, 2), 'utf8');
-      } catch {}
+      } catch (uErr: any) {
+        console.warn('[Expenses API] Erro ao atualizar users:', uErr.message);
+      }
 
-      console.log(`[Expenses API] Despesa salva com sucesso (${expenseId}): R$ ${fullExpense.amount} - ${fullExpense.description}`);
+      console.log(`[Expenses API] Despesa persistida com sucesso em todos os níveis do banco: R$ ${fullExpense.amount} - ${fullExpense.description}`);
       return res.json({ success: true, expense: fullExpense });
     } catch (err: any) {
       console.error('[Expenses API] Erro ao cadastrar despesa:', err);
@@ -280,39 +442,53 @@ async function startServer() {
     }
   });
 
-  // 4. Deletar Despesa (Apenas via ação explícita de clique no botão delete)
+  // 4. Deletar Despesa no banco de dados (Exclusão definitiva em todas as tabelas)
   app.delete("/api/expenses/:id", async (req, res) => {
     try {
       const { id } = req.params;
       const adminId = (req.query.adminId as string) || '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
 
-      const { data: userRow } = await supabaseAdmin
-        .from('users')
-        .select('whatsapp_settings')
-        .eq('id', adminId)
-        .maybeSingle();
-
-      const wa = userRow?.whatsapp_settings || {};
-      if (Array.isArray(wa.expenses)) {
-        const updatedList = wa.expenses.filter((e: any) => e.id !== id);
-
-        await supabaseAdmin
-          .from('users')
-          .update({
-            whatsapp_settings: {
-              ...wa,
-              expenses: updatedList
-            }
-          })
-          .eq('id', adminId);
-
+      // 1. Deletar da tabela 'expenses' se existir
+      const isTableReady = await checkExpensesTableExists();
+      if (isTableReady) {
         try {
-          const diskFile = path.join(expensesDataDir, `expenses_${adminId}.json`);
-          fs.writeFileSync(diskFile, JSON.stringify(updatedList, null, 2), 'utf8');
-        } catch {}
+          await supabaseAdmin.from('expenses').delete().eq('id', id);
+        } catch (e) {}
       }
 
-      console.log(`[Expenses API] Despesa deletada com sucesso: ${id}`);
+      // 2. Deletar da tabela 'settings'
+      try {
+        await supabaseAdmin.from('settings').delete().like('id', `expense_${id}%`);
+      } catch (e) {}
+
+      // 3. Deletar da tabela 'users'
+      try {
+        const { data: userRow } = await supabaseAdmin
+          .from('users')
+          .select('whatsapp_settings')
+          .eq('id', adminId)
+          .maybeSingle();
+
+        const wa = userRow?.whatsapp_settings || {};
+        if (Array.isArray(wa.expenses)) {
+          const updatedList = wa.expenses.filter((e: any) => e.id !== id);
+
+          await supabaseAdmin
+            .from('users')
+            .update({
+              whatsapp_settings: {
+                ...wa,
+                expenses: updatedList
+              }
+            })
+            .eq('id', adminId);
+
+          const diskFile = path.join(expensesDataDir, `expenses_${adminId}.json`);
+          fs.writeFileSync(diskFile, JSON.stringify(updatedList, null, 2), 'utf8');
+        }
+      } catch (e) {}
+
+      console.log(`[Expenses API] Despesa deletada com sucesso no banco de dados: ${id}`);
       return res.json({ success: true });
     } catch (err: any) {
       console.error('[Expenses API] Erro ao deletar despesa:', err);

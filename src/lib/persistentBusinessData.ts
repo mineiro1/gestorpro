@@ -15,9 +15,9 @@ export const DEFAULT_PIX_RECEIVER = 'Renivaldo Servin dos Santos Ltda ';
 /**
  * Loads persistent business data (PIX key, receiver name, client security notes)
  * with multi-tier fallback:
- * 1. Database users.whatsapp_settings
- * 2. Database settings backup table (biz_backup__meta_*)
- * 3. LocalStorage persistence
+ * 1. Database users.whatsapp_settings (source of truth)
+ * 2. Database settings backup table (biz_backup__meta_*) as fallback only
+ * 3. LocalStorage persistence as offline fallback only
  * 4. Hardcoded verified defaults
  */
 export async function getPersistentBusinessData(adminId?: string): Promise<PersistentBusinessData> {
@@ -30,6 +30,7 @@ export async function getPersistentBusinessData(adminId?: string): Promise<Persi
   };
 
   const targetId = adminId || '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
+  let notesFoundInUsers = false;
 
   // 1. Tentar ler da tabela users (whatsapp_settings)
   try {
@@ -45,57 +46,56 @@ export async function getPersistentBusinessData(adminId?: string): Promise<Persi
       if (wa.pixReceiverName) result.pixReceiverName = wa.pixReceiverName;
       if (wa.pixKeyType) result.pixKeyType = wa.pixKeyType;
       if (wa.autoAppendPix !== undefined) result.autoAppendPix = wa.autoAppendPix;
-      if (wa.client_security_notes && Object.keys(wa.client_security_notes).length > 0) {
+      if (wa.client_security_notes !== undefined && wa.client_security_notes !== null) {
         result.client_security_notes = { ...wa.client_security_notes };
+        notesFoundInUsers = true;
       }
     }
   } catch (e) {
     console.warn('[PersistentBizData] Erro ao ler users:', e);
   }
 
-  // 2. Tentar ler do backup permanente na tabela settings
-  try {
-    const { data: backupRows } = await supabase
-      .from('settings')
-      .select('id, updated_at')
-      .like('id', 'biz_backup__meta_%')
-      .order('updated_at', { ascending: false })
-      .limit(1);
+  // 2. Tentar ler do backup permanente na tabela settings APENAS se não encontrou em users
+  if (!notesFoundInUsers || !result.pixKey || !result.pixReceiverName) {
+    try {
+      const { data: backupRows } = await supabase
+        .from('settings')
+        .select('id, updated_at')
+        .like('id', 'biz_backup__meta_%')
+        .order('updated_at', { ascending: false })
+        .limit(1);
 
-    if (backupRows && backupRows.length > 0 && backupRows[0].id) {
-      const b64 = backupRows[0].id.replace('biz_backup__meta_', '');
-      const jsonStr = decodeURIComponent(escape(atob(b64)));
-      const parsed = JSON.parse(jsonStr);
-      if (!result.pixKey && parsed.pixKey) result.pixKey = parsed.pixKey;
-      if (!result.pixReceiverName && parsed.pixReceiverName) result.pixReceiverName = parsed.pixReceiverName;
-      if (parsed.client_security_notes) {
-        result.client_security_notes = {
-          ...parsed.client_security_notes,
-          ...result.client_security_notes
-        };
+      if (backupRows && backupRows.length > 0 && backupRows[0].id) {
+        const b64 = backupRows[0].id.replace('biz_backup__meta_', '');
+        const jsonStr = decodeURIComponent(escape(atob(b64)));
+        const parsed = JSON.parse(jsonStr);
+        if (!result.pixKey && parsed.pixKey) result.pixKey = parsed.pixKey;
+        if (!result.pixReceiverName && parsed.pixReceiverName) result.pixReceiverName = parsed.pixReceiverName;
+        if (!notesFoundInUsers && parsed.client_security_notes !== undefined) {
+          result.client_security_notes = { ...parsed.client_security_notes };
+        }
       }
+    } catch (e) {
+      console.warn('[PersistentBizData] Erro ao ler backup de settings:', e);
     }
-  } catch (e) {
-    console.warn('[PersistentBizData] Erro ao ler backup de settings:', e);
   }
 
-  // 3. Fallback de localStorage
-  try {
-    const local = localStorage.getItem('rs_persistent_biz_data');
-    if (local) {
-      const parsed = JSON.parse(local);
-      if (!result.pixKey && parsed.pixKey) result.pixKey = parsed.pixKey;
-      if (!result.pixReceiverName && parsed.pixReceiverName) result.pixReceiverName = parsed.pixReceiverName;
-      if (parsed.client_security_notes) {
-        result.client_security_notes = {
-          ...parsed.client_security_notes,
-          ...result.client_security_notes
-        };
+  // 3. Fallback de localStorage APENAS se ainda não tiver localizado
+  if (!notesFoundInUsers || !result.pixKey || !result.pixReceiverName) {
+    try {
+      const local = localStorage.getItem('rs_persistent_biz_data');
+      if (local) {
+        const parsed = JSON.parse(local);
+        if (!result.pixKey && parsed.pixKey) result.pixKey = parsed.pixKey;
+        if (!result.pixReceiverName && parsed.pixReceiverName) result.pixReceiverName = parsed.pixReceiverName;
+        if (!notesFoundInUsers && parsed.client_security_notes !== undefined) {
+          result.client_security_notes = { ...parsed.client_security_notes };
+        }
       }
-    }
-  } catch (e) {}
+    } catch (e) {}
+  }
 
-  // Salva no cache local
+  // Salva no cache local o estado limpo
   try {
     localStorage.setItem('rs_persistent_biz_data', JSON.stringify(result));
   } catch (e) {}
@@ -119,16 +119,10 @@ export async function savePersistentBusinessData(
     pixReceiverName: updates.pixReceiverName !== undefined ? updates.pixReceiverName : (current.pixReceiverName || DEFAULT_PIX_RECEIVER),
     pixKeyType: updates.pixKeyType !== undefined ? updates.pixKeyType : current.pixKeyType,
     autoAppendPix: updates.autoAppendPix !== undefined ? updates.autoAppendPix : current.autoAppendPix,
-    client_security_notes: {
-      ...current.client_security_notes,
-      ...(updates.client_security_notes || {})
-    }
+    client_security_notes: updates.client_security_notes !== undefined
+      ? { ...updates.client_security_notes }
+      : { ...current.client_security_notes }
   };
-
-  // Se uma chave específica de aviso foi excluída explicitamente
-  if (updates.client_security_notes && Object.keys(updates.client_security_notes).length === 0) {
-    // Permite exclusão se passado objeto com exclusão intencional
-  }
 
   // 1. Atualiza na tabela users fazendo merge com os whatsapp_settings existentes
   try {
@@ -161,7 +155,7 @@ export async function savePersistentBusinessData(
     const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(merged))));
     const backupId = `biz_backup__meta_${b64}`;
 
-    // Limpa backups anteriores para não acumular
+    // Limpa backups anteriores para não acumular nem ressuscitar dados apagados
     const { data: oldBackups } = await supabase
       .from('settings')
       .select('id')
@@ -186,4 +180,65 @@ export async function savePersistentBusinessData(
   } catch (e) {}
 
   return merged;
+}
+
+/**
+ * Permanently deletes a specific client's security note across all tiers:
+ * 1. Database users.whatsapp_settings.client_security_notes
+ * 2. Database settings backup table (biz_backup__meta_*)
+ * 3. localStorage (rs_persistent_biz_data and cached_routes_*)
+ */
+export async function deletePersistentSecurityNote(
+  adminId: string,
+  clientId: string
+): Promise<Record<string, string>> {
+  const targetAdminId = adminId || '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
+
+  // 1. Obter os avisos atuais diretamente da tabela users
+  let currentNotes: Record<string, string> = {};
+  try {
+    const { data: userRow } = await supabase
+      .from('users')
+      .select('whatsapp_settings')
+      .eq('id', targetAdminId)
+      .maybeSingle();
+
+    if (userRow?.whatsapp_settings?.client_security_notes) {
+      currentNotes = { ...userRow.whatsapp_settings.client_security_notes };
+    } else {
+      const biz = await getPersistentBusinessData(targetAdminId);
+      currentNotes = { ...(biz.client_security_notes || {}) };
+    }
+  } catch (e) {
+    console.warn('[deletePersistentSecurityNote] Erro ao buscar avisos atuais:', e);
+  }
+
+  // Remove permanentemente o aviso do cliente
+  delete currentNotes[clientId];
+
+  // 2. Salva a nova lista em todas as camadas (users, settings backup, localStorage)
+  await savePersistentBusinessData(targetAdminId, {
+    client_security_notes: currentNotes
+  });
+
+  // 3. Limpa dos caches de rotas locais no localStorage para não haver ressuscitação por cache offline
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('cached_routes_')) {
+        try {
+          const raw = localStorage.getItem(key);
+          if (raw && raw.includes(clientId)) {
+            const parsed = JSON.parse(raw);
+            if (parsed.securityNotesByClient && parsed.securityNotesByClient[clientId]) {
+              delete parsed.securityNotesByClient[clientId];
+              localStorage.setItem(key, JSON.stringify(parsed));
+            }
+          }
+        } catch (subErr) {}
+      }
+    }
+  } catch (e) {}
+
+  return currentNotes;
 }
