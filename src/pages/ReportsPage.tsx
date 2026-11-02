@@ -23,7 +23,10 @@ import {
   Briefcase,
   Layers,
   Search,
-  Filter
+  Filter,
+  Share2,
+  ExternalLink,
+  MessageCircle
 } from 'lucide-react';
 
 interface PaymentItem {
@@ -50,8 +53,7 @@ export default function ReportsPage() {
 
   const [payments, setPayments] = useState<PaymentItem[]>([]);
   const [expenses, setExpenses] = useState<ExpenseItem[]>([]);
-  const [activeContractTotal, setActiveContractTotal] = useState(0);
-  const [activeClientsCount, setActiveClientsCount] = useState(0);
+  const [allClients, setAllClients] = useState<any[]>([]);
 
   // Search filter
   const [searchTerm, setSearchTerm] = useState('');
@@ -61,6 +63,12 @@ export default function ReportsPage() {
 
   // Modal de Impressão e Emissão do Relatório Oficial
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3500);
+  };
 
   const loadReportData = async () => {
     if (!targetAdminId) return;
@@ -73,10 +81,10 @@ export default function ReportsPage() {
         .select('*')
         .eq('admin_id', targetAdminId);
 
-      // 2. Carregar Clientes para cruzar os nomes e meta contratual
+      // 2. Carregar Clientes com todas as datas e histórico para apurar meta da época
       const clientsQuery = supabase
         .from('clients')
-        .select('id, name, monthly_price, monthly_fee, active')
+        .select('*')
         .eq('admin_id', targetAdminId);
 
       // 3. Carregar Ordens de Serviço Avulsas
@@ -96,21 +104,14 @@ export default function ReportsPage() {
       ]);
 
       const clientMap = new Map<string, string>();
-      let contractSum = 0;
-      let activeCount = 0;
 
       if (clientsRes.data) {
+        setAllClients(clientsRes.data);
         clientsRes.data.forEach((c: any) => {
           clientMap.set(c.id, c.name);
-          if (c.active !== false) {
-            activeCount++;
-            contractSum += Number(c.monthly_price ?? c.monthly_fee ?? 0);
-          }
         });
       }
 
-      setActiveClientsCount(activeCount);
-      setActiveContractTotal(contractSum);
       setExpenses(loadedExpenses);
 
       // Monta lista de recebimentos (mensalidades + avulsos)
@@ -218,9 +219,108 @@ export default function ReportsPage() {
     return list.sort((a, b) => b.amount - a.amount);
   }, [monthExpenses, totalMonthExpenses]);
 
-  // Histórico comparativo dos últimos 6 meses
+  const currentMonthKey = useMemo(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  }, []);
+
+  // Função utilitária para verificar se um cliente estava ATIVO ou com CONTRATO VIGENTE em um determinado mês (YYYY-MM)
+  const isClientActiveInMonth = (client: any, targetMonthKey: string) => {
+    // 1. Data de criação/início: o cliente precisa já ter sido cadastrado até aquele mês
+    const rawCreatedAt = client.created_at || client.start_date;
+    if (rawCreatedAt) {
+      const createdMonthKey = String(rawCreatedAt).substring(0, 7);
+      if (createdMonthKey > targetMonthKey) {
+        return false; // Não existia ainda nessa época
+      }
+    }
+
+    // 2. Se o cliente efetuou pagamento no mês em questão:
+    // Exemplo: o cliente pagou a mensalidade do mês e só depois foi inativado.
+    // Como ele pagou no mês, o contrato dele estava vigente e recebido naquele período, devendo compor a meta!
+    const hasPaymentInMonth = payments.some(
+      p => p.client_id === client.id && p.paid_date && p.paid_date.startsWith(targetMonthKey)
+    );
+    if (hasPaymentInMonth) {
+      return true;
+    }
+
+    // 3. Se o cliente NÃO pagou no mês consultado:
+    const isCurrentlyInactive = client.active === false || client.status === 'inactive' || client.status === 'inativo';
+
+    // Se a consulta for para o mês atual ou futuro e ele não pagou e está inativo hoje, não é ativo
+    if (targetMonthKey >= currentMonthKey) {
+      return !isCurrentlyInactive;
+    }
+
+    // Se a consulta for para um mês passado e ele não pagou no mês:
+    if (isCurrentlyInactive) {
+      const rawInact = client.inactivated_at;
+      if (rawInact) {
+        const inactMonthKey = String(rawInact).substring(0, 7);
+        // Se a inativação ocorreu no próprio mês consultado ou antes dele e ele não pagou, NÃO era ativo
+        if (inactMonthKey <= targetMonthKey) {
+          return false;
+        }
+        // Se a inativação ocorreu somente em mês posterior e ainda não tinha sido inativado naquele mês, estava ativo
+        return true;
+      }
+      // Se está inativo hoje e não há data de inativação registrada e não pagou no mês: não ativo
+      return false;
+    }
+
+    // Cliente está ativo hoje e já havia sido cadastrado na época
+    return true;
+  };
+
+  // Meta Contratual Dinâmica e Contagem de Clientes Ativos NA ÉPOCA (no mês selecionado)
+  const monthContractStats = useMemo(() => {
+    let count = 0;
+    let totalTarget = 0;
+    const countedClientIds = new Set<string>();
+
+    allClients.forEach((client: any) => {
+      if (!isClientActiveInMonth(client, selectedMonth)) {
+        return;
+      }
+
+      countedClientIds.add(client.id);
+      let price = Number(client.monthly_price ?? client.monthly_fee ?? 0);
+
+      // Se o valor do contrato estiver zerado mas o cliente pagou mensalidade no mês, recupera pelo valor do pagamento
+      if (price <= 0) {
+        const pay = payments.find(
+          p => p.client_id === client.id && p.paid_date && p.paid_date.startsWith(selectedMonth)
+        );
+        if (pay && pay.amount > 0) {
+          price = pay.amount;
+        }
+      }
+
+      count++;
+      totalTarget += price;
+    });
+
+    // Garante que se houver algum pagamento de mensalidade de cliente no mês que não está no cadastro, também seja considerado
+    payments.forEach(p => {
+      if (p.paid_date && p.paid_date.startsWith(selectedMonth) && p.type === 'mensalidade') {
+        if (p.client_id && !countedClientIds.has(p.client_id)) {
+          countedClientIds.add(p.client_id);
+          count++;
+          totalTarget += p.amount;
+        }
+      }
+    });
+
+    return {
+      activeCount: count,
+      contractTarget: totalTarget
+    };
+  }, [allClients, payments, selectedMonth, currentMonthKey]);
+
+  // Histórico comparativo dos últimos 6 meses com cálculo de meta histórica para cada mês
   const historyMonths = useMemo(() => {
-    const months: { label: string; key: string; revenue: number; expense: number; balance: number }[] = [];
+    const months: { label: string; key: string; revenue: number; expense: number; balance: number; target: number; activeClients: number }[] = [];
     const [selYear, selMonth] = selectedMonth.split('-').map(Number);
 
     for (let i = 5; i >= 0; i--) {
@@ -239,17 +339,49 @@ export default function ReportsPage() {
         })
         .reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
 
+      let hCount = 0;
+      let hTarget = 0;
+      const hCountedIds = new Set<string>();
+
+      allClients.forEach((client: any) => {
+        if (!isClientActiveInMonth(client, key)) {
+          return;
+        }
+        hCountedIds.add(client.id);
+        let price = Number(client.monthly_price ?? client.monthly_fee ?? 0);
+        if (price <= 0) {
+          const pay = payments.find(p => p.client_id === client.id && p.paid_date && p.paid_date.startsWith(key));
+          if (pay && pay.amount > 0) {
+            price = pay.amount;
+          }
+        }
+        hCount++;
+        hTarget += price;
+      });
+
+      payments.forEach(p => {
+        if (p.paid_date && p.paid_date.startsWith(key) && p.type === 'mensalidade') {
+          if (p.client_id && !hCountedIds.has(p.client_id)) {
+            hCountedIds.add(p.client_id);
+            hCount++;
+            hTarget += p.amount;
+          }
+        }
+      });
+
       months.push({
         label,
         key,
         revenue: rev,
         expense: exp,
-        balance: rev - exp
+        balance: rev - exp,
+        target: hTarget,
+        activeClients: hCount
       });
     }
 
     return months;
-  }, [payments, expenses, selectedMonth]);
+  }, [payments, expenses, allClients, selectedMonth, currentMonthKey]);
 
   const formatCurrency = (val: number) => {
     return val.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -265,6 +397,7 @@ export default function ReportsPage() {
     }
   };
 
+  // HTML Oficial de Impressão (A4 Executivo)
   const generatePrintableHtml = () => {
     const monthName = getMonthFormattedName().toUpperCase();
     const companyName = userProfile?.whatsappSettings?.companyName || "RS Piscinas";
@@ -274,11 +407,12 @@ export default function ReportsPage() {
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
-  <title>Relatório Financeiro Consolidado - ${monthName} - ${companyName}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Relatório Financeiro - ${monthName} - ${companyName}</title>
   <style>
     @page { size: A4 portrait; margin: 12mm 15mm; }
     * { box-sizing: border-box; }
-    body { font-family: Arial, Helvetica, sans-serif; color: #1e293b; margin: 0; padding: 0; font-size: 11.5px; line-height: 1.4; background: #fff; }
+    body { font-family: -apple-system, BlinkMacSystemFont, Arial, sans-serif; color: #1e293b; margin: 0; padding: 16px; font-size: 11.5px; line-height: 1.4; background: #fff; }
     .header { border-bottom: 2.5px solid #0284c7; padding-bottom: 12px; margin-bottom: 18px; display: flex; justify-content: space-between; align-items: flex-start; }
     .title { font-size: 20px; font-weight: 900; color: #0f172a; margin: 0; text-transform: uppercase; letter-spacing: -0.5px; }
     .subtitle { font-size: 12px; color: #64748b; font-weight: bold; margin-top: 3px; }
@@ -346,9 +480,9 @@ export default function ReportsPage() {
       <div class="c-sub">Margem Líquida: ${profitMargin}%</div>
     </div>
     <div class="card">
-      <div class="card-label">Meta Contratual Prevista</div>
-      <div class="card-value c-blue">${formatCurrency(activeContractTotal)}</div>
-      <div class="c-sub">${activeClientsCount} clientes ativos</div>
+      <div class="card-label">Meta da Época (${monthName})</div>
+      <div class="card-value c-blue">${formatCurrency(monthContractStats.contractTarget)}</div>
+      <div class="c-sub">${monthContractStats.activeCount} clientes ativos na época</div>
     </div>
   </div>
 
@@ -428,9 +562,28 @@ export default function ReportsPage() {
 </html>`;
   };
 
+  // Disparo de Impressão Direta (Compatível com Desktop e Mobile)
   const executeDirectPrint = () => {
     try {
-      // 1. Tenta impressão via iframe isolado (bypassa sandbox restrictions do iframe pai)
+      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      const htmlContent = generatePrintableHtml();
+
+      if (isMobile) {
+        // No celular, abre o documento diretamente em nova janela para usar Compartilhar > Imprimir / Salvar PDF nativo
+        const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const win = window.open(url, '_blank');
+        if (!win) {
+          // Se popup for bloqueado, faz download automático
+          handleDownloadPrintHtml();
+        } else {
+          showToast('Relatório aberto para visualização e impressão nativa!');
+        }
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+        return;
+      }
+
+      // Em desktop, usa o frame oculto para abrir a janela de impressão
       const existingFrame = document.getElementById('print-report-iframe');
       if (existingFrame) existingFrame.remove();
 
@@ -447,7 +600,7 @@ export default function ReportsPage() {
       const frameDoc = printFrame.contentWindow?.document || printFrame.contentDocument;
       if (frameDoc) {
         frameDoc.open();
-        frameDoc.write(generatePrintableHtml());
+        frameDoc.write(htmlContent);
         frameDoc.close();
 
         setTimeout(() => {
@@ -455,64 +608,97 @@ export default function ReportsPage() {
             printFrame.contentWindow?.focus();
             printFrame.contentWindow?.print();
           } catch (e) {
-            console.warn('iframe print falhou, tentando fallback window.print():', e);
+            console.warn('Iframe print bloqueado por sandbox, executando window.print:', e);
             window.print();
           }
           setTimeout(() => {
             try {
               document.body.removeChild(printFrame);
             } catch {}
-          }, 3000);
-        }, 400);
+          }, 4000);
+        }, 500);
       }
     } catch (err) {
-      console.warn('Erro ao disparar impressão direta:', err);
-      // Fallback
+      console.warn('Fallback para window.print:', err);
       window.print();
     }
   };
 
+  // Download do arquivo HTML do relatório (Sem cancelamento prematuro de blob)
   const handleDownloadPrintHtml = () => {
-    const htmlContent = generatePrintableHtml();
-    const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `Relatorio_Financeiro_${selectedMonth}.html`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    try {
+      const htmlContent = generatePrintableHtml();
+      const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `Relatorio_Financeiro_${selectedMonth}.html`);
+      document.body.appendChild(link);
+      link.click();
+      showToast('Download do relatório iniciado com sucesso!');
+      setTimeout(() => {
+        try {
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+        } catch {}
+      }, 30000);
+    } catch (err) {
+      console.error('Erro ao baixar relatório:', err);
+      alert('Não foi possível iniciar o download. Tente novamente.');
+    }
+  };
+
+  // Compartilhar Resumo Formatado no WhatsApp
+  const handleShareWhatsApp = () => {
+    const monthName = getMonthFormattedName().toUpperCase();
+    const company = userProfile?.whatsappSettings?.companyName || "RS Piscinas";
+    
+    const message = `📊 *${company} - RELATÓRIO FINANCEIRO (${monthName})*\n\n` +
+      `💰 *Total Recebido (Entradas):* ${formatCurrency(totalRevenues)}\n` +
+      `   • Mensalidades: ${formatCurrency(totalMonthlyPlanRevenue)}\n` +
+      `   • Serviços Avulsos: ${formatCurrency(totalOneOffRevenue)}\n\n` +
+      `🔻 *Total Despesas (Saídas):* - ${formatCurrency(totalMonthExpenses)} (${monthExpenses.length} lançamentos)\n\n` +
+      `📈 *Resultado Líquido:* ${formatCurrency(netBalance)} (${isProfitable ? 'Lucro' : 'Déficit'} - Margem: ${profitMargin}%)\n\n` +
+      `🎯 *Meta Contratual da Época:* ${formatCurrency(monthContractStats.contractTarget)} (${monthContractStats.activeCount} clientes ativos em ${monthName})\n\n` +
+      `📅 _Emitido em ${new Date().toLocaleDateString('pt-BR')} via Sistema de Gestão RS Piscinas_`;
+
+    const encoded = encodeURIComponent(message);
+    window.open(`https://api.whatsapp.com/send?text=${encoded}`, '_blank');
   };
 
   const handlePrint = () => {
-    // Abre a visualização prévia oficial de impressão
     setIsPrintModalOpen(true);
-    // E tenta disparar a impressão imediatamente
-    executeDirectPrint();
   };
 
   const handleExportCSV = () => {
-    const rows = [
-      ['Tipo', 'Data', 'Identificador / Descricao', 'Categoria / Metodo', 'Valor (R$)']
-    ];
+    try {
+      const rows = [
+        ['Tipo', 'Data', 'Identificador / Descricao', 'Categoria / Metodo', 'Valor (R$)']
+      ];
 
-    monthPayments.forEach(p => {
-      rows.push(['RECEITA', p.paid_date, `"${p.client_name}"`, `"${p.type === 'mensalidade' ? 'Mensalidade' : 'Serviço Avulso'}"`, String(p.amount.toFixed(2))]);
-    });
+      monthPayments.forEach(p => {
+        rows.push(['RECEITA', p.paid_date, `"${(p.client_name || '').replace(/"/g, '""')}"`, `"${p.type === 'mensalidade' ? 'Mensalidade' : 'Serviço Avulso'}"`, String(p.amount.toFixed(2))]);
+      });
 
-    monthExpenses.forEach(e => {
-      rows.push(['DESPESA', e.date || '', `"${e.description}"`, `"${e.category || 'Geral'}"`, `-${Number(e.amount).toFixed(2)}`]);
-    });
+      monthExpenses.forEach(e => {
+        rows.push(['DESPESA', e.date || '', `"${(e.description || '').replace(/"/g, '""')}"`, `"${e.category || 'Geral'}"`, `-${Number(e.amount).toFixed(2)}`]);
+      });
 
-    const csvContent = "data:text/csv;charset=utf-8," + rows.map(e => e.join(",")).join("\n");
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `relatorio_financeiro_${selectedMonth}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+      const csvContent = "data:text/csv;charset=utf-8," + encodeURIComponent(rows.map(e => e.join(";")).join("\n"));
+      const link = document.createElement("a");
+      link.setAttribute("href", csvContent);
+      link.setAttribute("download", `relatorio_financeiro_${selectedMonth}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      showToast('Planilha CSV exportada com sucesso!');
+      setTimeout(() => {
+        try {
+          document.body.removeChild(link);
+        } catch {}
+      }, 5000);
+    } catch (err) {
+      console.error('Erro ao exportar CSV:', err);
+    }
   };
 
   // Filtragem de busca nas abas de receitas e despesas
@@ -537,78 +723,102 @@ export default function ReportsPage() {
   }, [monthExpenses, searchTerm]);
 
   return (
-    <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6 animate-in fade-in duration-300">
-      {/* Header com Alto Contraste */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-5">
+    <div className="max-w-7xl mx-auto space-y-4 sm:space-y-6 pb-24 overflow-x-hidden animate-in fade-in duration-300">
+      
+      {/* Toast Feedback */}
+      {toastMessage && (
+        <div className="fixed top-4 right-4 z-[110] bg-slate-900 text-white px-4 py-2.5 rounded-2xl shadow-2xl border border-slate-700 text-xs font-bold flex items-center gap-2 animate-in fade-in slide-in-from-top-2">
+          <CheckCircle2 size={16} className="text-emerald-400" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
+      {/* Header com Alto Contraste e Responsividade Mobile */}
+      <div className="flex flex-col gap-4 border-b border-slate-200 pb-4">
         <div>
-          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-sky-600 mb-1">
-            <BarChart3 size={16} />
+          <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-sky-600 mb-1">
+            <BarChart3 size={15} />
             Controladoria & Inteligência Financeira
           </div>
-          <h1 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight flex items-center gap-3">
+          <h1 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
             Relatório Financeiro Mensal
           </h1>
-          <p className="text-sm text-slate-600 mt-1">
-            Consulte receitas recebidas, despesas lançadas e o resultado operacional consolidado de cada mês.
+          <p className="text-xs sm:text-sm text-slate-600 mt-0.5">
+            Consulte receitas recebidas, despesas lançadas e o resultado operacional consolidado.
           </p>
         </div>
 
-        {/* Controles de Ação e Filtro de Mês */}
-        <div className="flex items-center gap-2.5 flex-wrap">
-          <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-slate-300 shadow-sm">
-            <Calendar size={16} className="text-sky-600 shrink-0" />
-            <input 
-              type="month" 
-              value={selectedMonth}
-              onChange={(e) => setSelectedMonth(e.target.value)}
-              className="text-sm font-bold text-slate-800 bg-transparent focus:outline-none cursor-pointer"
-            />
+        {/* Linha de Controles Mobile-First */}
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
+          {/* Seletor de Mês e Atualizar */}
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <div className="flex-1 sm:flex-none flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-slate-300 shadow-xs">
+              <Calendar size={16} className="text-sky-600 shrink-0" />
+              <input 
+                type="month" 
+                value={selectedMonth}
+                onChange={(e) => setSelectedMonth(e.target.value)}
+                className="text-xs sm:text-sm font-bold text-slate-800 bg-transparent focus:outline-none w-full cursor-pointer"
+              />
+            </div>
+
+            <button
+              onClick={loadReportData}
+              disabled={loading}
+              className="p-2.5 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-xl transition-colors shadow-xs cursor-pointer shrink-0"
+              title="Atualizar dados do relatório"
+            >
+              <RefreshCw size={17} className={loading ? "animate-spin text-sky-600" : ""} />
+            </button>
           </div>
 
-          <button
-            onClick={loadReportData}
-            disabled={loading}
-            className="p-2.5 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-xl transition-colors shadow-sm cursor-pointer"
-            title="Atualizar dados do relatório"
-          >
-            <RefreshCw size={18} className={loading ? "animate-spin text-sky-600" : ""} />
-          </button>
+          {/* Botões de Ação Principais com Alinhamento Perfeito no Celular */}
+          <div className="grid grid-cols-3 sm:flex items-center gap-2 w-full sm:w-auto">
+            <button
+              onClick={handlePrint}
+              className="flex items-center justify-center gap-1.5 px-3 py-2.5 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
+              title="Abrir prévia e imprimir relatório"
+            >
+              <Printer size={15} />
+              <span>Imprimir</span>
+            </button>
 
-          <button
-            onClick={handleExportCSV}
-            className="flex items-center gap-1.5 px-3.5 py-2.5 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 font-bold text-xs rounded-xl shadow-sm transition-colors cursor-pointer"
-            title="Exportar planilha CSV"
-          >
-            <Download size={15} />
-            <span className="hidden sm:inline">Exportar CSV</span>
-          </button>
+            <button
+              onClick={handleShareWhatsApp}
+              className="flex items-center justify-center gap-1.5 px-3 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
+              title="Compartilhar resumo financeiro no WhatsApp"
+            >
+              <MessageCircle size={15} />
+              <span>WhatsApp</span>
+            </button>
 
-          <button
-            onClick={handlePrint}
-            className="flex items-center gap-1.5 px-3.5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl shadow-sm transition-colors cursor-pointer"
-            title="Imprimir relatório"
-          >
-            <Printer size={15} />
-            <span>Imprimir</span>
-          </button>
+            <button
+              onClick={handleExportCSV}
+              className="flex items-center justify-center gap-1.5 px-3 py-2.5 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
+              title="Exportar planilha CSV"
+            >
+              <Download size={15} />
+              <span>CSV</span>
+            </button>
+          </div>
         </div>
       </div>
 
       {/* CARDS PRINCIPAIS: RESUMO EXECUTIVO DO MÊS */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         {/* Total Recebido */}
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-sm flex flex-col justify-between">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-600">Total Recebido (Entradas)</span>
-            <span className="p-2 rounded-xl bg-emerald-50 text-emerald-600 border border-emerald-200">
-              <ArrowUpRight size={18} />
+        <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-5 shadow-xs flex flex-col justify-between">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-600">Total Recebido</span>
+            <span className="p-1.5 rounded-lg bg-emerald-50 text-emerald-600 border border-emerald-200">
+              <ArrowUpRight size={16} />
             </span>
           </div>
           <div>
             <p className="text-2xl sm:text-3xl font-black text-emerald-600 tracking-tight">
               {formatCurrency(totalRevenues)}
             </p>
-            <div className="flex items-center justify-between text-xs text-slate-500 font-medium mt-1">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between text-[11px] text-slate-500 font-medium mt-1">
               <span>Mensalidades: {formatCurrency(totalMonthlyPlanRevenue)}</span>
               <span>Avulsos: {formatCurrency(totalOneOffRevenue)}</span>
             </div>
@@ -616,35 +826,35 @@ export default function ReportsPage() {
         </div>
 
         {/* Total Despesas */}
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-sm flex flex-col justify-between">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-600">Total Despesas (Saídas)</span>
-            <span className="p-2 rounded-xl bg-rose-50 text-rose-600 border border-rose-200">
-              <ArrowDownRight size={18} />
+        <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-5 shadow-xs flex flex-col justify-between">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-600">Total Despesas</span>
+            <span className="p-1.5 rounded-lg bg-rose-50 text-rose-600 border border-rose-200">
+              <ArrowDownRight size={16} />
             </span>
           </div>
           <div>
             <p className="text-2xl sm:text-3xl font-black text-rose-600 tracking-tight">
               - {formatCurrency(totalMonthExpenses)}
             </p>
-            <p className="text-xs text-slate-500 font-medium mt-1">
-              {monthExpenses.length} lançamento{monthExpenses.length !== 1 ? 's' : ''} registrado{monthExpenses.length !== 1 ? 's' : ''} no mês
+            <p className="text-[11px] text-slate-500 font-medium mt-1">
+              {monthExpenses.length} lançamento{monthExpenses.length !== 1 ? 's' : ''} registrado{monthExpenses.length !== 1 ? 's' : ''}
             </p>
           </div>
         </div>
 
         {/* Saldo Líquido Operacional */}
-        <div className={`border rounded-2xl p-5 shadow-sm flex flex-col justify-between ${
+        <div className={`border rounded-2xl p-4 sm:p-5 shadow-xs flex flex-col justify-between ${
           isProfitable 
             ? 'bg-gradient-to-br from-emerald-50/50 to-white border-emerald-300' 
             : 'bg-gradient-to-br from-rose-50/50 to-white border-rose-300'
         }`}>
-          <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center justify-between mb-1.5">
             <span className="text-xs font-bold uppercase tracking-wider text-slate-700">Resultado Líquido</span>
-            <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase ${
+            <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
               isProfitable ? 'bg-emerald-600 text-white' : 'bg-rose-600 text-white'
             }`}>
-              {isProfitable ? 'Superávit / Lucro' : 'Déficit / Atenção'}
+              {isProfitable ? 'Lucro' : 'Déficit'}
             </span>
           </div>
           <div>
@@ -653,84 +863,82 @@ export default function ReportsPage() {
             }`}>
               {formatCurrency(netBalance)}
             </p>
-            <p className="text-xs text-slate-600 font-semibold mt-1">
-              Margem Líquida Operacional: <strong className={isProfitable ? 'text-emerald-700' : 'text-rose-700'}>{profitMargin}%</strong>
+            <p className="text-[11px] text-slate-600 font-semibold mt-1">
+              Margem Líquida: <strong className={isProfitable ? 'text-emerald-700' : 'text-rose-700'}>{profitMargin}%</strong>
             </p>
           </div>
         </div>
 
-        {/* Meta / Carteira Ativa */}
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-sm flex flex-col justify-between">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-600">Meta Contratual</span>
-            <span className="p-2 rounded-xl bg-sky-50 text-sky-600 border border-sky-200">
-              <DollarSign size={18} />
+        {/* Meta / Carteira Ativa da Época Selecionada */}
+        <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-5 shadow-xs flex flex-col justify-between">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-600">Meta da Época</span>
+            <span className="p-1.5 rounded-lg bg-sky-50 text-sky-600 border border-sky-200">
+              <DollarSign size={16} />
             </span>
           </div>
           <div>
             <p className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
-              {formatCurrency(activeContractTotal)}
+              {formatCurrency(monthContractStats.contractTarget)}
             </p>
-            <p className="text-xs text-slate-500 font-medium mt-1">
-              {activeClientsCount} clientes ativos na carteira fixa
+            <p className="text-[11px] text-slate-500 font-medium mt-1">
+              {monthContractStats.activeCount} clientes ativos na época ({getMonthFormattedName()})
             </p>
           </div>
         </div>
       </div>
 
-      {/* NAVEGAÇÃO POR ABAS */}
-      <div className="flex items-center justify-between border-b border-slate-200">
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setActiveTab('overview')}
-            className={`px-4 py-3 text-sm font-bold border-b-2 transition-colors cursor-pointer flex items-center gap-2 ${
-              activeTab === 'overview'
-                ? 'border-sky-600 text-sky-600'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <PieChart size={16} />
-            Visão Geral & Indicadores
-          </button>
+      {/* NAVEGAÇÃO POR ABAS 100% RESPONSIVA (SEM TRANSBORDAMENTO) */}
+      <div className="bg-slate-200/80 p-1 rounded-2xl flex items-center gap-1 w-full overflow-hidden">
+        <button
+          onClick={() => setActiveTab('overview')}
+          className={`flex-1 py-2 px-1 sm:px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer truncate ${
+            activeTab === 'overview'
+              ? 'bg-white text-slate-900 shadow-xs'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white/40'
+          }`}
+        >
+          <PieChart size={14} className={activeTab === 'overview' ? 'text-sky-600' : 'text-slate-500'} />
+          <span className="truncate">Visão Geral</span>
+        </button>
 
-          <button
-            onClick={() => setActiveTab('revenues')}
-            className={`px-4 py-3 text-sm font-bold border-b-2 transition-colors cursor-pointer flex items-center gap-2 ${
-              activeTab === 'revenues'
-                ? 'border-emerald-600 text-emerald-600'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <ArrowUpRight size={16} />
-            Recebimentos ({monthPayments.length})
-          </button>
+        <button
+          onClick={() => setActiveTab('revenues')}
+          className={`flex-1 py-2 px-1 sm:px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer truncate ${
+            activeTab === 'revenues'
+              ? 'bg-white text-emerald-700 shadow-xs'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white/40'
+          }`}
+        >
+          <ArrowUpRight size={14} className={activeTab === 'revenues' ? 'text-emerald-600' : 'text-slate-500'} />
+          <span className="truncate">Receitas ({monthPayments.length})</span>
+        </button>
 
-          <button
-            onClick={() => setActiveTab('expenses')}
-            className={`px-4 py-3 text-sm font-bold border-b-2 transition-colors cursor-pointer flex items-center gap-2 ${
-              activeTab === 'expenses'
-                ? 'border-rose-600 text-rose-600'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <Receipt size={16} />
-            Despesas ({monthExpenses.length})
-          </button>
-        </div>
+        <button
+          onClick={() => setActiveTab('expenses')}
+          className={`flex-1 py-2 px-1 sm:px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer truncate ${
+            activeTab === 'expenses'
+              ? 'bg-white text-rose-700 shadow-xs'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white/40'
+          }`}
+        >
+          <Receipt size={14} className={activeTab === 'expenses' ? 'text-rose-600' : 'text-slate-500'} />
+          <span className="truncate">Despesas ({monthExpenses.length})</span>
+        </button>
       </div>
 
       {/* CONTEÚDO DAS ABAS */}
 
       {/* ABA 1: VISÃO GERAL & GRÁFICO COMPARATIVO */}
       {activeTab === 'overview' && (
-        <div className="space-y-6">
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            {/* Gráfico Comparativo dos Últimos 6 Meses */}
-            <div className="lg:col-span-8 bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 shadow-sm">
-              <div className="flex items-center justify-between mb-6">
+        <div className="space-y-4 sm:space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6">
+            {/* Gráfico / Tabela Comparativa dos Últimos 6 Meses */}
+            <div className="lg:col-span-8 bg-white border border-slate-200 rounded-2xl p-4 sm:p-6 shadow-xs">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
                 <div>
-                  <h3 className="text-base font-black text-slate-900">Evolução Mensal: Receitas vs Despesas</h3>
-                  <p className="text-xs text-slate-500 font-medium">Comparativo dos últimos 6 meses</p>
+                  <h3 className="text-base font-black text-slate-900">Evolução: Receitas vs Despesas</h3>
+                  <p className="text-xs text-slate-500 font-medium">Comparativo mensal dos últimos 6 meses</p>
                 </div>
                 <div className="flex items-center gap-3 text-xs font-semibold">
                   <span className="flex items-center gap-1.5 text-emerald-700">
@@ -744,15 +952,15 @@ export default function ReportsPage() {
                 </div>
               </div>
 
-              {/* Tabela Comparativa Mensal */}
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-slate-50 text-[11px] uppercase font-bold text-slate-600 border-b border-slate-200">
+              {/* Tabela Comparativa com Rolagem Suave */}
+              <div className="overflow-x-auto rounded-xl border border-slate-100">
+                <table className="w-full text-left text-xs sm:text-sm">
+                  <thead className="bg-slate-50 text-[10px] uppercase font-bold text-slate-600 border-b border-slate-200">
                     <tr>
                       <th className="py-2.5 px-3">Mês</th>
                       <th className="py-2.5 px-3 text-right">Receitas</th>
                       <th className="py-2.5 px-3 text-right">Despesas</th>
-                      <th className="py-2.5 px-3 text-right">Saldo Líquido</th>
+                      <th className="py-2.5 px-3 text-right">Saldo</th>
                       <th className="py-2.5 px-3 text-center">Status</th>
                     </tr>
                   </thead>
@@ -765,25 +973,27 @@ export default function ReportsPage() {
                           key={m.key} 
                           onClick={() => setSelectedMonth(m.key)}
                           className={`cursor-pointer transition-colors ${
-                            isCurrent ? 'bg-sky-50 font-bold' : 'hover:bg-slate-50'
+                            isCurrent ? 'bg-sky-50/80 font-bold' : 'hover:bg-slate-50'
                           }`}
                         >
-                          <td className="py-3 px-3 font-bold text-slate-900 flex items-center gap-2">
-                            {isCurrent && <span className="w-2 h-2 rounded-full bg-sky-600" />}
-                            {m.label}
+                          <td className="py-2.5 px-3 font-bold text-slate-900 whitespace-nowrap">
+                            <span className="flex items-center gap-1.5">
+                              {isCurrent && <span className="w-1.5 h-1.5 rounded-full bg-sky-600 shrink-0" />}
+                              {m.label}
+                            </span>
                           </td>
-                          <td className="py-3 px-3 text-right font-black text-emerald-600">
+                          <td className="py-2.5 px-3 text-right font-black text-emerald-600 whitespace-nowrap">
                             {formatCurrency(m.revenue)}
                           </td>
-                          <td className="py-3 px-3 text-right font-black text-rose-600">
+                          <td className="py-2.5 px-3 text-right font-black text-rose-600 whitespace-nowrap">
                             - {formatCurrency(m.expense)}
                           </td>
-                          <td className={`py-3 px-3 text-right font-black ${
+                          <td className={`py-2.5 px-3 text-right font-black whitespace-nowrap ${
                             isPos ? 'text-emerald-700' : 'text-rose-700'
                           }`}>
                             {formatCurrency(m.balance)}
                           </td>
-                          <td className="py-3 px-3 text-center">
+                          <td className="py-2.5 px-3 text-center whitespace-nowrap">
                             <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold ${
                               isPos ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
                             }`}>
@@ -799,22 +1009,22 @@ export default function ReportsPage() {
             </div>
 
             {/* Distribuição de Despesas por Categoria */}
-            <div className="lg:col-span-4 bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 shadow-sm flex flex-col justify-between">
+            <div className="lg:col-span-4 bg-white border border-slate-200 rounded-2xl p-4 sm:p-6 shadow-xs flex flex-col justify-between">
               <div>
-                <h3 className="text-base font-black text-slate-900 mb-1">Despesas por Categoria</h3>
-                <p className="text-xs text-slate-500 font-medium mb-4">Onde o dinheiro foi investido neste mês</p>
+                <h3 className="text-base font-black text-slate-900 mb-0.5">Despesas por Categoria</h3>
+                <p className="text-xs text-slate-500 font-medium mb-4">Onde o dinheiro foi investido no período</p>
 
                 {expensesByCategory.length === 0 ? (
                   <p className="text-xs text-slate-400 italic py-6 text-center">
                     Nenhuma despesa registrada para este mês.
                   </p>
                 ) : (
-                  <div className="space-y-3.5">
+                  <div className="space-y-3">
                     {expensesByCategory.map(item => (
                       <div key={item.category} className="space-y-1">
                         <div className="flex items-center justify-between text-xs">
-                          <span className="font-bold text-slate-800">{item.category}</span>
-                          <span className="font-black text-rose-600">
+                          <span className="font-bold text-slate-800 truncate mr-2">{item.category}</span>
+                          <span className="font-black text-rose-600 shrink-0">
                             {formatCurrency(item.amount)} ({item.percentage.toFixed(0)}%)
                           </span>
                         </div>
@@ -830,7 +1040,7 @@ export default function ReportsPage() {
                 )}
               </div>
 
-              <div className="mt-5 pt-4 border-t border-slate-200 flex items-center justify-between text-xs font-bold text-slate-700">
+              <div className="mt-4 pt-3 border-t border-slate-200 flex items-center justify-between text-xs font-bold text-slate-700">
                 <span>Total de Saídas:</span>
                 <span className="text-rose-600 font-black text-sm">{formatCurrency(totalMonthExpenses)}</span>
               </div>
@@ -841,8 +1051,8 @@ export default function ReportsPage() {
 
       {/* ABA 2: RECEBIMENTOS DETALHADOS */}
       {activeTab === 'revenues' && (
-        <div className="space-y-4">
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-white p-3.5 rounded-2xl border border-slate-200 shadow-sm">
+        <div className="space-y-3">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 bg-white p-3 rounded-2xl border border-slate-200 shadow-xs">
             <div className="relative w-full sm:w-80">
               <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
@@ -850,31 +1060,31 @@ export default function ReportsPage() {
                 placeholder="Buscar por cliente ou método..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:bg-white focus:border-emerald-500 transition-colors"
+                className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:bg-white focus:border-emerald-500 transition-colors"
               />
             </div>
-            <div className="text-xs font-bold text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-200">
+            <div className="text-xs font-bold text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-200 text-center sm:text-right shrink-0">
               Total Recebido: {formatCurrency(totalRevenues)}
             </div>
           </div>
 
-          <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+          <div className="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden">
             {searchFilteredPayments.length === 0 ? (
-              <div className="p-12 text-center space-y-2">
+              <div className="p-10 text-center space-y-2">
                 <AlertCircle size={28} className="mx-auto text-slate-400" />
                 <h4 className="font-bold text-slate-800 text-sm">Nenhum recebimento registrado</h4>
-                <p className="text-xs text-slate-500">Não há pagamentos registrados para este mês selecionado.</p>
+                <p className="text-xs text-slate-500">Não há pagamentos registrados para o mês selecionado.</p>
               </div>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm text-slate-700">
-                  <thead className="bg-slate-50 text-[11px] uppercase tracking-wider text-slate-600 font-bold border-b border-slate-200">
+                <table className="w-full text-left text-xs sm:text-sm text-slate-700">
+                  <thead className="bg-slate-50 text-[10px] sm:text-[11px] uppercase tracking-wider text-slate-600 font-bold border-b border-slate-200">
                     <tr>
-                      <th className="py-3 px-4">Data Pagto</th>
-                      <th className="py-3 px-4">Cliente</th>
-                      <th className="py-3 px-4">Tipo</th>
-                      <th className="py-3 px-4">Forma de Pagamento</th>
-                      <th className="py-3 px-4 text-right">Valor Recebido</th>
+                      <th className="py-2.5 px-3">Data</th>
+                      <th className="py-2.5 px-3">Cliente</th>
+                      <th className="py-2.5 px-3">Tipo</th>
+                      <th className="py-2.5 px-3">Forma</th>
+                      <th className="py-2.5 px-3 text-right">Valor</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -882,25 +1092,25 @@ export default function ReportsPage() {
                       const displayDate = p.paid_date ? new Date(p.paid_date + 'T12:00:00').toLocaleDateString('pt-BR') : '-';
                       return (
                         <tr key={p.id} className="hover:bg-slate-50 transition-colors">
-                          <td className="py-3.5 px-4 text-xs font-medium text-slate-600 whitespace-nowrap">
+                          <td className="py-2.5 px-3 text-xs text-slate-600 whitespace-nowrap">
                             {displayDate}
                           </td>
-                          <td className="py-3.5 px-4 font-bold text-slate-900">
+                          <td className="py-2.5 px-3 font-bold text-slate-900 max-w-[150px] sm:max-w-none truncate">
                             {p.client_name}
                           </td>
-                          <td className="py-3.5 px-4 whitespace-nowrap">
-                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                          <td className="py-2.5 px-3 whitespace-nowrap">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${
                               p.type === 'mensalidade' 
                                 ? 'bg-sky-50 text-sky-700 border border-sky-200' 
                                 : 'bg-purple-50 text-purple-700 border border-purple-200'
                             }`}>
-                              {p.type === 'mensalidade' ? 'Mensalidade Fixa' : 'Serviço Avulso'}
+                              {p.type === 'mensalidade' ? 'Mensalidade' : 'Avulso'}
                             </span>
                           </td>
-                          <td className="py-3.5 px-4 text-xs text-slate-600">
+                          <td className="py-2.5 px-3 text-xs text-slate-600 whitespace-nowrap">
                             {p.method}
                           </td>
-                          <td className="py-3.5 px-4 text-right font-black text-emerald-600 whitespace-nowrap">
+                          <td className="py-2.5 px-3 text-right font-black text-emerald-600 whitespace-nowrap">
                             + {formatCurrency(p.amount)}
                           </td>
                         </tr>
@@ -916,8 +1126,8 @@ export default function ReportsPage() {
 
       {/* ABA 3: DESPESAS DETALHADAS */}
       {activeTab === 'expenses' && (
-        <div className="space-y-4">
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-white p-3.5 rounded-2xl border border-slate-200 shadow-sm">
+        <div className="space-y-3">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 bg-white p-3 rounded-2xl border border-slate-200 shadow-xs">
             <div className="relative w-full sm:w-80">
               <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
@@ -925,31 +1135,31 @@ export default function ReportsPage() {
                 placeholder="Buscar por descrição ou categoria..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:bg-white focus:border-rose-500 transition-colors"
+                className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:bg-white focus:border-rose-500 transition-colors"
               />
             </div>
-            <div className="text-xs font-bold text-rose-700 bg-rose-50 px-3 py-1.5 rounded-xl border border-rose-200">
+            <div className="text-xs font-bold text-rose-700 bg-rose-50 px-3 py-1.5 rounded-xl border border-rose-200 text-center sm:text-right shrink-0">
               Total de Despesas: - {formatCurrency(totalMonthExpenses)}
             </div>
           </div>
 
-          <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+          <div className="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden">
             {searchFilteredExpenses.length === 0 ? (
-              <div className="p-12 text-center space-y-2">
+              <div className="p-10 text-center space-y-2">
                 <Receipt size={28} className="mx-auto text-slate-400" />
                 <h4 className="font-bold text-slate-800 text-sm">Nenhuma despesa registrada</h4>
-                <p className="text-xs text-slate-500">Não há despesas cadastradas para este mês selecionado.</p>
+                <p className="text-xs text-slate-500">Não há despesas cadastradas para o mês selecionado.</p>
               </div>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm text-slate-700">
-                  <thead className="bg-slate-50 text-[11px] uppercase tracking-wider text-slate-600 font-bold border-b border-slate-200">
+                <table className="w-full text-left text-xs sm:text-sm text-slate-700">
+                  <thead className="bg-slate-50 text-[10px] sm:text-[11px] uppercase tracking-wider text-slate-600 font-bold border-b border-slate-200">
                     <tr>
-                      <th className="py-3 px-4">Data</th>
-                      <th className="py-3 px-4">Descrição da Despesa</th>
-                      <th className="py-3 px-4">Categoria</th>
-                      <th className="py-3 px-4 text-center">Comprovante</th>
-                      <th className="py-3 px-4 text-right">Valor da Saída</th>
+                      <th className="py-2.5 px-3">Data</th>
+                      <th className="py-2.5 px-3">Descrição da Despesa</th>
+                      <th className="py-2.5 px-3">Categoria</th>
+                      <th className="py-2.5 px-3 text-center">Comprovante</th>
+                      <th className="py-2.5 px-3 text-right">Valor</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -957,33 +1167,33 @@ export default function ReportsPage() {
                       const displayDate = e.date ? new Date(e.date + 'T12:00:00').toLocaleDateString('pt-BR') : '-';
                       return (
                         <tr key={e.id} className="hover:bg-slate-50 transition-colors">
-                          <td className="py-3.5 px-4 text-xs font-medium text-slate-600 whitespace-nowrap">
+                          <td className="py-2.5 px-3 text-xs text-slate-600 whitespace-nowrap">
                             {displayDate}
                           </td>
-                          <td className="py-3.5 px-4 font-bold text-slate-900">
+                          <td className="py-2.5 px-3 font-bold text-slate-900 max-w-[140px] sm:max-w-none truncate">
                             {e.description}
                           </td>
-                          <td className="py-3.5 px-4 whitespace-nowrap">
-                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">
+                          <td className="py-2.5 px-3 whitespace-nowrap">
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">
                               {e.category || 'Geral'}
                             </span>
                           </td>
-                          <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                          <td className="py-2.5 px-3 text-center whitespace-nowrap">
                             {e.receiptUrl ? (
                               <button
                                 type="button"
                                 onClick={() => setPreviewImageUrl(e.receiptUrl || null)}
-                                className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
+                                className="inline-flex items-center gap-1 px-2 py-1 bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 rounded-lg text-[11px] font-semibold transition-colors cursor-pointer"
                                 title="Visualizar comprovante"
                               >
-                                <Eye size={13} />
-                                Ver Foto
+                                <Eye size={12} />
+                                Foto
                               </button>
                             ) : (
-                              <span className="text-xs text-slate-400 italic">Sem anexo</span>
+                              <span className="text-xs text-slate-400 italic">Sem foto</span>
                             )}
                           </td>
-                          <td className="py-3.5 px-4 text-right font-black text-rose-600 whitespace-nowrap">
+                          <td className="py-2.5 px-3 text-right font-black text-rose-600 whitespace-nowrap">
                             - {formatCurrency(Number(e.amount) || 0)}
                           </td>
                         </tr>
@@ -999,7 +1209,7 @@ export default function ReportsPage() {
 
       {/* MODAL: Visualizar Comprovante */}
       {previewImageUrl && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-[120] bg-black/80 backdrop-blur-md flex items-center justify-center p-3 animate-in fade-in duration-200">
           <div className="bg-white rounded-3xl max-w-2xl w-full p-4 shadow-2xl relative flex flex-col">
             <div className="flex items-center justify-between pb-3 mb-2 border-b border-slate-200">
               <span className="text-sm font-bold text-slate-800 flex items-center gap-2">
@@ -1025,48 +1235,67 @@ export default function ReportsPage() {
         </div>
       )}
 
-      {/* MODAL: Visualização Prévia e Emissão Oficial de Impressão */}
+      {/* MODAL: Visualização Prévia e Emissão Oficial de Impressão (Mobile-First) */}
       {isPrintModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 animate-in fade-in duration-200">
-          <div className="bg-white rounded-3xl max-w-4xl w-full shadow-2xl relative flex flex-col max-h-[92vh] overflow-hidden border border-slate-200">
-            {/* Header de Ações de Impressão */}
-            <div className="p-4 sm:p-5 border-b border-slate-200 bg-slate-50/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
-              <div className="flex items-center gap-2.5">
-                <div className="w-10 h-10 rounded-xl bg-sky-100 border border-sky-200 text-sky-700 flex items-center justify-center">
-                  <Printer size={20} />
+        <div className="fixed inset-0 z-[120] bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-0 sm:p-4 animate-in fade-in duration-200">
+          <div className="bg-white w-full h-full sm:h-auto sm:max-h-[92vh] sm:rounded-3xl sm:max-w-4xl shadow-2xl flex flex-col overflow-hidden border border-slate-200">
+            {/* Header de Ações com Botões Grandes no Celular */}
+            <div className="p-3.5 sm:p-5 border-b border-slate-200 bg-slate-50/90 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-9 h-9 rounded-xl bg-sky-100 border border-sky-200 text-sky-700 flex items-center justify-center shrink-0">
+                    <Printer size={18} />
+                  </div>
+                  <div>
+                    <h3 className="text-sm sm:text-base font-black text-slate-900">Emissão do Relatório Financeiro</h3>
+                    <p className="text-[11px] text-slate-500 font-medium">
+                      Mês: <strong className="text-slate-800 uppercase">{getMonthFormattedName()}</strong>
+                    </p>
+                  </div>
                 </div>
-                <div>
-                  <h3 className="text-base font-black text-slate-900">Emissão do Relatório Financeiro</h3>
-                  <p className="text-xs text-slate-500 font-medium">
-                    Mês de referência: <strong className="text-slate-800 uppercase">{getMonthFormattedName()}</strong>
-                  </p>
-                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setIsPrintModalOpen(false)}
+                  className="sm:hidden p-2 text-slate-400 hover:text-slate-700 rounded-xl hover:bg-slate-200"
+                >
+                  <X size={20} />
+                </button>
               </div>
 
+              {/* Botões de Ação na barra de impressão */}
               <div className="flex items-center gap-2 flex-wrap">
                 <button
                   type="button"
                   onClick={executeDirectPrint}
-                  className="flex items-center gap-1.5 px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs rounded-xl shadow-md shadow-sky-600/20 transition-all cursor-pointer"
+                  className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer"
                 >
-                  <Printer size={16} />
-                  <span>Imprimir Agora</span>
+                  <Printer size={15} />
+                  <span>Imprimir / PDF</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={handleDownloadPrintHtml}
-                  className="flex items-center gap-1.5 px-3.5 py-2 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 font-bold text-xs rounded-xl transition-all cursor-pointer shadow-xs"
-                  title="Baixar arquivo HTML formatado para abrir em qualquer navegador"
+                  className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 font-bold text-xs rounded-xl transition-all cursor-pointer shadow-xs"
                 >
                   <Download size={15} />
-                  <span className="hidden sm:inline">Baixar Relatório</span>
+                  <span>Baixar HTML</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleShareWhatsApp}
+                  className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition-all cursor-pointer shadow-xs"
+                >
+                  <MessageCircle size={15} />
+                  <span className="hidden sm:inline">WhatsApp</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => setIsPrintModalOpen(false)}
-                  className="p-2 text-slate-400 hover:text-slate-700 rounded-xl hover:bg-slate-200 transition-colors cursor-pointer"
+                  className="hidden sm:flex p-2 text-slate-400 hover:text-slate-700 rounded-xl hover:bg-slate-200 transition-colors cursor-pointer"
                   title="Fechar"
                 >
                   <X size={20} />
@@ -1075,134 +1304,138 @@ export default function ReportsPage() {
             </div>
 
             {/* Folha Oficial A4 de Prévia Formatada */}
-            <div className="flex-1 overflow-y-auto p-4 sm:p-8 bg-slate-100/60">
-              <div className="max-w-3xl mx-auto bg-white p-6 sm:p-10 rounded-2xl shadow-md border border-slate-200/80 text-slate-800 space-y-6 text-xs font-sans">
+            <div className="flex-1 overflow-y-auto p-3 sm:p-8 bg-slate-100/70">
+              <div className="max-w-3xl mx-auto bg-white p-4 sm:p-10 rounded-2xl shadow-xs border border-slate-200/80 text-slate-800 space-y-5 text-xs font-sans">
                 {/* Cabeçalho da Empresa */}
-                <div className="border-b-2 border-sky-600 pb-4 flex flex-col sm:flex-row justify-between items-start gap-4">
+                <div className="border-b-2 border-sky-600 pb-3 flex flex-col sm:flex-row justify-between items-start gap-2">
                   <div>
-                    <h2 className="text-2xl font-black text-slate-900 tracking-tight uppercase">
+                    <h2 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight uppercase">
                       {userProfile?.whatsappSettings?.companyName || "RS Piscinas"}
                     </h2>
-                    <p className="text-xs font-bold text-slate-500 mt-0.5">
+                    <p className="text-[11px] sm:text-xs font-bold text-slate-500 mt-0.5">
                       DEMONSTRATIVO FINANCEIRO CONSOLIDADO · {getMonthFormattedName().toUpperCase()}
                     </p>
                   </div>
-                  <div className="text-left sm:text-right text-[11px] text-slate-600 space-y-0.5">
-                    <div><strong>Data de Emissão:</strong> {new Date().toLocaleDateString('pt-BR')} às {new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</div>
-                    <div><strong>Emitido por:</strong> {userProfile?.name || 'Administração'} ({userProfile?.role === 'admin' ? 'Administrador' : 'Gestor'})</div>
+                  <div className="text-left sm:text-right text-[10px] sm:text-[11px] text-slate-600 space-y-0.5">
+                    <div><strong>Emissão:</strong> {new Date().toLocaleDateString('pt-BR')} às {new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</div>
+                    <div><strong>Responsável:</strong> {userProfile?.name || 'Administração'} ({userProfile?.role === 'admin' ? 'Administrador' : 'Gestor'})</div>
                   </div>
                 </div>
 
-                {/* 4 Cards Resumo */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <div className="border border-slate-200 rounded-xl p-3 bg-slate-50">
-                    <span className="text-[10px] font-bold uppercase text-slate-500 block">Total Recebido</span>
-                    <span className="text-base font-black text-emerald-600 block mt-0.5">{formatCurrency(totalRevenues)}</span>
-                    <span className="text-[10px] text-slate-500">{monthPayments.length} pagamentos</span>
+                {/* 4 Cards Resumo na Folha */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                  <div className="border border-slate-200 rounded-xl p-2.5 bg-slate-50">
+                    <span className="text-[9px] font-bold uppercase text-slate-500 block">Total Recebido</span>
+                    <span className="text-sm sm:text-base font-black text-emerald-600 block mt-0.5">{formatCurrency(totalRevenues)}</span>
+                    <span className="text-[9px] text-slate-500">{monthPayments.length} pagamentos</span>
                   </div>
 
-                  <div className="border border-slate-200 rounded-xl p-3 bg-slate-50">
-                    <span className="text-[10px] font-bold uppercase text-slate-500 block">Total Despesas</span>
-                    <span className="text-base font-black text-rose-600 block mt-0.5">- {formatCurrency(totalMonthExpenses)}</span>
-                    <span className="text-[10px] text-slate-500">{monthExpenses.length} despesas</span>
+                  <div className="border border-slate-200 rounded-xl p-2.5 bg-slate-50">
+                    <span className="text-[9px] font-bold uppercase text-slate-500 block">Total Despesas</span>
+                    <span className="text-sm sm:text-base font-black text-rose-600 block mt-0.5">- {formatCurrency(totalMonthExpenses)}</span>
+                    <span className="text-[9px] text-slate-500">{monthExpenses.length} despesas</span>
                   </div>
 
-                  <div className={`border rounded-xl p-3 ${isProfitable ? 'bg-emerald-50/50 border-emerald-300' : 'bg-rose-50/50 border-rose-300'}`}>
-                    <span className="text-[10px] font-bold uppercase text-slate-700 block">Saldo Líquido</span>
-                    <span className={`text-base font-black block mt-0.5 ${isProfitable ? 'text-emerald-700' : 'text-rose-700'}`}>
+                  <div className={`border rounded-xl p-2.5 ${isProfitable ? 'bg-emerald-50/50 border-emerald-300' : 'bg-rose-50/50 border-rose-300'}`}>
+                    <span className="text-[9px] font-bold uppercase text-slate-700 block">Saldo Líquido</span>
+                    <span className={`text-sm sm:text-base font-black block mt-0.5 ${isProfitable ? 'text-emerald-700' : 'text-rose-700'}`}>
                       {formatCurrency(netBalance)}
                     </span>
-                    <span className="text-[10px] text-slate-600 font-bold">Margem: {profitMargin}%</span>
+                    <span className="text-[9px] text-slate-600 font-bold">Margem: {profitMargin}%</span>
                   </div>
 
-                  <div className="border border-slate-200 rounded-xl p-3 bg-slate-50">
-                    <span className="text-[10px] font-bold uppercase text-slate-500 block">Meta Contratual</span>
-                    <span className="text-base font-black text-sky-700 block mt-0.5">{formatCurrency(activeContractTotal)}</span>
-                    <span className="text-[10px] text-slate-500">{activeClientsCount} clientes ativos</span>
+                  <div className="border border-slate-200 rounded-xl p-2.5 bg-slate-50">
+                    <span className="text-[9px] font-bold uppercase text-slate-500 block">Meta da Época</span>
+                    <span className="text-sm sm:text-base font-black text-sky-700 block mt-0.5">{formatCurrency(monthContractStats.contractTarget)}</span>
+                    <span className="text-[9px] text-slate-500">{monthContractStats.activeCount} clientes ativos</span>
                   </div>
                 </div>
 
                 {/* Seção 1: Receitas */}
                 <div>
-                  <div className="flex items-center justify-between border-b border-slate-200 pb-2 mb-2">
+                  <div className="flex items-center justify-between border-b border-slate-200 pb-1.5 mb-2">
                     <h4 className="font-black text-slate-900 uppercase text-xs">
-                      1. Recebimentos Confirmados ({monthPayments.length} lançamentos)
+                      1. Recebimentos Confirmados ({monthPayments.length})
                     </h4>
                     <span className="text-xs font-black text-emerald-600">Total: {formatCurrency(totalRevenues)}</span>
                   </div>
                   {monthPayments.length === 0 ? (
                     <p className="text-slate-400 italic py-2">Nenhum recebimento registrado neste mês.</p>
                   ) : (
-                    <table className="w-full text-left text-[11px]">
-                      <thead>
-                        <tr className="border-b border-slate-200 text-slate-600 uppercase font-bold bg-slate-50">
-                          <th className="py-2 px-2.5">Data</th>
-                          <th className="py-2 px-2.5">Cliente</th>
-                          <th className="py-2 px-2.5">Tipo / Método</th>
-                          <th className="py-2 px-2.5 text-right">Valor</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {monthPayments.map(p => (
-                          <tr key={p.id}>
-                            <td className="py-1.5 px-2.5 whitespace-nowrap text-slate-600">
-                              {p.paid_date ? new Date(p.paid_date + 'T12:00:00').toLocaleDateString('pt-BR') : '-'}
-                            </td>
-                            <td className="py-1.5 px-2.5 font-bold text-slate-900">{p.client_name}</td>
-                            <td className="py-1.5 px-2.5 text-slate-600">
-                              {p.type === 'mensalidade' ? 'Mensalidade Fixa' : 'Serviço Avulso'} ({p.method || 'PIX'})
-                            </td>
-                            <td className="py-1.5 px-2.5 text-right font-black text-emerald-600">
-                              + {formatCurrency(p.amount)}
-                            </td>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-[11px]">
+                        <thead>
+                          <tr className="border-b border-slate-200 text-slate-600 uppercase font-bold bg-slate-50">
+                            <th className="py-1.5 px-2">Data</th>
+                            <th className="py-1.5 px-2">Cliente</th>
+                            <th className="py-1.5 px-2">Tipo / Método</th>
+                            <th className="py-1.5 px-2 text-right">Valor</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {monthPayments.map(p => (
+                            <tr key={p.id}>
+                              <td className="py-1.5 px-2 whitespace-nowrap text-slate-600">
+                                {p.paid_date ? new Date(p.paid_date + 'T12:00:00').toLocaleDateString('pt-BR') : '-'}
+                              </td>
+                              <td className="py-1.5 px-2 font-bold text-slate-900">{p.client_name}</td>
+                              <td className="py-1.5 px-2 text-slate-600 whitespace-nowrap">
+                                {p.type === 'mensalidade' ? 'Mensalidade' : 'Avulso'} ({p.method || 'PIX'})
+                              </td>
+                              <td className="py-1.5 px-2 text-right font-black text-emerald-600 whitespace-nowrap">
+                                + {formatCurrency(p.amount)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   )}
                 </div>
 
                 {/* Seção 2: Despesas */}
                 <div>
-                  <div className="flex items-center justify-between border-b border-slate-200 pb-2 mb-2">
+                  <div className="flex items-center justify-between border-b border-slate-200 pb-1.5 mb-2">
                     <h4 className="font-black text-slate-900 uppercase text-xs">
-                      2. Despesas e Gastos da Empresa ({monthExpenses.length} lançamentos)
+                      2. Despesas da Empresa ({monthExpenses.length})
                     </h4>
                     <span className="text-xs font-black text-rose-600">Total: - {formatCurrency(totalMonthExpenses)}</span>
                   </div>
                   {monthExpenses.length === 0 ? (
                     <p className="text-slate-400 italic py-2">Nenhuma despesa cadastrada neste mês.</p>
                   ) : (
-                    <table className="w-full text-left text-[11px]">
-                      <thead>
-                        <tr className="border-b border-slate-200 text-slate-600 uppercase font-bold bg-slate-50">
-                          <th className="py-2 px-2.5">Data</th>
-                          <th className="py-2 px-2.5">O que foi a despesa</th>
-                          <th className="py-2 px-2.5">Categoria</th>
-                          <th className="py-2 px-2.5 text-right">Valor</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {monthExpenses.map(e => (
-                          <tr key={e.id}>
-                            <td className="py-1.5 px-2.5 whitespace-nowrap text-slate-600">
-                              {e.date ? new Date(e.date + 'T12:00:00').toLocaleDateString('pt-BR') : '-'}
-                            </td>
-                            <td className="py-1.5 px-2.5 font-bold text-slate-900">{e.description}</td>
-                            <td className="py-1.5 px-2.5 text-slate-600">{e.category || 'Geral'}</td>
-                            <td className="py-1.5 px-2.5 text-right font-black text-rose-600">
-                              - {formatCurrency(Number(e.amount) || 0)}
-                            </td>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-[11px]">
+                        <thead>
+                          <tr className="border-b border-slate-200 text-slate-600 uppercase font-bold bg-slate-50">
+                            <th className="py-1.5 px-2">Data</th>
+                            <th className="py-1.5 px-2">Descrição</th>
+                            <th className="py-1.5 px-2">Categoria</th>
+                            <th className="py-1.5 px-2 text-right">Valor</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {monthExpenses.map(e => (
+                            <tr key={e.id}>
+                              <td className="py-1.5 px-2 whitespace-nowrap text-slate-600">
+                                {e.date ? new Date(e.date + 'T12:00:00').toLocaleDateString('pt-BR') : '-'}
+                              </td>
+                              <td className="py-1.5 px-2 font-bold text-slate-900">{e.description}</td>
+                              <td className="py-1.5 px-2 text-slate-600 whitespace-nowrap">{e.category || 'Geral'}</td>
+                              <td className="py-1.5 px-2 text-right font-black text-rose-600 whitespace-nowrap">
+                                - {formatCurrency(Number(e.amount) || 0)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   )}
                 </div>
 
                 {/* Rodapé da Folha */}
                 <div className="border-t border-slate-200 pt-3 flex justify-between items-center text-[10px] text-slate-400">
-                  <span>{userProfile?.whatsappSettings?.companyName || "RS Piscinas"} · Sistema de Gestão</span>
+                  <span>{userProfile?.whatsappSettings?.companyName || "RS Piscinas"} · Gestão Financeira</span>
                   <span>Documento Oficial de Prestação de Contas</span>
                 </div>
               </div>
