@@ -5,10 +5,10 @@ import { supabase } from '../lib/supabase';
 import { useRealtimeUpdates } from '../hooks/useRealtimeUpdates';
 import { 
   Users, DollarSign, AlertCircle, CheckCircle, Clock, CreditCard, 
-  MessageCircle, Eye, EyeOff, RefreshCw, Send, Calendar, TrendingUp, 
+  MessageCircle, Eye, EyeOff, RefreshCw, Send, Calendar, TrendingUp, TrendingDown,
   ShieldCheck, ArrowRight, Check, Sparkles, AlertTriangle,
   CloudSun, CloudRain, Sun, CloudLightning, Wind, Droplets, Percent, ChevronLeft, ChevronRight, X, ArrowUpRight, Award, FileCheck,
-  Crown, Gem, Gift, Star, RotateCcw
+  Crown, Gem, Gift, Star, RotateCcw, Receipt
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -23,6 +23,7 @@ import {
 import { formatClientMessageTemplate } from '../lib/messageTemplates';
 import { fetchWeatherData, WeatherData } from '../lib/weatherService';
 import { evaluateClientContract, loadContractsMetadata, saveContractAdjustment, keepContractPrice, ClientContractInfo } from '../lib/contractUtils';
+import { expensesService } from '../lib/expensesService';
 
 interface DashboardStats {
   totalClients: number;
@@ -36,6 +37,7 @@ interface DashboardStats {
   totalActiveContracts: number;
   ticketMedio: number;
   taxaRecebimento: number;
+  expensesThisMonth: number;
 }
 
 interface UpcomingClient {
@@ -85,6 +87,7 @@ export default function Dashboard() {
     totalActiveContracts: 0,
     ticketMedio: 0,
     taxaRecebimento: 0,
+    expensesThisMonth: 0,
   });
 
   const [upcomingClients3to5, setUpcomingClients3to5] = useState<UpcomingClient[]>([]);
@@ -455,6 +458,32 @@ export default function Dashboard() {
         });
       }
 
+      // 4.5. Fetch Expenses (Despesas da empresa no mês)
+      let expensesThisMonth = 0;
+      try {
+        const allExpenses = await expensesService.getExpenses(currentAdminId);
+        allExpenses.forEach((exp: any) => {
+          const expDate = exp.date || exp.created_at;
+          if (expDate) {
+            let ey: number, em: number;
+            if (typeof expDate === 'string' && expDate.includes('-')) {
+              const parts = expDate.split('T')[0].split('-');
+              ey = parseInt(parts[0], 10);
+              em = parseInt(parts[1], 10);
+            } else {
+              const d = new Date(expDate);
+              ey = d.getFullYear();
+              em = d.getMonth() + 1;
+            }
+            if (ey === currentYear && em === currentMonth) {
+              expensesThisMonth += Number(exp.amount || 0);
+            }
+          }
+        });
+      } catch (expErr) {
+        console.warn('[Dashboard] Erro ao carregar despesas:', expErr);
+      }
+
       // Calculations:
       const ticketMedio = totalClients > 0 ? (totalActiveContracts / totalClients) : 0;
       const taxaRecebimento = totalToReceive > 0 ? Math.min(100, Math.round((receivedThisMonth / totalToReceive) * 100)) : 0;
@@ -471,6 +500,7 @@ export default function Dashboard() {
         totalActiveContracts,
         ticketMedio,
         taxaRecebimento,
+        expensesThisMonth,
       });
 
       // 5. Previsão do Tempo & Alerta Meteorológico para Piscinas (Open-Meteo)
@@ -546,21 +576,32 @@ export default function Dashboard() {
             const now = new Date();
             const totalMonths = Math.max(1, (now.getFullYear() - startDate.getFullYear()) * 12 + (now.getMonth() - startDate.getMonth()));
             const yearsActive = Math.floor(totalMonths / 12);
-
             const pInfo = paymentsByClient[client.id] || { count: 0, total: 0 };
 
-            // Cálculo do Score VIP (0 a 100)
-            // 1. Tempo de Contrato (até 45 pontos)
-            let timeScore = 12;
-            if (totalMonths >= 24) timeScore = 45;
-            else if (totalMonths >= 18) timeScore = 40;
-            else if (totalMonths >= 12) timeScore = 35;
-            else if (totalMonths >= 6) timeScore = 25;
-            else if (totalMonths >= 3) timeScore = 18;
+            // Cálculo do Score VIP Aprimorado (0 a 100)
+            // Valoriza pontualidade exemplar e pagamentos antecipados/em dia
+            
+            // 1. Pontualidade e Antecipação (até 55 pontos - Pilar Principal de Confiabilidade)
+            // Cliente 100% em dia (sem atrasos) recebe base de 35 pontos
+            let punctualityScore = 35;
+            
+            // Bônus adicional por histórico consistente de pagamentos registrados (+2 por pagamento até +15 pts)
+            punctualityScore += Math.min(15, pInfo.count * 2);
 
-            // 2. Pontualidade e Histórico de Pagamentos (até 35 pontos)
-            // Está adimplente (+25) e tem pagamentos confirmados (+2 por pagamento registrado até +10)
-            const punctualityScore = 25 + Math.min(10, pInfo.count * 2);
+            // Bônus especial de mérito para clientes que pagam no dia ou antecipadamente (+5 pts)
+            if (pInfo.count > 0 && !isDelayed) {
+              punctualityScore += 5;
+            }
+            punctualityScore = Math.min(55, punctualityScore);
+
+            // 2. Tempo de Parceria / Fidelidade (até 25 pontos)
+            // Reconhece a fidelidade sem penalizar clientes novos excelentes
+            let timeScore = 12;
+            if (totalMonths >= 24) timeScore = 25;
+            else if (totalMonths >= 18) timeScore = 22;
+            else if (totalMonths >= 12) timeScore = 19;
+            else if (totalMonths >= 6) timeScore = 16;
+            else if (totalMonths >= 3) timeScore = 14;
 
             // 3. Ticket Mensal (até 20 pontos)
             let ticketScore = 10;
@@ -576,12 +617,12 @@ export default function Dashboard() {
             let tierBadgeColor = 'bg-slate-100 text-slate-800 border-slate-300';
             let loyaltyBenefitSuggested = '5% de desconto de fidelidade OU Análise Química Especial de cortesia';
 
-            if (vipScore >= 80 || totalMonths >= 18) {
+            if (vipScore >= 80 || (totalMonths >= 18 && vipScore >= 70)) {
               tier = 'diamond';
               tierLabel = 'VIP Diamante';
               tierBadgeColor = 'bg-cyan-100 text-cyan-900 border-cyan-300 shadow-xs';
               loyaltyBenefitSuggested = '10% de desconto de fidelidade OU Cristalização de Piscina de cortesia';
-            } else if (vipScore >= 60 || totalMonths >= 9) {
+            } else if (vipScore >= 60 || (totalMonths >= 9 && vipScore >= 55)) {
               tier = 'gold';
               tierLabel = 'VIP Ouro';
               tierBadgeColor = 'bg-amber-100 text-amber-900 border-amber-300 shadow-xs';
@@ -1519,70 +1560,103 @@ Agradecemos imensamente pela parceria e por nos permitir cuidar da sua piscina p
                 </div>
               </div>
 
-              {/* Sub-Cards 2x2 Grid - ensures spacious width per card so large currency values never overflow */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="p-3 bg-sky-950/30 rounded-xl border border-sky-500/30 min-w-0 flex flex-col justify-between overflow-hidden">
-                  <div className="flex items-center justify-between gap-1 mb-1">
-                    <span className="text-[11px] sm:text-xs text-sky-400 font-semibold truncate">Recebidos Hoje</span>
-                    <span className="w-1.5 h-1.5 rounded-full bg-sky-400 shrink-0" />
-                  </div>
-                  <span 
-                    className="text-base sm:text-lg xl:text-xl font-black text-sky-300 tracking-tight truncate block"
-                    title={formatCurrency(stats.receivedToday)}
-                  >
-                    {formatCurrency(stats.receivedToday)}
-                  </span>
-                </div>
-
-                <div className="p-3 bg-slate-950/50 rounded-xl border border-slate-800/80 min-w-0 flex flex-col justify-between overflow-hidden">
-                  <div className="flex items-center justify-between gap-1 mb-1">
-                    <span className="text-[11px] sm:text-xs text-slate-400 font-semibold truncate">Já Recebido</span>
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-                  </div>
-                  <span 
-                    className="text-base sm:text-lg xl:text-xl font-black text-emerald-400 tracking-tight truncate block"
-                    title={formatCurrency(stats.receivedThisMonth)}
-                  >
-                    {formatCurrency(stats.receivedThisMonth)}
-                  </span>
-                </div>
-
-                <div className="p-3 bg-slate-950/50 rounded-xl border border-slate-800/80 min-w-0 flex flex-col justify-between overflow-hidden">
-                  <div className="flex items-center justify-between gap-1 mb-1">
-                    <span className="text-[11px] sm:text-xs text-slate-400 font-semibold truncate">A Receber no Mês</span>
-                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
-                  </div>
-                  <span 
-                    className="text-base sm:text-lg xl:text-xl font-black text-amber-400 tracking-tight truncate block"
-                    title={formatCurrency(stats.pendingThisMonth)}
-                  >
-                    {formatCurrency(stats.pendingThisMonth)}
-                  </span>
-                </div>
-
-                <div className={`p-3 rounded-xl border min-w-0 flex flex-col justify-between overflow-hidden ${
-                  stats.delayedClients > 0
-                    ? 'bg-red-950/20 border-red-500/30'
-                    : 'bg-slate-950/50 border-slate-800/80'
-                }`}>
-                  <div className="flex items-center justify-between gap-1 mb-1">
-                    <span className={`text-[11px] sm:text-xs font-semibold truncate ${
-                      stats.delayedClients > 0 ? 'text-red-400' : 'text-slate-400'
-                    }`}>
-                      Em Atraso ({stats.delayedClients})
+              {/* Sub-Cards: Organização Espaçosa em 2 Linhas para Evitar Sobreposição */}
+              <div className="space-y-2.5">
+                {/* Linha 1: Entradas e Previsões (3 Colunas) */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  {/* Recebidos Hoje */}
+                  <div className="p-3 bg-sky-950/40 rounded-xl border border-sky-500/30 flex flex-col justify-between overflow-hidden shadow-xs">
+                    <div className="flex items-center justify-between gap-1 mb-1">
+                      <span className="text-xs text-sky-400 font-bold">Recebidos Hoje</span>
+                      <span className="w-2 h-2 rounded-full bg-sky-400 shrink-0" />
+                    </div>
+                    <span 
+                      className="text-sm sm:text-base font-black text-sky-300 tracking-tight block truncate"
+                      title={formatCurrency(stats.receivedToday)}
+                    >
+                      {formatCurrency(stats.receivedToday)}
                     </span>
-                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                      stats.delayedClients > 0 ? 'bg-red-400 animate-pulse' : 'bg-slate-600'
-                    }`} />
                   </div>
-                  <span 
-                    className={`text-base sm:text-lg xl:text-xl font-black tracking-tight truncate block ${
-                      stats.delayedClients > 0 ? 'text-red-400' : 'text-slate-300'
-                    }`}
-                    title={formatCurrency(stats.delayedTotalAmount)}
+
+                  {/* Já Recebido no Mês */}
+                  <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/80 flex flex-col justify-between overflow-hidden shadow-xs">
+                    <div className="flex items-center justify-between gap-1 mb-1">
+                      <span className="text-xs text-slate-300 font-bold">Já Recebido</span>
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
+                    </div>
+                    <span 
+                      className="text-sm sm:text-base font-black text-emerald-400 tracking-tight block truncate"
+                      title={formatCurrency(stats.receivedThisMonth)}
+                    >
+                      {formatCurrency(stats.receivedThisMonth)}
+                    </span>
+                  </div>
+
+                  {/* A Receber no Mês */}
+                  <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/80 flex flex-col justify-between overflow-hidden shadow-xs">
+                    <div className="flex items-center justify-between gap-1 mb-1">
+                      <span className="text-xs text-slate-300 font-bold">A Receber no Mês</span>
+                      <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+                    </div>
+                    <span 
+                      className="text-sm sm:text-base font-black text-amber-400 tracking-tight block truncate"
+                      title={formatCurrency(stats.pendingThisMonth)}
+                    >
+                      {formatCurrency(stats.pendingThisMonth)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Linha 2: Inadimplência e Despesas (2 Colunas Amplas) */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {/* Em Atraso */}
+                  <div className={`p-3 rounded-xl border flex flex-col justify-between overflow-hidden shadow-xs ${
+                    stats.delayedClients > 0
+                      ? 'bg-red-950/30 border-red-500/40'
+                      : 'bg-slate-950/60 border-slate-800/80'
+                  }`}>
+                    <div className="flex items-center justify-between gap-1 mb-1">
+                      <span className={`text-xs font-bold ${
+                        stats.delayedClients > 0 ? 'text-red-400' : 'text-slate-300'
+                      }`}>
+                        Em Atraso ({stats.delayedClients} {stats.delayedClients === 1 ? 'cliente' : 'clientes'})
+                      </span>
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${
+                        stats.delayedClients > 0 ? 'bg-red-400 animate-pulse' : 'bg-slate-600'
+                      }`} />
+                    </div>
+                    <span 
+                      className={`text-sm sm:text-base font-black tracking-tight block truncate ${
+                        stats.delayedClients > 0 ? 'text-red-400' : 'text-slate-300'
+                      }`}
+                      title={formatCurrency(stats.delayedTotalAmount)}
+                    >
+                      {formatCurrency(stats.delayedTotalAmount)}
+                    </span>
+                  </div>
+
+                  {/* Despesas do Mês */}
+                  <div 
+                    onClick={() => navigate('/expenses')}
+                    className="p-3 bg-rose-950/40 hover:bg-rose-950/60 rounded-xl border border-rose-500/40 flex flex-col justify-between cursor-pointer transition-colors group overflow-hidden shadow-xs"
+                    title="Clique para visualizar e gerenciar as despesas da empresa"
                   >
-                    {formatCurrency(stats.delayedTotalAmount)}
-                  </span>
+                    <div className="flex items-center justify-between gap-1 mb-1">
+                      <span className="text-xs text-rose-400 font-bold flex items-center gap-1.5">
+                        <Receipt size={14} />
+                        Despesas do Mês
+                      </span>
+                      <span className="text-[11px] text-rose-300/90 group-hover:text-white underline font-medium">
+                        Gerenciar &gt;
+                      </span>
+                    </div>
+                    <span 
+                      className="text-sm sm:text-base font-black text-rose-400 tracking-tight block truncate"
+                      title={formatCurrency(stats.expensesThisMonth)}
+                    >
+                      - {formatCurrency(stats.expensesThisMonth)}
+                    </span>
+                  </div>
                 </div>
               </div>
 

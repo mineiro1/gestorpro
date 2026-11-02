@@ -46,3 +46,33 @@ body {
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
+
+/* Regras de Impressão Limpa */
+@media print {
+  aside, 
+  header, 
+  nav, 
+  .no-print,
+  button,
+  input[type="month"] {
+    display: none !important;
+  }
+
+  body, html {
+    background: #ffffff !important;
+    color: #000000 !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  .print-only {
+    display: block !important;
+  }
+
+  .print-full-width {
+    width: 100% !important;
+    max-width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+}

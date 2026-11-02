@@ -4487,6 +4487,304 @@ await getMessaging().send({
     }
   });
 
+  // ==========================================
+  // GESTÃO DE DESPESAS DA EMPRESA (EXPENSES)
+  // Persistência Quádrupla: users.whatsapp_settings.expenses + settings (id: expense_*) + data/expenses.json + cache
+  // ==========================================
+  const EXPENSES_FILE = path.join(process.cwd(), 'data', 'expenses.json');
+
+  function readLocalExpenses(): Record<string, any[]> {
+    try {
+      if (fs.existsSync(EXPENSES_FILE)) {
+        return JSON.parse(fs.readFileSync(EXPENSES_FILE, 'utf-8'));
+      }
+    } catch (e) {
+      console.warn('[Expenses] Erro ao ler expenses.json:', e);
+    }
+    return {};
+  }
+
+  function writeLocalExpenses(data: Record<string, any[]>) {
+    try {
+      const dir = path.dirname(EXPENSES_FILE);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(EXPENSES_FILE, JSON.stringify(data, null, 2), 'utf-8');
+    } catch (e) {
+      console.warn('[Expenses] Erro ao gravar expenses.json:', e);
+    }
+  }
+
+  // GET /api/expenses
+  app.get("/api/expenses", async (req, res) => {
+    try {
+      const adminId = String(req.query?.adminId || '');
+      if (!adminId) {
+        return res.status(400).json({ error: "Missing adminId" });
+      }
+
+      const expensesMap = new Map<string, any>();
+
+      // 1. Lê do arquivo local
+      const localData = readLocalExpenses();
+      const localList = localData[adminId] || [];
+      localList.forEach((exp: any) => {
+        if (exp && exp.id) expensesMap.set(exp.id, exp);
+      });
+
+      // 2. Lê do Supabase (users.whatsapp_settings.expenses)
+      try {
+        const { data: userRow } = await supabaseAdmin
+          .from('users')
+          .select('whatsapp_settings')
+          .eq('id', adminId)
+          .maybeSingle();
+
+        const waExpenses = userRow?.whatsapp_settings?.expenses;
+        if (Array.isArray(waExpenses)) {
+          waExpenses.forEach((exp: any) => {
+            if (exp && exp.id) expensesMap.set(exp.id, exp);
+          });
+        }
+      } catch (err: any) {
+        console.warn('[Expenses] Erro ao buscar de users:', err?.message || err);
+      }
+
+      // 3. Lê do backup na tabela settings (id iniciando com expense_ e contendo adminId)
+      try {
+        const { data: settingRows } = await supabaseAdmin
+          .from('settings')
+          .select('id, updated_at')
+          .like('id', `expense_${adminId}_%`);
+
+        if (settingRows) {
+          settingRows.forEach((row: any) => {
+            try {
+              const b64 = row.id.split('_').slice(2).join('_');
+              const jsonStr = decodeURIComponent(escape(atob(b64)));
+              const exp = JSON.parse(jsonStr);
+              if (exp && exp.id && !expensesMap.has(exp.id)) {
+                expensesMap.set(exp.id, exp);
+              }
+            } catch {}
+          });
+        }
+      } catch (err: any) {
+        console.warn('[Expenses] Erro ao buscar de settings:', err?.message || err);
+      }
+
+      const list = Array.from(expensesMap.values()).sort((a, b) => {
+        const dateA = a.date || a.created_at || '';
+        const dateB = b.date || b.created_at || '';
+        return dateB.localeCompare(dateA);
+      });
+
+      return res.json({ success: true, expenses: list });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/expenses
+  app.post("/api/expenses", async (req, res) => {
+    try {
+      const { adminId, description, amount, date, receiptUrl, category } = req.body || {};
+      if (!adminId || !description || amount === undefined) {
+        return res.status(400).json({ error: "Descrição e valor são obrigatórios" });
+      }
+
+      const numAmount = parseFloat(String(amount).replace(',', '.'));
+      if (isNaN(numAmount) || numAmount < 0) {
+        return res.status(400).json({ error: "Valor inválido" });
+      }
+
+      const newExpense = {
+        id: req.body.id || `exp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        adminId,
+        description: String(description).trim(),
+        amount: numAmount,
+        date: date || new Date().toISOString().split('T')[0],
+        receiptUrl: receiptUrl || null,
+        category: category || 'Geral',
+        created_at: new Date().toISOString()
+      };
+
+      // 1. Salva no arquivo local
+      const localData = readLocalExpenses();
+      if (!localData[adminId]) localData[adminId] = [];
+      const existingIdx = localData[adminId].findIndex((e: any) => e.id === newExpense.id);
+      if (existingIdx >= 0) {
+        localData[adminId][existingIdx] = newExpense;
+      } else {
+        localData[adminId].push(newExpense);
+      }
+      writeLocalExpenses(localData);
+
+      // 2. Salva em users.whatsapp_settings.expenses
+      (async () => {
+        try {
+          const { data: userRow } = await supabaseAdmin
+            .from('users')
+            .select('whatsapp_settings')
+            .eq('id', adminId)
+            .maybeSingle();
+
+          const wa = userRow?.whatsapp_settings || {};
+          let currentExpenses = Array.isArray(wa.expenses) ? [...wa.expenses] : [];
+          const idx = currentExpenses.findIndex((e: any) => e.id === newExpense.id);
+          if (idx >= 0) {
+            currentExpenses[idx] = newExpense;
+          } else {
+            currentExpenses.push(newExpense);
+          }
+
+          await supabaseAdmin
+            .from('users')
+            .update({ whatsapp_settings: { ...wa, expenses: currentExpenses } })
+            .eq('id', adminId);
+        } catch (dbErr: any) {
+          console.warn('[Expenses] Erro ao salvar em users:', dbErr?.message || dbErr);
+        }
+      })();
+
+      // 3. Salva backup na tabela settings
+      (async () => {
+        try {
+          const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(newExpense))));
+          const settingId = `expense_${adminId}_${b64}`;
+          await supabaseAdmin.from('settings').upsert({
+            id: settingId,
+            monthlyprice: numAmount,
+            updated_at: new Date().toISOString()
+          });
+        } catch (setErr: any) {
+          console.warn('[Expenses] Erro ao salvar em settings:', setErr?.message || setErr);
+        }
+      })();
+
+      return res.json({ success: true, expense: newExpense });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // DELETE /api/expenses/:id
+  app.delete("/api/expenses/:id", async (req, res) => {
+    try {
+      const expenseId = req.params.id;
+      const adminId = String(req.query?.adminId || req.body?.adminId || '');
+      if (!expenseId || !adminId) {
+        return res.status(400).json({ error: "Missing expenseId or adminId" });
+      }
+
+      // 1. Remove do arquivo local
+      const localData = readLocalExpenses();
+      if (localData[adminId]) {
+        localData[adminId] = localData[adminId].filter((e: any) => e.id !== expenseId);
+        writeLocalExpenses(localData);
+      }
+
+      // 2. Remove de users.whatsapp_settings.expenses
+      (async () => {
+        try {
+          const { data: userRow } = await supabaseAdmin
+            .from('users')
+            .select('whatsapp_settings')
+            .eq('id', adminId)
+            .maybeSingle();
+
+          const wa = userRow?.whatsapp_settings || {};
+          if (Array.isArray(wa.expenses)) {
+            const filtered = wa.expenses.filter((e: any) => e.id !== expenseId);
+            await supabaseAdmin
+              .from('users')
+              .update({ whatsapp_settings: { ...wa, expenses: filtered } })
+              .eq('id', adminId);
+          }
+        } catch (dbErr: any) {
+          console.warn('[Expenses] Erro ao remover de users:', dbErr?.message || dbErr);
+        }
+      })();
+
+      // 3. Remove da tabela settings se houver
+      (async () => {
+        try {
+          const { data: rows } = await supabaseAdmin
+            .from('settings')
+            .select('id')
+            .like('id', `expense_${adminId}_%`);
+
+          if (rows) {
+            for (const r of rows) {
+              try {
+                const b64 = r.id.split('_').slice(2).join('_');
+                const jsonStr = decodeURIComponent(escape(atob(b64)));
+                const exp = JSON.parse(jsonStr);
+                if (exp && exp.id === expenseId) {
+                  await supabaseAdmin.from('settings').delete().eq('id', r.id);
+                }
+              } catch {}
+            }
+          }
+        } catch (setErr: any) {
+          console.warn('[Expenses] Erro ao remover de settings:', setErr?.message || setErr);
+        }
+      })();
+
+      return res.json({ success: true, deletedId: expenseId });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/expenses/upload-receipt (Upload de foto de comprovante - galeria ou câmera)
+  app.post("/api/expenses/upload-receipt", async (req, res) => {
+    try {
+      const { fileBase64, fileName, mimeType } = req.body || {};
+      if (!fileBase64) {
+        return res.status(400).json({ error: "Arquivo base64 não fornecido" });
+      }
+
+      const pureBase64 = fileBase64.includes(',') ? fileBase64.split(',')[1] : fileBase64;
+      const buffer = Buffer.from(pureBase64, 'base64');
+      const ext = fileName ? path.extname(fileName) || '.jpg' : '.jpg';
+      const storageFileName = `comprovante_${Date.now()}_${Math.random().toString(36).substring(2, 7)}${ext}`;
+      const contentType = mimeType || 'image/jpeg';
+
+      // 1. Tenta upload no bucket chat-media via service role
+      try {
+        const { data: uploadData, error: uploadErr } = await supabaseAdmin.storage
+          .from('chat-media')
+          .upload(storageFileName, buffer, {
+            contentType,
+            upsert: true
+          });
+
+        if (!uploadErr && uploadData) {
+          const { data: pubData } = supabaseAdmin.storage
+            .from('chat-media')
+            .getPublicUrl(storageFileName);
+
+          if (pubData?.publicUrl) {
+            return res.json({ success: true, url: pubData.publicUrl });
+          }
+        }
+      } catch (storageErr) {
+        console.warn('[ExpensesUpload] Falha no storage supabase, usando fallback em disco:', storageErr);
+      }
+
+      // 2. Fallback de salvamento na pasta pública do servidor
+      const uploadsDir = path.join(process.cwd(), 'public', 'uploads', 'expenses');
+      if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+      const localFilePath = path.join(uploadsDir, storageFileName);
+      fs.writeFileSync(localFilePath, buffer);
+
+      const localUrl = `/uploads/expenses/${storageFileName}`;
+      return res.json({ success: true, url: localUrl });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
   // Background listener for Push Notifications (incoming client chat messages, finished visits, one-off jobs)
   supabaseAdmin.channel('push-notifications-db-events')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'visits' }, async (payload) => {

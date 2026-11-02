@@ -13,6 +13,8 @@ import Employees from './pages/Employees';
 import EmployeeForm from './pages/EmployeeForm';
 import RoutesPage from './pages/RoutesPage';
 import Billing from './pages/Billing';
+import ExpensesPage from './pages/ExpensesPage';
+import ReportsPage from './pages/ReportsPage';
 import SuppliesForm from './pages/SuppliesForm';
 import ProductsPage from './pages/ProductsPage';
 import Messages from './pages/Messages';
@@ -169,6 +171,8 @@ export default function App() {
               <Route path="employees/new" element={<ProtectedRoute allowedRoles={['admin']}><EmployeeForm /></ProtectedRoute>} />
               <Route path="employees/:id" element={<ProtectedRoute allowedRoles={['admin']}><EmployeeForm /></ProtectedRoute>} />
               <Route path="billing" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><Billing /></ProtectedRoute>} />
+              <Route path="expenses" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><ExpensesPage /></ProtectedRoute>} />
+              <Route path="reports" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><ReportsPage /></ProtectedRoute>} />
               <Route path="routes" element={<ProtectedRoute allowedRoles={['admin', 'manager', 'employee']}><RoutesPage /></ProtectedRoute>} />
               <Route path="visits" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><VisitsHistory /></ProtectedRoute>} />
               <Route path="one-off-jobs" element={<ProtectedRoute allowedRoles={['admin', 'manager']}><OneOffJobs /></ProtectedRoute>} />

@@ -3,7 +3,7 @@ import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { useQueryClient } from '@tanstack/react-query';
-import {  Menu, Store, Wrench, X, Home, Users, UserCircle, Map, LogOut, Bell, MessageSquare, Headphones, Briefcase, History, Contact , Package, Settings, HelpCircle, RefreshCw } from 'lucide-react';
+import {  Menu, Store, Wrench, X, Home, Users, UserCircle, Map, LogOut, Bell, MessageSquare, Headphones, Briefcase, History, Contact , Package, Settings, HelpCircle, RefreshCw, Receipt, BarChart3 } from 'lucide-react';
 import clsx from 'clsx';
 import { Capacitor } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
@@ -480,6 +480,8 @@ const isSelf = payload.new.employee_id === userProfile.uid;
         { name: 'Produtos', path: '/products', icon: Package },
         { name: 'Agenda', path: '/agenda', icon: Contact },
         { name: 'Cobranças', path: '/billing', icon: Bell },
+        { name: 'Despesas', path: '/expenses', icon: Receipt },
+        { name: 'Relatórios', path: '/reports', icon: BarChart3 },
         { name: 'Mensagens', path: '/messages', icon: MessageSquare },
         { name: 'Colaboradores', path: '/employees', icon: UserCircle },
         { name: 'Rotas', path: '/routes', icon: Map },
