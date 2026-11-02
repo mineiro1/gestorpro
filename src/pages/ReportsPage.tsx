@@ -26,7 +26,8 @@ import {
   Filter,
   Share2,
   ExternalLink,
-  MessageCircle
+  MessageCircle,
+  ArrowLeft
 } from 'lucide-react';
 
 interface PaymentItem {
@@ -562,28 +563,12 @@ export default function ReportsPage() {
 </html>`;
   };
 
-  // Disparo de Impressão Direta (Compatível com Desktop e Mobile)
+  // Disparo de Impressão Direta (Compatível com Desktop e Mobile sem abrir páginas em branco)
   const executeDirectPrint = () => {
     try {
-      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
       const htmlContent = generatePrintableHtml();
 
-      if (isMobile) {
-        // No celular, abre o documento diretamente em nova janela para usar Compartilhar > Imprimir / Salvar PDF nativo
-        const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const win = window.open(url, '_blank');
-        if (!win) {
-          // Se popup for bloqueado, faz download automático
-          handleDownloadPrintHtml();
-        } else {
-          showToast('Relatório aberto para visualização e impressão nativa!');
-        }
-        setTimeout(() => URL.revokeObjectURL(url), 60000);
-        return;
-      }
-
-      // Em desktop, usa o frame oculto para abrir a janela de impressão
+      // Usa frame oculto para abrir a janela nativa de impressão/salvar PDF do sistema
       const existingFrame = document.getElementById('print-report-iframe');
       if (existingFrame) existingFrame.remove();
 
@@ -595,6 +580,7 @@ export default function ReportsPage() {
       printFrame.style.width = '0';
       printFrame.style.height = '0';
       printFrame.style.border = '0';
+      printFrame.style.visibility = 'hidden';
       document.body.appendChild(printFrame);
 
       const frameDoc = printFrame.contentWindow?.document || printFrame.contentDocument;
@@ -615,8 +601,10 @@ export default function ReportsPage() {
             try {
               document.body.removeChild(printFrame);
             } catch {}
-          }, 4000);
-        }, 500);
+          }, 30000);
+        }, 400);
+      } else {
+        window.print();
       }
     } catch (err) {
       console.warn('Fallback para window.print:', err);
@@ -1257,9 +1245,11 @@ export default function ReportsPage() {
                 <button
                   type="button"
                   onClick={() => setIsPrintModalOpen(false)}
-                  className="sm:hidden p-2 text-slate-400 hover:text-slate-700 rounded-xl hover:bg-slate-200"
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold text-xs rounded-xl transition-colors cursor-pointer"
+                  title="Voltar ao sistema"
                 >
-                  <X size={20} />
+                  <ArrowLeft size={16} />
+                  <span>Voltar</span>
                 </button>
               </div>
 
@@ -1438,6 +1428,38 @@ export default function ReportsPage() {
                   <span>{userProfile?.whatsappSettings?.companyName || "RS Piscinas"} · Gestão Financeira</span>
                   <span>Documento Oficial de Prestação de Contas</span>
                 </div>
+              </div>
+            </div>
+
+            {/* Barra Inferior Fixa com Botão Voltar e Ações */}
+            <div className="p-3 bg-white border-t border-slate-200 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => setIsPrintModalOpen(false)}
+                className="flex items-center justify-center gap-1.5 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs rounded-xl border border-slate-300 transition-colors cursor-pointer"
+              >
+                <ArrowLeft size={16} />
+                <span>Voltar ao Sistema</span>
+              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={executeDirectPrint}
+                  className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
+                >
+                  <Printer size={15} />
+                  <span>Imprimir / Salvar PDF</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleDownloadPrintHtml}
+                  className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
+                >
+                  <Download size={15} />
+                  <span>Baixar Arquivo</span>
+                </button>
               </div>
             </div>
           </div>

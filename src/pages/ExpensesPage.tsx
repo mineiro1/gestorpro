@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { supabase } from '../lib/supabase';
 import { expensesService, ExpenseItem } from '../lib/expensesService';
 import { 
   Receipt, 
@@ -81,6 +82,35 @@ export default function ExpensesPage() {
 
   useEffect(() => {
     loadExpenses();
+
+    // Sincronização automática ao focar ou alternar de tela/aba (ex: voltar para o app no celular)
+    const handleFocus = () => loadExpenses();
+    window.addEventListener('focus', handleFocus);
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') loadExpenses();
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    // Canal Realtime do Supabase para refletir despesas cadastradas no celular/PC em tempo real
+    let channel: any = null;
+    if (targetAdminId) {
+      channel = supabase.channel(`realtime-expenses-${targetAdminId}`)
+        .on('postgres_changes', { 
+          event: 'UPDATE', 
+          schema: 'public', 
+          table: 'users', 
+          filter: `id=eq.${targetAdminId}` 
+        }, () => {
+          loadExpenses();
+        })
+        .subscribe();
+    }
+
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      if (channel) supabase.removeChannel(channel);
+    };
   }, [targetAdminId]);
 
   // Manipulador de upload de comprovante (Foto da câmera ou Galeria)

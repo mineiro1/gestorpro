@@ -191,8 +191,8 @@ export const expensesService = {
     return new Promise((resolve) => {
       const reader = new FileReader();
       reader.onload = async () => {
+        const fileBase64 = reader.result as string;
         try {
-          const fileBase64 = reader.result as string;
           const res = await fetch('/api/expenses/upload-receipt', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -210,10 +210,13 @@ export const expensesService = {
               return;
             }
           }
-          resolve(null);
+          // Se o servidor retornar sem URL, preserva a imagem em Base64
+          console.warn('[ExpensesService] Resposta sem URL de imagem, usando Base64 como garantia');
+          resolve(fileBase64);
         } catch (err) {
-          console.error('[ExpensesService] Erro no upload do comprovante:', err);
-          resolve(null);
+          console.error('[ExpensesService] Erro no upload do comprovante, usando Base64 resiliente:', err);
+          // Garantia absoluta: nunca perde o comprovante mesmo offline
+          resolve(fileBase64);
         }
       };
       reader.onerror = () => resolve(null);

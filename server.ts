@@ -107,6 +107,219 @@ async function startServer() {
     }
   });
 
+  // ==========================================
+  // GESTÃO DE DESPESAS DA EMPRESA & COMPROVANTES
+  // ==========================================
+  const uploadsDir = path.join(process.cwd(), 'public', 'uploads', 'receipts');
+  if (!fs.existsSync(uploadsDir)) {
+    try { fs.mkdirSync(uploadsDir, { recursive: true }); } catch(e) {}
+  }
+  app.use('/uploads', express.static(path.join(process.cwd(), 'public', 'uploads')));
+
+  const expensesDataDir = path.join(process.cwd(), 'data');
+  if (!fs.existsSync(expensesDataDir)) {
+    try { fs.mkdirSync(expensesDataDir, { recursive: true }); } catch(e) {}
+  }
+
+  // 1. Upload de Comprovante de Despesa (Câmera ou Galeria)
+  app.post("/api/expenses/upload-receipt", async (req, res) => {
+    try {
+      const { fileBase64, fileName, mimeType } = req.body;
+      if (!fileBase64) {
+        return res.status(400).json({ success: false, message: "Arquivo não enviado" });
+      }
+
+      const cleanBase64 = fileBase64.includes(',') ? fileBase64.split(',')[1] : fileBase64;
+      const buffer = Buffer.from(cleanBase64, 'base64');
+
+      const ext = fileName?.split('.').pop()?.toLowerCase() || 'jpg';
+      const safeExt = ['jpg', 'jpeg', 'png', 'webp', 'pdf'].includes(ext) ? ext : 'jpg';
+      const fileId = `comprovante_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${safeExt}`;
+      const effectiveMime = mimeType || (safeExt === 'png' ? 'image/png' : safeExt === 'pdf' ? 'application/pdf' : 'image/jpeg');
+
+      let publicUrl: string | null = null;
+
+      // 1. Upload no Supabase Storage (Bucket chat-media que é público e compartilhado entre todos os aparelhos)
+      try {
+        const storagePath = `comprovantes/${fileId}`;
+        const { error: uploadErr } = await supabaseAdmin.storage
+          .from('chat-media')
+          .upload(storagePath, buffer, {
+            contentType: effectiveMime,
+            upsert: true
+          });
+
+        if (!uploadErr) {
+          const { data: pubData } = supabaseAdmin.storage.from('chat-media').getPublicUrl(storagePath);
+          publicUrl = pubData?.publicUrl || null;
+          console.log(`[Expenses API] Comprovante salvo com sucesso no Supabase Storage: ${publicUrl}`);
+        } else {
+          console.warn('[Expenses API] Erro ao enviar para Supabase Storage:', uploadErr.message);
+        }
+      } catch (stErr: any) {
+        console.warn('[Expenses API] Exceção no Supabase Storage:', stErr.message);
+      }
+
+      // 2. Gravação de segurança no disco local
+      try {
+        const localFilePath = path.join(uploadsDir, fileId);
+        fs.writeFileSync(localFilePath, buffer);
+        if (!publicUrl) {
+          publicUrl = `/uploads/receipts/${fileId}`;
+          console.log(`[Expenses API] Usando comprovante local: ${publicUrl}`);
+        }
+      } catch (fsErr: any) {
+        console.warn('[Expenses API] Erro ao salvar comprovante no disco local:', fsErr.message);
+      }
+
+      if (!publicUrl) {
+        publicUrl = `data:${effectiveMime};base64,${cleanBase64}`;
+      }
+
+      return res.json({ success: true, url: publicUrl });
+    } catch (err: any) {
+      console.error('[Expenses API] Erro no upload do comprovante:', err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 2. Buscar Despesas da Empresa (Sincronizado via Supabase Admin)
+  app.get("/api/expenses", async (req, res) => {
+    try {
+      const adminId = (req.query.adminId as string) || '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
+      let expensesList: any[] = [];
+
+      // 1. Tenta buscar no banco de dados central
+      try {
+        const { data: userRow } = await supabaseAdmin
+          .from('users')
+          .select('whatsapp_settings')
+          .eq('id', adminId)
+          .maybeSingle();
+
+        const wa = userRow?.whatsapp_settings;
+        if (wa && Array.isArray(wa.expenses)) {
+          expensesList = wa.expenses;
+        }
+      } catch (dbErr: any) {
+        console.warn('[Expenses API] Falha ao consultar Supabase:', dbErr.message);
+      }
+
+      // 2. Fallback de backup em disco local
+      const diskFile = path.join(expensesDataDir, `expenses_${adminId}.json`);
+      if (expensesList.length === 0 && fs.existsSync(diskFile)) {
+        try {
+          const raw = fs.readFileSync(diskFile, 'utf8');
+          expensesList = JSON.parse(raw);
+        } catch {}
+      } else if (expensesList.length > 0) {
+        try {
+          fs.writeFileSync(diskFile, JSON.stringify(expensesList, null, 2), 'utf8');
+        } catch {}
+      }
+
+      return res.json({ success: true, expenses: expensesList });
+    } catch (err: any) {
+      console.error('[Expenses API] Erro ao buscar despesas:', err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 3. Cadastrar ou Atualizar Despesa
+  app.post("/api/expenses", async (req, res) => {
+    try {
+      const expense = req.body;
+      const adminId = expense.adminId || '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
+      const expenseId = expense.id || `exp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+      const fullExpense = {
+        ...expense,
+        id: expenseId,
+        created_at: expense.created_at || new Date().toISOString()
+      };
+
+      // 1. Ler lista atual do Supabase
+      const { data: userRow } = await supabaseAdmin
+        .from('users')
+        .select('whatsapp_settings')
+        .eq('id', adminId)
+        .maybeSingle();
+
+      const wa = userRow?.whatsapp_settings || {};
+      const currentList: any[] = Array.isArray(wa.expenses) ? [...wa.expenses] : [];
+
+      const idx = currentList.findIndex(e => e.id === expenseId);
+      if (idx >= 0) {
+        currentList[idx] = fullExpense;
+      } else {
+        currentList.unshift(fullExpense);
+      }
+
+      // 2. Persistir no Supabase com service_role (atualização garantida entre celular e computador)
+      await supabaseAdmin
+        .from('users')
+        .update({
+          whatsapp_settings: {
+            ...wa,
+            expenses: currentList
+          }
+        })
+        .eq('id', adminId);
+
+      // 3. Persistir no backup em disco
+      try {
+        const diskFile = path.join(expensesDataDir, `expenses_${adminId}.json`);
+        fs.writeFileSync(diskFile, JSON.stringify(currentList, null, 2), 'utf8');
+      } catch {}
+
+      console.log(`[Expenses API] Despesa salva com sucesso (${expenseId}): R$ ${fullExpense.amount} - ${fullExpense.description}`);
+      return res.json({ success: true, expense: fullExpense });
+    } catch (err: any) {
+      console.error('[Expenses API] Erro ao cadastrar despesa:', err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 4. Deletar Despesa (Apenas via ação explícita de clique no botão delete)
+  app.delete("/api/expenses/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const adminId = (req.query.adminId as string) || '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
+
+      const { data: userRow } = await supabaseAdmin
+        .from('users')
+        .select('whatsapp_settings')
+        .eq('id', adminId)
+        .maybeSingle();
+
+      const wa = userRow?.whatsapp_settings || {};
+      if (Array.isArray(wa.expenses)) {
+        const updatedList = wa.expenses.filter((e: any) => e.id !== id);
+
+        await supabaseAdmin
+          .from('users')
+          .update({
+            whatsapp_settings: {
+              ...wa,
+              expenses: updatedList
+            }
+          })
+          .eq('id', adminId);
+
+        try {
+          const diskFile = path.join(expensesDataDir, `expenses_${adminId}.json`);
+          fs.writeFileSync(diskFile, JSON.stringify(updatedList, null, 2), 'utf8');
+        } catch {}
+      }
+
+      console.log(`[Expenses API] Despesa deletada com sucesso: ${id}`);
+      return res.json({ success: true });
+    } catch (err: any) {
+      console.error('[Expenses API] Erro ao deletar despesa:', err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
   // Endpoint de Resolução de Login e Senha para o Portal do Cliente
   // Suporta com precisão os 4 formatos de telefone do Brasil:
   // 1. AstraCalls: DDI 55 + DDD + 8 dígitos (ex: 551187654321)
