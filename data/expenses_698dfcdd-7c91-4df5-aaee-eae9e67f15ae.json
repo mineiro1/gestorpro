@@ -1,1 +1,12 @@
-[]
+[
+  {
+    "id": "exp_1793710503176_s6dpr",
+    "adminId": "698dfcdd-7c91-4df5-aaee-eae9e67f15ae",
+    "description": "Gasolina Carro",
+    "amount": 50,
+    "date": "2026-11-02",
+    "category": "Combustível",
+    "receiptUrl": null,
+    "created_at": "2026-11-03T12:55:03.176+00:00"
+  }
+]

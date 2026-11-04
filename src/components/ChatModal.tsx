@@ -7,7 +7,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { evaluateSessionExpiry, checkDailyChatAvailability, markClientChatAsRead } from '../lib/chatSessionUtils';
 import { getApiUrl } from '../lib/apiConfig';
-import { sendAstraCallsMessage, sendMetaMessage, sendEvolutionMessage, checkWhatsAppMessageStatus, uploadMediaToPublicStorage, getEffectiveWhatsAppProvider, openWhatsApp } from '../lib/whatsapp';
+import { sendAstraCallsMessage, sendMetaMessage, sendEvolutionMessage, checkWhatsAppMessageStatus, uploadMediaToPublicStorage, getEffectiveWhatsAppProvider, openWhatsApp, resolveAdminWhatsAppSettings } from '../lib/whatsapp';
 
 export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const { userProfile } = useAuth();
@@ -631,35 +631,16 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
       // Fallback de sessão caso a API não tenha respondido
       const sessionId = currentSession?.id;
 
-      // Resolve configurações de WhatsApp
-      let currentSettings = { ...(waSettings || {}), ...(userProfile?.whatsappSettings || {}) };
+      // Resolve configurações de WhatsApp dinamicamente do Administrador
       const adminId = userProfile?.role === 'admin' ? userProfile?.uid : (userProfile?.adminId || userProfile?.uid);
-
-      if (!currentSettings.metaToken && !currentSettings.evolutionApiKey) {
-        try {
-          if (adminId) {
-            const { data: adminData } = await supabase
-              .from('users')
-              .select('whatsapp_settings')
-              .eq('id', adminId)
-              .maybeSingle();
-            if (adminData?.whatsapp_settings) {
-              currentSettings = { ...currentSettings, ...adminData.whatsapp_settings };
-            }
-          }
-          if (!currentSettings.metaToken && !currentSettings.evolutionApiKey) {
-            const { data: allUsers } = await supabase
-              .from('users')
-              .select('whatsapp_settings')
-              .not('whatsapp_settings', 'is', null);
-            const foundAdmin = allUsers?.find((u: any) => u.whatsapp_settings?.metaToken || u.whatsapp_settings?.evolutionApiKey);
-            if (foundAdmin?.whatsapp_settings) {
-              currentSettings = { ...currentSettings, ...foundAdmin.whatsapp_settings };
-            }
-          }
-        } catch (e) {
-          console.warn('[ChatModal] Erro ao buscar configurações de WhatsApp:', e);
-        }
+      const resolvedAdmin = await resolveAdminWhatsAppSettings(adminId, userProfile);
+      let currentSettings = { ...(userProfile?.whatsappSettings || {}), ...(waSettings || {}), ...(resolvedAdmin || {}) };
+      if (resolvedAdmin?.provider) {
+        currentSettings.provider = resolvedAdmin.provider;
+        currentSettings.useEvolutionApi = resolvedAdmin.provider === 'evolution';
+        currentSettings.useAstraCalls = resolvedAdmin.provider === 'astracalls';
+        currentSettings.useAstracalls = resolvedAdmin.provider === 'astracalls';
+        currentSettings.useMetaApi = resolvedAdmin.provider === 'meta';
       }
 
       let externalId = '';
@@ -669,7 +650,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
 
       if (clientPhone) {
         // Tentativa 1: Envio primário via Backend Seguro (/api/chat/send)
-        // O backend cuida da inserção autorizada no Supabase e do disparo WhatsApp (Evolution / Meta)
+        // O backend cuida da inserção autorizada no Supabase e do disparo WhatsApp (Evolution / AstraCalls / Meta)
         try {
           const sendEndpoint = getApiUrl('/api/chat/send');
           const apiRes = await fetch(sendEndpoint, {
@@ -698,7 +679,7 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
             } else if (apiData?.error) {
               sendError = apiData.error;
               if (apiData?.messageId) insertedMessageId = apiData.messageId;
-              if (apiData?.message) return apiData.message;
+              // Não retorna imediatamente; se falhar, tenta o fallback direto pelo navegador!
             }
           } else {
             console.warn('[ChatModal] Servidor backend retornou HTTP', apiRes.status);
@@ -707,8 +688,8 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
           console.warn('[ChatModal] Falha ao contatar backend, acionando fallback direto:', apiErr);
         }
 
-        // Tentativa 2: Fallback direto no navegador (caso o backend esteja inacessível ou estático)
-        if (!sentSuccess && !insertedMessageId) {
+        // Tentativa 2: Fallback direto no navegador (caso o backend esteja com erro ou inacessível)
+        if (!sentSuccess) {
           try {
             const effectiveProvider = getEffectiveWhatsAppProvider(currentSettings);
 

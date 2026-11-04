@@ -1,7 +1,14 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { openWhatsApp, sendMetaMessage, sendAstraCallsMessage, getEffectiveWhatsAppProvider } from '../lib/whatsapp';
+import { 
+  openWhatsApp, 
+  sendMetaMessage, 
+  sendAstraCallsMessage, 
+  sendEvolutionMessage, 
+  getEffectiveWhatsAppProvider, 
+  resolveAdminWhatsAppSettings 
+} from '../lib/whatsapp';
 import { 
   MessageSquare, 
   MessageCircle, 
@@ -428,13 +435,15 @@ export default function Messages() {
       return;
     }
 
-    let waSettings = userProfile?.whatsappSettings;
-    if (userProfile?.uid) {
-      const currentAdminId = userProfile.role === 'admin' ? userProfile.uid : userProfile.adminId;
-      const { data } = await supabase.from('users').select('whatsapp_settings').eq('id', currentAdminId).single();
-      if (data && data.whatsapp_settings) {
-        waSettings = data.whatsapp_settings;
-      }
+    const currentAdminId = userProfile?.role === 'admin' ? userProfile?.uid : (userProfile?.adminId || userProfile?.uid);
+    const resolvedAdmin = await resolveAdminWhatsAppSettings(currentAdminId, userProfile);
+    let waSettings = { ...(userProfile?.whatsappSettings || {}), ...(resolvedAdmin || {}) };
+    if (resolvedAdmin?.provider) {
+      waSettings.provider = resolvedAdmin.provider;
+      waSettings.useEvolutionApi = resolvedAdmin.provider === 'evolution';
+      waSettings.useAstraCalls = resolvedAdmin.provider === 'astracalls';
+      waSettings.useAstracalls = resolvedAdmin.provider === 'astracalls';
+      waSettings.useMetaApi = resolvedAdmin.provider === 'meta';
     }
     
     const effectiveProvider = getEffectiveWhatsAppProvider(waSettings);
@@ -533,7 +542,8 @@ export default function Messages() {
         setSendStatuses(prev => ({ ...prev, [client.id]: 'sending' }));
         try {
           const personalizedText = messageText.replace(/\{nome\}/g, client.name || '');
-          await sendEvolutionMessageApi(client, personalizedText, waSettings, base64Media, mimeType);
+          const msgClientId = `msg_broadcast_${client.id}_${Date.now()}`;
+          await sendEvolutionMessage(client.phone, personalizedText, waSettings, msgClientId, base64Media || undefined, mimeType || undefined);
           setSendStatuses(prev => ({ ...prev, [client.id]: 'success' }));
           successCount++;
         } catch (e: any) {

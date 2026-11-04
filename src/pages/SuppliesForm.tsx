@@ -157,9 +157,11 @@ export default function SuppliesForm() {
     if (!lastSentData || !client) return;
     
     // Resolve configurações mais recentes do admin dono do cliente
-    const settings = (waSettings && Object.keys(waSettings).length > 0)
-      ? waSettings
-      : await resolveAdminWhatsAppSettings(client?.admin_id, userProfile);
+    const resolvedAdmin = await resolveAdminWhatsAppSettings(client?.admin_id, userProfile);
+    const settings = { ...(waSettings || {}), ...(resolvedAdmin || {}) };
+    if (resolvedAdmin?.provider) {
+      settings.provider = resolvedAdmin.provider;
+    }
 
     const effectiveProvider = getEffectiveWhatsAppProvider(settings);
     const companyName = settings?.companyName || 'nossa empresa';
@@ -233,9 +235,11 @@ export default function SuppliesForm() {
       `\n\nPor favor, providencie assim que possível para não interrompermos o tratamento.`;
       
     // Garante as credenciais do admin da empresa vinculada a este cliente
-    const settings = (waSettings && Object.keys(waSettings).length > 0)
-      ? waSettings
-      : await resolveAdminWhatsAppSettings(client?.admin_id, userProfile);
+    const resolvedAdmin = await resolveAdminWhatsAppSettings(client?.admin_id, userProfile);
+    const settings = { ...(waSettings || {}), ...(resolvedAdmin || {}) };
+    if (resolvedAdmin?.provider) {
+      settings.provider = resolvedAdmin.provider;
+    }
 
     const effectiveProvider = getEffectiveWhatsAppProvider(settings);
     const partnerStores = settings?.partnerStores || [];

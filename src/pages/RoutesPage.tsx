@@ -1798,30 +1798,14 @@ export default function RoutesPage() {
           || (userProfile?.role === 'admin' ? userProfile?.uid : '698dfcdd-7c91-4df5-aaee-eae9e67f15ae');
         
         // 1. Obter configurações de WhatsApp mais recentes do admin
-        let currentSettings = (userProfile?.whatsappSettings as any) || {};
-        try {
-          if (adminId) {
-            const { data: adminData } = await supabase
-              .from('users')
-              .select('whatsapp_settings')
-              .eq('id', adminId)
-              .maybeSingle();
-            if (adminData?.whatsapp_settings) {
-              currentSettings = { ...currentSettings, ...adminData.whatsapp_settings };
-            }
-          }
-          if (!currentSettings.metaToken && !currentSettings.evolutionApiKey) {
-            const { data: allAdmins } = await supabase
-              .from('users')
-              .select('whatsapp_settings')
-              .not('whatsapp_settings', 'is', null);
-            const foundAdmin = allAdmins?.find((u: any) => u.whatsapp_settings?.metaToken || u.whatsapp_settings?.evolutionApiKey);
-            if (foundAdmin?.whatsapp_settings) {
-              currentSettings = { ...currentSettings, ...foundAdmin.whatsapp_settings };
-            }
-          }
-        } catch (e) {
-          console.warn('Erro ao carregar whatsapp_settings atualizado:', e);
+        const adminSettings = await resolveAdminWhatsAppSettings(adminId, userProfile);
+        let currentSettings = { ...(userProfile?.whatsappSettings as any || {}), ...(adminSettings || {}) };
+        if (adminSettings?.provider) {
+          currentSettings.provider = adminSettings.provider;
+          currentSettings.useEvolutionApi = adminSettings.provider === 'evolution';
+          currentSettings.useAstraCalls = adminSettings.provider === 'astracalls';
+          currentSettings.useAstracalls = adminSettings.provider === 'astracalls';
+          currentSettings.useMetaApi = adminSettings.provider === 'meta';
         }
 
         // 2. Verificar histórico recente (últimos 30 dias) para alternar entre mensagem 1 e 2

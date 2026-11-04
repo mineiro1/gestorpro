@@ -401,13 +401,13 @@ const isSelf = payload.new.employee_id === userProfile.uid;
          // Se a mensagem for do cliente
          if (payload.new.sender_type === 'client') {
             try {
-              const { data: sessionData } = await supabase
+               const { data: sessionData } = await supabase
                 .from('chat_sessions')
-                .select('id, client_id, status, created_at, closed_at')
+                .select('id, client_id, employee_id, admin_id, status, created_at, closed_at, visit_id')
                 .eq('id', payload.new.session_id)
                 .single();
 
-              // Se o colaborador/admin NÃO iniciou o chat, ou a sessão não estiver 'open', ou expirou, NÃO emite notificação nem som
+              // Se a sessão não estiver 'open', NÃO emite notificação nem som
               if (!sessionData || sessionData.status !== 'open') {
                 return;
               }
@@ -419,6 +419,41 @@ const isSelf = payload.new.employee_id === userProfile.uid;
                   .update({ status: 'closed', closed_at: new Date().toISOString() })
                   .eq('id', sessionData.id);
                 return;
+              }
+
+              // REGRAS ESTRITAS PARA COLABORADORES:
+              // Se o usuário logado for colaborador (não-admin), só recebe notificação se:
+              // 1. Ele tiver ABERTO a conversa com o cliente
+              // 2. Os 30 minutos NÃO tiverem finalizado
+              // 3. A visita deste cliente de hoje NÃO estiver finalizada
+              const isColaborador = userProfile?.role !== 'admin';
+              if (isColaborador) {
+                // Regra 1: O colaborador abriu a conversa?
+                if (sessionData.employee_id !== userProfile?.uid) {
+                  return;
+                }
+
+                // Regra 2: 30 minutos não expiraram? (já checado em expiry.isExpired)
+                if (expiry.isExpired) {
+                  return;
+                }
+
+                // Regra 3: A visita deste cliente hoje não está finalizada?
+                if (sessionData.client_id) {
+                  const todayStr = new Date().toISOString().split('T')[0];
+
+                  // Checa se a visita vinculada ou visita do dia de hoje já foi realizada/finalizada
+                  const { data: doneVisits } = await supabase
+                    .from('visits')
+                    .select('id, status')
+                    .eq('client_id', sessionData.client_id)
+                    .in('status', ['finalizada', 'realizada', 'concluida', 'completed'])
+                    .or(`time.eq.${todayStr},date.gte.${todayStr}`);
+
+                  if (doneVisits && doneVisits.length > 0) {
+                    return;
+                  }
+                }
               }
 
               if (sessionData.client_id) {

@@ -177,27 +177,33 @@ export async function resolveAdminWhatsAppSettings(
 export const getEffectiveWhatsAppProvider = (settings?: any): WhatsAppProvider => {
   if (!settings) return 'manual';
 
-  // 1. Se explicitamente definido como 'manual' ou 'web'
-  if (settings.provider === 'manual' || settings.provider === 'web') {
+  // 1. Prioridade absoluta: 'provider' explicitamente selecionado pelo usuário nas Configurações
+  const p = settings.provider;
+  if (p === 'manual' || p === 'web') return 'manual';
+  if (p === 'evolution') {
+    if (settings.evolutionApiKey && settings.evolutionInstanceName) return 'evolution';
     return 'manual';
   }
-
-  // 2. Se explicitamente definido Meta
-  if (settings.provider === 'meta' || settings.useMetaApi === true) {
+  if (p === 'meta') {
     if (settings.metaToken) return 'meta';
+    return 'manual';
   }
-
-  // 3. Se explicitamente definido Evolution
-  if (settings.provider === 'evolution' || settings.useEvolutionApi === true) {
-    if (settings.evolutionApiKey && settings.evolutionInstanceName) return 'evolution';
-  }
-
-  // 4. Se explicitamente definido AstraCalls (com suporte aos defaults da plataforma)
-  if (settings.provider === 'astracalls' || settings.useAstraCalls === true || settings.useAstracalls === true || settings.astracallsUrl) {
+  if (p === 'astracalls') {
     return 'astracalls';
   }
 
-  // 5. Se nenhuma API estiver ativa e validada, o padrão absoluto é 'manual' (WhatsApp Web / App)
+  // 2. Se 'provider' não estiver setado, checar flags legadas em ordem estrita
+  if (settings.useEvolutionApi === true && settings.evolutionApiKey && settings.evolutionInstanceName) {
+    return 'evolution';
+  }
+  if (settings.useMetaApi === true && settings.metaToken) {
+    return 'meta';
+  }
+  if (settings.useAstraCalls === true || settings.useAstracalls === true || settings.astracallsUrl) {
+    return 'astracalls';
+  }
+
+  // 3. Padrão final
   return 'manual';
 };
 
@@ -591,71 +597,113 @@ export const sendEvolutionMessage = async (
     }
   }
 
+  // 1. Tentar primeiro via backend proxy (/api/chat/send) para upload automático e envio server-to-server sem restrições de CORS
+  try {
+    const backendUrl = getApiUrl('/api/chat/send');
+    const bRes = await fetch(backendUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recipient: targetNumber,
+        clientPhone: targetNumber,
+        text: text || '',
+        mediaBase64,
+        mimeType: mimeType || 'image/png',
+        message_client_id
+      })
+    });
+    const contentType = bRes.headers.get('content-type') || '';
+    if (bRes.ok && contentType.includes('application/json')) {
+      const bData = await bRes.json();
+      if (bData && bData.success) {
+        clientRecentSends.set(idempotencyKey, { timestamp: Date.now(), result: bData });
+        return bData;
+      }
+    }
+  } catch (backendErr) {
+    console.warn('[sendEvolutionMessage] Backend proxy indisponível, tentando envio direto à Evolution API:', backendErr);
+  }
+
   let baseUrl = waSettings.evolutionApiUrl.trim().replace(/\/$/, '');
   if (baseUrl && !baseUrl.startsWith('http')) {
     baseUrl = 'https://' + baseUrl;
   }
   
-  let url = `${baseUrl}/message/sendText/${waSettings.evolutionInstanceName}`;
-  let bodyObj: any = {
-    number: targetNumber,
-    text: text,
-    options: { delay: 1000, presence: "composing", linkPreview: false }
-  };
+  const numbersToTry = getWhatsAppNumbersToTry(phone, false);
+  if (!numbersToTry.includes(targetNumber)) {
+    numbersToTry.unshift(targetNumber);
+  }
 
-  if (mediaBase64 && mimeType) {
-    const dataUri = mediaBase64.startsWith('data:') ? mediaBase64 : `data:${mimeType};base64,${mediaBase64}`;
-    const rawBase64 = mediaBase64.includes('base64,') ? mediaBase64.split('base64,')[1] : mediaBase64;
+  let lastError: any = null;
+
+  for (const currentNumber of numbersToTry) {
+    let url = `${baseUrl}/message/sendText/${waSettings.evolutionInstanceName}`;
+    let bodyObj: any = {
+      number: currentNumber,
+      text: text,
+      options: { delay: 500, presence: "composing", linkPreview: false }
+    };
+
+    if (mediaBase64 && mimeType) {
+      const isUrl = mediaBase64.startsWith('http://') || mediaBase64.startsWith('https://');
+      const dataUri = isUrl 
+        ? mediaBase64 
+        : (mediaBase64.startsWith('data:') ? mediaBase64 : `data:${mimeType};base64,${mediaBase64}`);
+
+      if (mimeType.startsWith('audio/')) {
+        url = `${baseUrl}/message/sendWhatsAppAudio/${waSettings.evolutionInstanceName}`;
+        bodyObj = {
+          number: currentNumber,
+          audio: dataUri,
+          options: { delay: 500, presence: "recording", encoding: true }
+        };
+      } else {
+        url = `${baseUrl}/message/sendMedia/${waSettings.evolutionInstanceName}`;
+        const mediatype = mimeType.startsWith('video/') ? 'video' : (mimeType.startsWith('image/') ? 'image' : 'document');
+        const defaultExt = mimeType.includes('png') ? 'recibo.png' : (mimeType.includes('pdf') ? 'recibo.pdf' : 'imagem.jpg');
+        bodyObj = {
+          number: currentNumber,
+          media: dataUri,
+          mediatype: mediatype,
+          mimetype: mimeType,
+          caption: text || '',
+          fileName: defaultExt
+        };
+      }
+    }
     
-    if (mimeType.startsWith('audio/')) {
-      url = `${baseUrl}/message/sendWhatsAppAudio/${waSettings.evolutionInstanceName}`;
-      bodyObj = {
-        number: targetNumber,
-        audio: dataUri,
-        base64: rawBase64,
-        options: { delay: 1000, presence: "recording", encoding: true }
-      };
-    } else {
-      url = `${baseUrl}/message/sendMedia/${waSettings.evolutionInstanceName}`;
-      const mediatype = mimeType.startsWith('video/') ? 'video' : (mimeType.startsWith('image/') ? 'image' : 'document');
-      bodyObj = {
-        number: targetNumber,
-        media: dataUri,
-        base64: rawBase64,
-        mediatype: mediatype,
-        caption: text || ''
-      };
-    }
-  }
-  
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': waSettings.evolutionApiKey
-      },
-      body: JSON.stringify(bodyObj)
-    });
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': waSettings.evolutionApiKey
+        },
+        body: JSON.stringify(bodyObj)
+      });
 
-    if (response.ok) {
-      const result = await response.json().catch(() => ({ success: true }));
-      clientRecentSends.set(idempotencyKey, { timestamp: Date.now(), result });
-      return result;
-    } else {
-      let errDesc = 'Desconhecido';
-      try {
-        const errData = await response.json();
-        errDesc = JSON.stringify(errData);
-      } catch(e) {}
-      throw new Error(`Erro na Evolution API (${response.status}): ${errDesc}`);
+      if (response.ok) {
+        const result = await response.json().catch(() => ({ success: true }));
+        clientRecentSends.set(idempotencyKey, { timestamp: Date.now(), result });
+        return result;
+      } else {
+        let errDesc = 'Desconhecido';
+        try {
+          const errData = await response.json();
+          errDesc = JSON.stringify(errData);
+        } catch(e) {}
+        lastError = new Error(`Erro na Evolution API (${response.status}): ${errDesc}`);
+      }
+    } catch (e: any) {
+      if (e.message === 'Failed to fetch') {
+        lastError = new Error(`Falha de conexão com a Evolution API (${baseUrl}).`);
+      } else {
+        lastError = e;
+      }
     }
-  } catch (e: any) {
-    if (e.message === 'Failed to fetch') {
-      throw new Error(`Falha de conexão. Verifique se o seu servidor Evolution API (${baseUrl}) possui o CORS habilitado. O navegador bloqueou a requisição (Failed to fetch).`);
-    }
-    throw e;
   }
+
+  if (lastError) throw lastError;
 };
 
 export const sendMetaMessage = async (

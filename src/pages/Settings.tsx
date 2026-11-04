@@ -6,7 +6,8 @@ import { sendAstraCallsMessage } from '../lib/whatsapp';
 import { 
   Settings as SettingsIcon, Save, Image, Building, Smartphone, Server, Bell, 
   CheckCircle2, AlertCircle, Send, Volume2, PhoneCall, Copy, Check, Play, Pause, 
-  Download, Trash2, Clock, Phone, Mic, ShieldCheck, Activity, RefreshCw, User, Headphones
+  Download, Trash2, Clock, Phone, Mic, ShieldCheck, Activity, RefreshCw, User, Headphones,
+  QrCode, ExternalLink, X
 } from 'lucide-react';
 import { Capacitor } from '@capacitor/core';
 import { requestPushPermissions, sendTestPushNotification } from '../lib/pushNotifications';
@@ -66,6 +67,11 @@ export default function Settings() {
 
   // AstraCalls Live Integration & Call Recordings state
   const [astracallsStatus, setAstracallsStatus] = useState<{ online: boolean; session?: any; checking: boolean }>({ online: false, checking: true });
+  const [evolutionStatus, setEvolutionStatus] = useState<{ online: boolean; state?: string; checking: boolean }>({ online: false, checking: false });
+  const [isAstraReconnectOpen, setIsAstraReconnectOpen] = useState(false);
+  const [astraPairLoading, setAstraPairLoading] = useState(false);
+  const [astraPairResult, setAstraPairResult] = useState<string | null>(null);
+
   const [testWaPhone, setTestWaPhone] = useState('');
   const [testWaMsg, setTestWaMsg] = useState('🏊 Olá! Teste oficial do servidor AstraCalls da RS Piscinas.');
   const [sendingWaTest, setSendingWaTest] = useState(false);
@@ -92,12 +98,14 @@ export default function Settings() {
       setCompanyLogo(s.companyLogo || '');
       setUseSmsForReports(s.useSmsForReports || false);
       
-      // Determine active provider
-      if (s.useMetaApi) {
-        setWaProvider('meta');
+      // Determine active provider - Prioritize explicit provider saved by the user
+      if (s.provider) {
+        setWaProvider(s.provider);
       } else if (s.useEvolutionApi) {
         setWaProvider('evolution');
-      } else if (s.wavoipEnabled || s.astracallsUrl || s.astracallsApiKey || s.wavoipApiKey) {
+      } else if (s.useMetaApi) {
+        setWaProvider('meta');
+      } else if (s.useAstraCalls || s.useAstracalls || s.wavoipEnabled || s.astracallsUrl || s.astracallsApiKey || s.wavoipApiKey) {
         setWaProvider('astracalls');
       } else {
         setWaProvider('manual');
@@ -139,9 +147,10 @@ export default function Settings() {
     // Load local SMS Gateway setting
     setIsSmsGateway(localStorage.getItem('isSmsGateway') === 'true');
 
-    // Check Push status, AstraCalls status, and Call History
+    // Check Push status, AstraCalls status, Evolution status, and Call History
     checkPushStatus();
     checkAstraCallsStatus();
+    checkEvolutionStatus();
     loadCallHistory();
   }, [userProfile]);
 
@@ -154,9 +163,10 @@ export default function Settings() {
         const contentType = res.headers.get('content-type') || '';
         if (res.ok && contentType.includes('application/json')) {
           const data = await res.json();
-          if (data && data.online !== undefined) {
+          if (data && data.session) {
+            const isConnected = data.session.state === 'open' || data.session.paired === true;
             setAstracallsStatus({
-              online: !!data.online,
+              online: isConnected,
               session: data.session,
               checking: false
             });
@@ -171,10 +181,11 @@ export default function Settings() {
       });
       if (directRes.ok) {
         const dData = await directRes.json().catch(() => null);
-        const openSess = dData?.sessions?.find((s: any) => s.state === 'open' || s.paired) || dData?.sessions?.[0];
+        const sess = dData?.sessions?.find((s: any) => s.state === 'open' || s.paired) || dData?.sessions?.[0];
+        const isConnected = sess && (sess.state === 'open' || sess.paired === true);
         setAstracallsStatus({
-          online: !!openSess,
-          session: openSess,
+          online: !!isConnected,
+          session: sess,
           checking: false
         });
       } else {
@@ -182,6 +193,53 @@ export default function Settings() {
       }
     } catch (e) {
       setAstracallsStatus({ online: false, checking: false });
+    }
+  };
+
+  const checkEvolutionStatus = async () => {
+    setEvolutionStatus(prev => ({ ...prev, checking: true }));
+    try {
+      const targetUrl = evolutionApiUrl || 'https://pool-evolution-api-018.cloud.pageup.dev.br';
+      const targetKey = evolutionApiKey || 'ef42eadca2ba52dd70ba5a721c32affd';
+      const targetInst = evolutionInstanceName || 'gestorpro';
+      const res = await fetch(getApiUrl(`/api/evolution/status?url=${encodeURIComponent(targetUrl)}&key=${encodeURIComponent(targetKey)}&instance=${encodeURIComponent(targetInst)}`));
+      if (res.ok) {
+        const data = await res.json();
+        setEvolutionStatus({
+          online: !!data.online,
+          state: data.state || 'close',
+          checking: false
+        });
+        return;
+      }
+    } catch (e) {}
+    setEvolutionStatus({ online: false, state: 'error', checking: false });
+  };
+
+  const triggerAstraPair = async () => {
+    setAstraPairLoading(true);
+    setAstraPairResult(null);
+    try {
+      const res = await fetch(getApiUrl('/api/astracalls/pair'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: astracallsSessionId,
+          url: astracallsUrl,
+          apiKey: astracallsApiKey
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.success) {
+        setAstraPairResult('Sessão iniciada! Você pode escanear o QR Code no painel do AstraCalls.');
+        await checkAstraCallsStatus();
+      } else {
+        setAstraPairResult(`Falha ao iniciar pareamento: ${data.error || 'Erro desconhecido'}`);
+      }
+    } catch (err: any) {
+      setAstraPairResult(`Erro de conexão: ${err.message}`);
+    } finally {
+      setAstraPairLoading(false);
     }
   };
 
@@ -534,6 +592,7 @@ export default function Settings() {
         // Provider Selection
         provider: waProvider,
         useAstraCalls: waProvider === 'astracalls',
+        useAstracalls: waProvider === 'astracalls',
         useEvolutionApi: waProvider === 'evolution',
         useMetaApi: waProvider === 'meta',
         // AstraCalls Parameters
@@ -797,8 +856,38 @@ export default function Settings() {
           </div>
 
           <div className="flex items-center gap-2">
+            {waProvider === 'evolution' && (
+              <>
+                <button
+                  type="button"
+                  onClick={checkEvolutionStatus}
+                  disabled={evolutionStatus.checking}
+                  className="px-3 py-1.5 bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 rounded-lg text-xs font-medium flex items-center gap-1.5 shadow-sm transition-colors"
+                >
+                  <RefreshCw size={14} className={evolutionStatus.checking ? 'animate-spin text-blue-600' : ''} />
+                  Testar Conexão
+                </button>
+                <div className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-sm border ${
+                  evolutionStatus.online 
+                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200' 
+                    : 'bg-amber-50 text-amber-700 border-amber-200'
+                }`}>
+                  <span className={`w-2 h-2 rounded-full ${evolutionStatus.online ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
+                  {evolutionStatus.checking ? 'Verificando...' : (evolutionStatus.online ? 'Evolution Online (Conectado)' : 'Evolution Desconectado')}
+                </div>
+              </>
+            )}
+
             {waProvider === 'astracalls' && (
               <>
+                <button
+                  type="button"
+                  onClick={() => setIsAstraReconnectOpen(true)}
+                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors"
+                >
+                  <QrCode size={14} />
+                  Reconectar / QR Code
+                </button>
                 <button
                   type="button"
                   onClick={checkAstraCallsStatus}
@@ -969,6 +1058,41 @@ export default function Settings() {
                   </p>
                 </div>
               </div>
+
+              {!astracallsStatus.online && (
+                <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+                  <div className="flex items-center gap-2.5">
+                    <AlertCircle size={20} className="text-amber-600 shrink-0" />
+                    <div>
+                      <p className="text-xs text-amber-900 font-bold">
+                        WhatsApp Desconectado no AstraCalls ({astracallsStatus.session?.state || 'logged_out'})
+                      </p>
+                      <p className="text-[11px] text-amber-700">
+                        Para reativar os envios pelo AstraCalls, clique em Reconectar para iniciar o pareamento por QR Code.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setIsAstraReconnectOpen(true)}
+                      className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors flex items-center gap-1.5"
+                    >
+                      <QrCode size={14} />
+                      Reconectar / QR Code
+                    </button>
+                    <a
+                      href="https://calls.rspiscinas.app.br"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-3 py-1.5 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 text-xs font-medium rounded-lg shadow-sm transition-colors flex items-center gap-1"
+                    >
+                      <ExternalLink size={13} />
+                      Painel Web
+                    </a>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -987,7 +1111,7 @@ export default function Settings() {
                     type="text"
                     value={evolutionApiUrl}
                     onChange={(e) => setEvolutionApiUrl(e.target.value)}
-                    placeholder="https://api.meuservidor.com"
+                    placeholder="https://pool-evolution-api-018.cloud.pageup.dev.br"
                     className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
@@ -1012,6 +1136,25 @@ export default function Settings() {
                     placeholder="Ex: gestorpro"
                     className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-blue-500"
                   />
+                </div>
+              </div>
+
+              {/* Status & Session Card */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+                <div className="p-3 bg-white rounded-lg border border-gray-200">
+                  <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider block mb-0.5">Servidor Evolution</span>
+                  <p className="text-xs font-bold text-gray-900 font-mono truncate">{evolutionApiUrl || 'https://pool-evolution-api-018.cloud.pageup.dev.br'}</p>
+                </div>
+                <div className="p-3 bg-white rounded-lg border border-gray-200">
+                  <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider block mb-0.5">Instância Conectada</span>
+                  <p className="text-xs font-bold text-blue-700 font-mono truncate">{evolutionInstanceName || 'gestorpro'}</p>
+                </div>
+                <div className="p-3 bg-white rounded-lg border border-gray-200">
+                  <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider block mb-0.5">Status de Envio</span>
+                  <p className="text-xs font-bold flex items-center gap-1.5 text-emerald-700">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                    {evolutionStatus.online ? 'Online (Pronto para Envios)' : (evolutionStatus.state === 'error' ? 'Erro na Verificação' : 'Verificando...')}
+                  </p>
                 </div>
               </div>
             </div>
@@ -1594,6 +1737,121 @@ export default function Settings() {
           )}
         </div>
       </div>
+
+      {/* Modal de Reconexão do AstraCalls & Pareamento por QR Code */}
+      {isAstraReconnectOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden border border-gray-100 animate-scale-up">
+            <div className="p-5 bg-gradient-to-r from-emerald-600 to-teal-700 text-white flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-white/20 backdrop-blur flex items-center justify-center font-bold">
+                  <QrCode size={22} className="text-white" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg leading-tight">Reconectar AstraCalls</h3>
+                  <p className="text-xs text-emerald-100">Gerar novo QR Code e restabelecer conexão</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAstraReconnectOpen(false)}
+                className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors"
+                title="Fechar"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-5">
+              <div className="flex items-center gap-3 p-3.5 bg-gray-50 rounded-xl border border-gray-200">
+                <span className={`w-3.5 h-3.5 rounded-full shrink-0 ${astracallsStatus.online ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`} />
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Status Atual da Sessão</p>
+                  <p className="text-sm font-bold text-gray-900 truncate">
+                    {astracallsStatus.online ? 'Conectado (Online / Pareado)' : 'Desconectado (Aguardando Pareamento)'}
+                  </p>
+                  <p className="text-[11px] text-gray-500 truncate font-mono">
+                    ID: {astracallsSessionId || 'Sessão padrão'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={checkAstraCallsStatus}
+                  disabled={astracallsStatus.checking}
+                  className="px-2.5 py-1.5 bg-white border border-gray-200 text-gray-700 hover:bg-gray-100 rounded-lg text-xs font-medium flex items-center gap-1 shadow-sm shrink-0"
+                >
+                  <RefreshCw size={13} className={astracallsStatus.checking ? 'animate-spin text-emerald-600' : ''} />
+                  Verificar
+                </button>
+              </div>
+
+              <div className="space-y-3 text-sm text-gray-700">
+                <div className="flex items-start gap-3">
+                  <div className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-800 font-bold text-xs flex items-center justify-center shrink-0 mt-0.5">1</div>
+                  <p className="text-xs leading-relaxed">
+                    Clique no botão <strong>"Iniciar Pareamento / Gerar QR Code"</strong> abaixo para solicitar ao servidor AstraCalls uma nova chave de pareamento.
+                  </p>
+                </div>
+                <div className="flex items-start gap-3">
+                  <div className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-800 font-bold text-xs flex items-center justify-center shrink-0 mt-0.5">2</div>
+                  <p className="text-xs leading-relaxed">
+                    Abra o WhatsApp no celular que realiza os envios, acesse <strong>Aparelhos Conectados &gt; Conectar um Aparelho</strong>.
+                  </p>
+                </div>
+                <div className="flex items-start gap-3">
+                  <div className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-800 font-bold text-xs flex items-center justify-center shrink-0 mt-0.5">3</div>
+                  <p className="text-xs leading-relaxed">
+                    Caso aponte a câmera para a tela do AstraCalls, aponte para o QR Code para parear imediatamente.
+                  </p>
+                </div>
+              </div>
+
+              {astraPairResult && (
+                <div className={`p-3.5 rounded-xl text-xs font-medium border flex items-start gap-2.5 ${
+                  astraPairResult.includes('sucesso') || astraPairResult.includes('iniciada')
+                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                    : 'bg-amber-50 text-amber-800 border-amber-200'
+                }`}>
+                  <AlertCircle size={16} className="shrink-0 mt-0.5" />
+                  <div className="flex-1">{astraPairResult}</div>
+                </div>
+              )}
+
+              <div className="space-y-2 pt-2">
+                <button
+                  type="button"
+                  onClick={triggerAstraPair}
+                  disabled={astraPairLoading}
+                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm shadow-md shadow-emerald-600/20 flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw size={16} className={astraPairLoading ? 'animate-spin' : ''} />
+                  {astraPairLoading ? 'Iniciando Pareamento...' : 'Iniciar Pareamento / Gerar QR Code'}
+                </button>
+
+                <a
+                  href="https://calls.rspiscinas.app.br"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-xl font-medium text-xs flex items-center justify-center gap-2 transition-colors border border-gray-200"
+                >
+                  <ExternalLink size={14} />
+                  Abrir Painel Oficial AstraCalls (calls.rspiscinas.app.br)
+                </a>
+              </div>
+            </div>
+
+            <div className="p-4 bg-gray-50 border-t border-gray-100 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setIsAstraReconnectOpen(false)}
+                className="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors"
+              >
+                Concluir e Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

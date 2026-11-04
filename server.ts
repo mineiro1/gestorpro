@@ -938,6 +938,98 @@ setInterval(() => {
     }
   }
 
+  // Valida estritamente se um colaborador pode receber notificação de chat:
+  // 1. O colaborador deve ter ABERTO a conversa com o cliente (sessão 'open' com employee_id correspondente)
+  // 2. O tempo de 30 minutos NÃO pode estar finalizado
+  // 3. A visita deste cliente no dia de hoje NÃO pode estar finalizada
+  async function canNotifyEmployeeForChat(
+    employeeId: string,
+    clientId: string,
+    session: any
+  ): Promise<boolean> {
+    try {
+      if (!employeeId || !clientId) return false;
+
+      // 1. Checa se o usuário é colaborador ou admin
+      const { data: userRow } = await supabaseAdmin
+        .from('users')
+        .select('id, role')
+        .eq('id', employeeId)
+        .maybeSingle();
+
+      if (userRow?.role === 'admin' || userRow?.role === 'superadmin') {
+        return true; // Administradores recebem normalmente
+      }
+
+      // REGRA 1: Colaborador precisa ter ABERTO o chat com este cliente
+      if (!session || session.status !== 'open') {
+        console.log(`[Push Filter] Colaborador ${employeeId} ignorado: Sem sessão aberta para o cliente ${clientId}.`);
+        return false;
+      }
+
+      if (session.employee_id !== employeeId) {
+        console.log(`[Push Filter] Colaborador ${employeeId} ignorado: Sessão não foi aberta por este colaborador.`);
+        return false;
+      }
+
+      // REGRA 2: Janela de 30 minutos NÃO pode estar expirada
+      const now = Date.now();
+      const sessionStartMs = session.created_at ? new Date(session.created_at).getTime() : 0;
+      if (!sessionStartMs || (now - sessionStartMs) > 30 * 60 * 1000) {
+        console.log(`[Push Filter] Colaborador ${employeeId} ignorado: Janela de 30 minutos expirou.`);
+        return false;
+      }
+
+      // REGRA 3: A visita NÃO pode estar finalizada
+      const todayDateStr = new Date().toISOString().split('T')[0];
+
+      // a) Se a sessão possui visit_id vinculado
+      if (session.visit_id) {
+        const { data: vRecord } = await supabaseAdmin
+          .from('visits')
+          .select('id, status')
+          .eq('id', session.visit_id)
+          .maybeSingle();
+
+        if (vRecord && ['finalizada', 'realizada', 'concluida', 'completed'].includes(vRecord.status)) {
+          console.log(`[Push Filter] Colaborador ${employeeId} ignorado: Visita vinculada ${session.visit_id} está finalizada.`);
+          return false;
+        }
+      }
+
+      // b) Se existe visita concluída para este cliente na data de hoje
+      const { data: completedVisitsToday } = await supabaseAdmin
+        .from('visits')
+        .select('id, status, time, date')
+        .eq('client_id', clientId)
+        .in('status', ['finalizada', 'realizada', 'concluida', 'completed'])
+        .or(`time.eq.${todayDateStr},date.gte.${todayDateStr}`);
+
+      if (completedVisitsToday && completedVisitsToday.length > 0) {
+        console.log(`[Push Filter] Colaborador ${employeeId} ignorado: Visita de hoje do cliente ${clientId} já foi finalizada.`);
+        return false;
+      }
+
+      // c) Se existe serviço avulso concluído hoje para este cliente
+      const { data: completedJobsToday } = await supabaseAdmin
+        .from('oneoffjobs')
+        .select('id, status, date')
+        .eq('client_id', clientId)
+        .eq('status', 'concluido')
+        .gte('date', todayDateStr);
+
+      if (completedJobsToday && completedJobsToday.length > 0) {
+        console.log(`[Push Filter] Colaborador ${employeeId} ignorado: Serviço avulso de hoje do cliente ${clientId} já foi finalizado.`);
+        return false;
+      }
+
+      return true;
+    } catch (err: any) {
+      console.warn('[canNotifyEmployeeForChat] Erro na validação:', err);
+      return false;
+    }
+  }
+
   // Sincronização direta e bidirecional de mensagens AstraCalls para sessões ativas (< 30 min)
   async function syncAstraCallsIncomingMessages({ clientId, sessionId, waSettings }: { clientId?: string; sessionId?: string; waSettings?: any } = {}) {
     const lockKey = String(sessionId || clientId || 'default');
@@ -1275,15 +1367,34 @@ setInterval(() => {
           }
         }
 
-        const targetUserId = client.employee_id || client.admin_id;
-        if (targetUserId && typeof sendPushToAdmin === 'function') {
-          const clientDisplayName = formatFirstTwoNames(client.name);
-          sendPushToAdmin(targetUserId, `💬 ${clientDisplayName}`, 'Nova mensagem recebida no WhatsApp', {
+        const clientDisplayName = formatFirstTwoNames(client.name);
+        const targetAdminId = client.admin_id || '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
+
+        // 1. Notifica o administrador responsável
+        if (typeof sendPushToAdmin === 'function') {
+          sendPushToAdmin(targetAdminId, `💬 ${clientDisplayName}`, 'Nova mensagem recebida no WhatsApp', {
             clientId: client.id,
             sessionId: session.id,
             type: 'chat_message',
             channelId: 'chat_messages'
           }).catch(() => {});
+        }
+
+        // 2. Notifica o colaborador APENAS se cumprir as 3 regras:
+        // - Abriu o chat com o cliente
+        // - 30 minutos não expiraram
+        // - A visita de hoje não foi finalizada
+        const empId = client.employee_id || session.employee_id;
+        if (empId && empId !== targetAdminId && typeof sendPushToUser === 'function') {
+          const canNotifyEmp = await canNotifyEmployeeForChat(empId, client.id, session);
+          if (canNotifyEmp) {
+            sendPushToUser(empId, `💬 ${clientDisplayName}`, 'Nova mensagem recebida no WhatsApp', {
+              clientId: client.id,
+              sessionId: session.id,
+              type: 'chat_message',
+              channelId: 'chat_messages'
+            }).catch(() => {});
+          }
         }
       }
 
@@ -1641,8 +1752,16 @@ setInterval(() => {
         }
       }
 
-      // Se waSettings não estiver completo, buscar configurações do admin no banco
-      if (!waSettings?.evolutionApiKey && !waSettings?.metaToken) {
+      // Se waSettings não estiver completo ou sem provider, buscar configurações do admin no banco
+      let needAdminLookup = !waSettings || !waSettings.provider;
+      if (waSettings) {
+        if (waSettings.provider === 'evolution' && (!waSettings.evolutionApiKey || !waSettings.evolutionInstanceName)) needAdminLookup = true;
+        else if (waSettings.provider === 'meta' && !waSettings.metaToken) needAdminLookup = true;
+        else if (waSettings.provider === 'astracalls' && !waSettings.astracallsApiKey) needAdminLookup = true;
+        else if (!waSettings.provider && !waSettings.evolutionApiKey && !waSettings.metaToken && !waSettings.astracallsApiKey) needAdminLookup = true;
+      }
+
+      if (needAdminLookup) {
         let adminToSearch = req.body.adminId;
         if (!adminToSearch && req.body.clientId) {
           const { data: clientRow } = await supabaseAdmin.from('clients').select('admin_id').eq('id', req.body.clientId).maybeSingle();
@@ -1651,19 +1770,32 @@ setInterval(() => {
 
         if (adminToSearch) {
           const { data: specificAdmin } = await supabaseAdmin.from('users').select('whatsapp_settings').eq('id', adminToSearch).maybeSingle();
-          if (specificAdmin?.whatsapp_settings?.metaToken || specificAdmin?.whatsapp_settings?.evolutionApiKey) {
-            waSettings = specificAdmin.whatsapp_settings;
+          if (specificAdmin?.whatsapp_settings && Object.keys(specificAdmin.whatsapp_settings).length > 0) {
+            waSettings = { ...(specificAdmin.whatsapp_settings || {}), ...(waSettings || {}) };
+            if (specificAdmin.whatsapp_settings.provider) {
+              waSettings.provider = specificAdmin.whatsapp_settings.provider;
+            }
           }
         }
 
-        if (!waSettings?.evolutionApiKey && !waSettings?.metaToken) {
+        if (!waSettings?.provider || (!waSettings?.evolutionApiKey && !waSettings?.metaToken)) {
           const { data: adminUsers } = await supabaseAdmin
             .from('users')
             .select('whatsapp_settings')
+            .eq('role', 'admin')
             .not('whatsapp_settings', 'is', null);
-          const validAdmin = adminUsers?.find(u => u.whatsapp_settings?.evolutionApiKey || u.whatsapp_settings?.metaToken);
+          const validAdmin = adminUsers?.find(u => 
+            u.whatsapp_settings?.provider || 
+            u.whatsapp_settings?.evolutionApiKey || 
+            u.whatsapp_settings?.metaToken ||
+            u.whatsapp_settings?.useAstracalls ||
+            u.whatsapp_settings?.astracallsUrl
+          );
           if (validAdmin?.whatsapp_settings) {
-            waSettings = validAdmin.whatsapp_settings;
+            waSettings = { ...(validAdmin.whatsapp_settings || {}), ...(waSettings || {}) };
+            if (validAdmin.whatsapp_settings.provider) {
+              waSettings.provider = validAdmin.whatsapp_settings.provider;
+            }
           }
         }
       }
@@ -1711,11 +1843,31 @@ setInterval(() => {
       let sendSuccess = false;
       let lastSendError = '';
 
-      // Determine active provider
-      const provider = waSettings?.provider || (waSettings?.useMetaApi ? 'meta' : (waSettings?.useEvolutionApi ? 'evolution' : (waSettings?.useAstracalls !== false ? 'astracalls' : 'astracalls')));
+      // Determine active provider strictly honoring user preference
+      const resolveSendProvider = (settings?: any): 'astracalls' | 'evolution' | 'meta' | 'manual' => {
+        if (!settings) return 'manual';
+        const p = settings.provider;
+        if (p === 'manual' || p === 'web') return 'manual';
+        if (p === 'evolution') {
+          if (settings.evolutionApiKey && settings.evolutionInstanceName) return 'evolution';
+          return 'manual';
+        }
+        if (p === 'meta') {
+          if (settings.metaToken) return 'meta';
+          return 'manual';
+        }
+        if (p === 'astracalls') return 'astracalls';
+
+        if (settings.useEvolutionApi && settings.evolutionApiKey && settings.evolutionInstanceName) return 'evolution';
+        if (settings.useMetaApi && settings.metaToken) return 'meta';
+        if (settings.useAstraCalls || settings.useAstracalls || settings.astracallsUrl) return 'astracalls';
+        return 'manual';
+      };
+
+      const provider = resolveSendProvider(waSettings);
 
       // 1. Provedor: AstraCalls
-      if (provider === 'astracalls' || (waSettings?.useAstracalls && !waSettings?.useMetaApi && !waSettings?.useEvolutionApi)) {
+      if (provider === 'astracalls') {
         const astracallsUrl = (waSettings?.astracallsUrl || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
         const astracallsApiKey = waSettings?.astracallsApiKey || 'rs_piscinas_segredo_2026';
         let sessionId = waSettings?.astracallsSessionId || '8090cca3add0b8eb3e41efb9eec363e4';
@@ -1778,9 +1930,12 @@ setInterval(() => {
               const cleanCaption = (text && text !== '📸 Foto' && text !== '🎥 Vídeo') ? text : '';
               if (mimeType?.startsWith('image/')) {
                 sendEndpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/image`;
+                const cleanBase64 = mediaBase64?.includes('base64,') ? mediaBase64.split('base64,')[1] : (mediaBase64 || '');
                 payload = {
                   to: num,
-                  base64: mediaData,
+                  base64: cleanBase64 || mediaData,
+                  image: cleanBase64 || mediaData,
+                  url: publicMediaUrl || undefined,
                   caption: cleanCaption
                 };
               } else if (mimeType?.startsWith('video/')) {
@@ -1838,73 +1993,83 @@ setInterval(() => {
           lastSendError = `Falha na conexão com AstraCalls: ${astraErr.message}`;
           console.error("[/api/chat/send] Erro conexao AstraCalls:", astraErr.message);
         }
-      } else if (provider === 'evolution' || (waSettings?.useEvolutionApi && waSettings?.evolutionApiUrl && waSettings?.evolutionApiKey && waSettings?.evolutionInstanceName)) {
+      } else if (provider === 'evolution') {
         let baseUrl = waSettings.evolutionApiUrl.trim().replace(/\/$/, '');
         if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
 
-        let evoUrl = `${baseUrl}/message/sendText/${waSettings.evolutionInstanceName}`;
-        let evoBody: any = {
-          number: targetNumber,
-          text: text || '',
-          options: { delay: 500, presence: 'composing', linkPreview: false }
-        };
+        const numbersToTry = getBrazilianPhoneVariations(targetNumber).all;
+        if (!numbersToTry.includes(targetNumber)) numbersToTry.unshift(targetNumber);
 
-        if (publicMediaUrl || mediaBase64) {
-          const rawBase64 = mediaBase64?.includes('base64,') ? mediaBase64.split('base64,')[1] : (mediaBase64 || '');
-          const mediaSource = publicMediaUrl || (mediaBase64 ? (mediaBase64.startsWith('data:') ? mediaBase64 : `data:${mimeType};base64,${mediaBase64}`) : '');
-          
-          if (mimeType?.startsWith('audio/')) {
-            evoUrl = `${baseUrl}/message/sendWhatsAppAudio/${waSettings.evolutionInstanceName}`;
-            evoBody = {
-              number: targetNumber,
-              audio: mediaSource,
-              base64: rawBase64 || undefined,
-              options: { delay: 500, presence: 'recording', encoding: true }
-            };
-          } else {
-            evoUrl = `${baseUrl}/message/sendMedia/${waSettings.evolutionInstanceName}`;
-            const mediatype = mimeType?.startsWith('video/') ? 'video' : (mimeType?.startsWith('image/') ? 'image' : 'document');
-            evoBody = {
-              number: targetNumber,
-              media: mediaSource,
-              base64: rawBase64 || undefined,
-              mediatype: mediatype,
-              caption: text || ''
-            };
+        let lastEvoErr: any = null;
+
+        for (const currentTarget of numbersToTry) {
+          let evoUrl = `${baseUrl}/message/sendText/${waSettings.evolutionInstanceName}`;
+          let evoBody: any = {
+            number: currentTarget,
+            text: text || '',
+            options: { delay: 500, presence: 'composing', linkPreview: false }
+          };
+
+          if (publicMediaUrl || mediaBase64) {
+            const mediaSource = publicMediaUrl || (mediaBase64 ? (mediaBase64.startsWith('data:') || mediaBase64.startsWith('http') ? mediaBase64 : `data:${mimeType};base64,${mediaBase64}`) : '');
+            const defaultExt = mimeType?.includes('png') ? 'recibo.png' : (mimeType?.includes('pdf') ? 'recibo.pdf' : 'imagem.jpg');
+            if (mimeType?.startsWith('audio/')) {
+              evoUrl = `${baseUrl}/message/sendWhatsAppAudio/${waSettings.evolutionInstanceName}`;
+              evoBody = {
+                number: currentTarget,
+                audio: publicMediaUrl || mediaSource,
+                options: { delay: 500, presence: 'recording', encoding: true }
+              };
+            } else {
+              evoUrl = `${baseUrl}/message/sendMedia/${waSettings.evolutionInstanceName}`;
+              const mediatype = mimeType?.startsWith('video/') ? 'video' : (mimeType?.startsWith('image/') ? 'image' : 'document');
+              evoBody = {
+                number: currentTarget,
+                media: publicMediaUrl || mediaSource,
+                mediatype: mediatype,
+                mimetype: mimeType || 'image/png',
+                caption: text || '',
+                fileName: defaultExt
+              };
+            }
+          }
+
+          try {
+            const response = await fetch(evoUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'apikey': waSettings.evolutionApiKey
+              },
+              body: JSON.stringify(evoBody)
+            });
+
+            if (response.ok) {
+              sendSuccess = true;
+              try {
+                const evoData = await response.json();
+                externalId = evoData?.key?.id || 
+                             evoData?.data?.key?.id || 
+                             evoData?.messageId || 
+                             evoData?.id || 
+                             evoData?.messages?.[0]?.key?.id || 
+                             evoData?.messages?.[0]?.id || '';
+              } catch (e) {}
+              break;
+            } else {
+              const errData = await response.json().catch(() => ({}));
+              lastEvoErr = errData?.message || JSON.stringify(errData);
+            }
+          } catch (evoFetchErr: any) {
+            lastEvoErr = evoFetchErr.message;
           }
         }
 
-        try {
-          const response = await fetch(evoUrl, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'apikey': waSettings.evolutionApiKey
-            },
-            body: JSON.stringify(evoBody)
-          });
-
-          if (response.ok) {
-            sendSuccess = true;
-            try {
-              const evoData = await response.json();
-              externalId = evoData?.key?.id || 
-                           evoData?.data?.key?.id || 
-                           evoData?.messageId || 
-                           evoData?.id || 
-                           evoData?.messages?.[0]?.key?.id || 
-                           evoData?.messages?.[0]?.id || '';
-            } catch (e) {}
-          } else {
-            const errData = await response.json().catch(() => ({}));
-            lastSendError = errData?.message || JSON.stringify(errData);
-            console.warn("[/api/chat/send] Evolution API error response:", errData);
-          }
-        } catch (evoFetchErr: any) {
-          lastSendError = evoFetchErr.message;
-          console.error("[/api/chat/send] Erro conexão Evolution API:", evoFetchErr);
+        if (!sendSuccess) {
+          lastSendError = `Erro Evolution API: ${lastEvoErr || 'Falha no envio'}`;
+          console.warn("[/api/chat/send] Evolution API error response:", lastEvoErr);
         }
-      } else if (waSettings?.useMetaApi || waSettings?.metaToken) {
+      } else if (provider === 'meta' || waSettings?.useMetaApi || waSettings?.metaToken) {
         if (!waSettings?.metaToken) throw new Error("Token Meta obrigatório");
         
         let baseUrl = (waSettings.metaServerUrl || 'https://graph.facebook.com/v19.0').trim().replace(/\/$/, '');
@@ -2401,6 +2566,84 @@ setInterval(() => {
           success: false,
           online: false,
           url: astracallsUrl,
+          status: response.status
+        });
+      }
+    } catch (e: any) {
+      return res.json({
+        success: false,
+        online: false,
+        error: e.message
+      });
+    }
+  });
+
+  // Dispara reconexão e geração de QR code do AstraCalls
+  app.post("/api/astracalls/pair", async (req, res) => {
+    try {
+      const { sessionId, url, apiKey } = req.body || {};
+      const astracallsUrl = (url || process.env.ASTRACALLS_URL || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
+      const astracallsApiKey = apiKey || process.env.ASTRACALLS_API_KEY || 'rs_piscinas_segredo_2026';
+
+      let targetSessionId = sessionId;
+      if (!targetSessionId) {
+        const sRes = await fetch(`${astracallsUrl}/api/sessions`, {
+          headers: { 'X-Api-Key': astracallsApiKey }
+        });
+        if (sRes.ok) {
+          const sData = await sRes.json();
+          targetSessionId = sData?.sessions?.[0]?.id;
+        }
+      }
+
+      if (!targetSessionId) {
+        return res.status(400).json({ success: false, error: "Nenhuma sessão encontrada para pareamento." });
+      }
+
+      const pairRes = await fetch(`${astracallsUrl}/api/sessions/${targetSessionId}/pair`, {
+        method: 'POST',
+        headers: {
+          'X-Api-Key': astracallsApiKey,
+          'X-Client-Id': 'gestaopro-web'
+        }
+      });
+
+      return res.json({
+        success: pairRes.ok || pairRes.status === 204,
+        status: pairRes.status,
+        sessionId: targetSessionId
+      });
+    } catch (e: any) {
+      return res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  // Status de Conexão da Evolution API
+  app.get("/api/evolution/status", async (req, res) => {
+    try {
+      const { data: userRow } = await supabaseAdmin.from('users').select('whatsapp_settings').eq('role', 'admin').not('whatsapp_settings', 'is', null).limit(1).maybeSingle();
+      const ws = userRow?.whatsapp_settings || {};
+      const evoUrl = (req.query.url as string || ws.evolutionApiUrl || 'https://pool-evolution-api-018.cloud.pageup.dev.br').trim().replace(/\/$/, '');
+      const evoKey = (req.query.key as string || ws.evolutionApiKey || 'ef42eadca2ba52dd70ba5a721c32affd').trim();
+      const evoInst = (req.query.instance as string || ws.evolutionInstanceName || 'gestorpro').trim();
+
+      const response = await fetch(`${evoUrl}/instance/connectionState/${evoInst}`, {
+        headers: { 'apikey': evoKey }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const state = data?.instance?.state || (data?.state) || 'close';
+        return res.json({
+          success: true,
+          online: state === 'open',
+          state,
+          instance: evoInst
+        });
+      } else {
+        return res.json({
+          success: false,
+          online: false,
           status: response.status
         });
       }
@@ -3514,13 +3757,20 @@ setInterval(() => {
          }
       }
 
-      // Dispara push notification para os responsáveis (admin e funcionário responsável)
-      const notifyUsers = new Set<string>();
-      if (matchedClient.admin_id) notifyUsers.add(matchedClient.admin_id);
-      if (matchedClient.employee_id) notifyUsers.add(matchedClient.employee_id);
-      if (activeSession.admin_id) notifyUsers.add(activeSession.admin_id);
-      if (activeSession.employee_id) notifyUsers.add(activeSession.employee_id);
-      if (notifyUsers.size === 0) notifyUsers.add('698dfcdd-7c91-4df5-aaee-eae9e67f15ae');
+      // Dispara push notification para os responsáveis (admin e funcionário responsável autorizado pelas 3 regras)
+      const targetAdminId = matchedClient.admin_id || activeSession.admin_id || '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
+      const notifyUsers = new Set<string>([targetAdminId]);
+
+      const candidateEmployees = new Set<string>();
+      if (activeSession.employee_id && activeSession.employee_id !== targetAdminId) candidateEmployees.add(activeSession.employee_id);
+      if (matchedClient.employee_id && matchedClient.employee_id !== targetAdminId) candidateEmployees.add(matchedClient.employee_id);
+
+      for (const empId of candidateEmployees) {
+        const canNotify = await canNotifyEmployeeForChat(empId, matchedClient.id, activeSession);
+        if (canNotify) {
+          notifyUsers.add(empId);
+        }
+      }
 
       const clientDisplayName = formatFirstTwoNames(matchedClient.name);
       for (const uId of notifyUsers) {
@@ -3702,13 +3952,20 @@ setInterval(() => {
          }
       }
 
-      // Dispara push notification para os responsáveis
-      const notifyUsers = new Set<string>();
-      if (matchedClient.admin_id) notifyUsers.add(matchedClient.admin_id);
-      if (matchedClient.employee_id) notifyUsers.add(matchedClient.employee_id);
-      if (activeSession.admin_id) notifyUsers.add(activeSession.admin_id);
-      if (activeSession.employee_id) notifyUsers.add(activeSession.employee_id);
-      if (notifyUsers.size === 0) notifyUsers.add('698dfcdd-7c91-4df5-aaee-eae9e67f15ae');
+      // Dispara push notification para os responsáveis (admin e funcionário responsável autorizado pelas 3 regras)
+      const targetAdminId = matchedClient.admin_id || activeSession.admin_id || '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
+      const notifyUsers = new Set<string>([targetAdminId]);
+
+      const candidateEmployees = new Set<string>();
+      if (activeSession.employee_id && activeSession.employee_id !== targetAdminId) candidateEmployees.add(activeSession.employee_id);
+      if (matchedClient.employee_id && matchedClient.employee_id !== targetAdminId) candidateEmployees.add(matchedClient.employee_id);
+
+      for (const empId of candidateEmployees) {
+        const canNotify = await canNotifyEmployeeForChat(empId, matchedClient.id, activeSession);
+        if (canNotify) {
+          notifyUsers.add(empId);
+        }
+      }
 
       const clientDisplayName = formatFirstTwoNames(matchedClient.name);
       for (const uId of notifyUsers) {
@@ -3942,12 +4199,20 @@ setInterval(() => {
           }
         }
 
-        const notifyUsers = new Set<string>();
-        if (matchedClient.admin_id) notifyUsers.add(matchedClient.admin_id);
-        if (matchedClient.employee_id) notifyUsers.add(matchedClient.employee_id);
-        if (activeSession.admin_id) notifyUsers.add(activeSession.admin_id);
-        if (activeSession.employee_id) notifyUsers.add(activeSession.employee_id);
-        if (notifyUsers.size === 0) notifyUsers.add('698dfcdd-7c91-4df5-aaee-eae9e67f15ae');
+        // Dispara push notification para os responsáveis (admin e funcionário responsável autorizado pelas 3 regras)
+        const targetAdminId = matchedClient.admin_id || activeSession.admin_id || '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
+        const notifyUsers = new Set<string>([targetAdminId]);
+
+        const candidateEmployees = new Set<string>();
+        if (activeSession.employee_id && activeSession.employee_id !== targetAdminId) candidateEmployees.add(activeSession.employee_id);
+        if (matchedClient.employee_id && matchedClient.employee_id !== targetAdminId) candidateEmployees.add(matchedClient.employee_id);
+
+        for (const empId of candidateEmployees) {
+          const canNotify = await canNotifyEmployeeForChat(empId, matchedClient.id, activeSession);
+          if (canNotify) {
+            notifyUsers.add(empId);
+          }
+        }
 
         const clientDisplayName = formatFirstTwoNames(matchedClient.name);
         for (const uId of notifyUsers) {

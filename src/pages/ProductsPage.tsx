@@ -179,9 +179,11 @@ export default function ProductsPage() {
     if (!lastSentData) return;
     
     // Resolve configurações mais recentes do admin dono do cliente
-    const settings = (waSettings && Object.keys(waSettings).length > 0)
-      ? waSettings
-      : await resolveAdminWhatsAppSettings(lastSentData?.client?.admin_id, userProfile);
+    const resolvedAdmin = await resolveAdminWhatsAppSettings(lastSentData?.client?.admin_id, userProfile);
+    const settings = { ...(waSettings || {}), ...(resolvedAdmin || {}) };
+    if (resolvedAdmin?.provider) {
+      settings.provider = resolvedAdmin.provider;
+    }
 
     const effectiveProvider = getEffectiveWhatsAppProvider(settings);
     const companyName = settings?.companyName || 'nossa empresa';
@@ -257,9 +259,11 @@ export default function ProductsPage() {
       `\n\nPor favor, providencie assim que possível para não interrompermos o tratamento.`;
       
     // Garante as credenciais atualizadas do admin dono do cliente selecionado
-    const settings = (waSettings && Object.keys(waSettings).length > 0)
-      ? waSettings
-      : await resolveAdminWhatsAppSettings(selectedClient?.admin_id, userProfile);
+    const resolvedAdmin = await resolveAdminWhatsAppSettings(selectedClient?.admin_id, userProfile);
+    const settings = { ...(waSettings || {}), ...(resolvedAdmin || {}) };
+    if (resolvedAdmin?.provider) {
+      settings.provider = resolvedAdmin.provider;
+    }
 
     const effectiveProvider = getEffectiveWhatsAppProvider(settings);
     const partnerStores = settings?.partnerStores || [];
