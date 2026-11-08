@@ -385,12 +385,17 @@ export default function Messages() {
 
     if (mediaBase64 && mimeType) {
       endpoint = `${baseUrl}/message/sendMedia/${evolutionInstanceName}`;
-      const mediatype = mimeType.startsWith('image/') ? 'image' : 'video';
+      const mediatype = mimeType.startsWith('image/') ? 'image' : (mimeType.startsWith('video/') ? 'video' : 'document');
+      const isUrl = mediaBase64.startsWith('http://') || mediaBase64.startsWith('https://');
+      const cleanBase64 = isUrl ? mediaBase64 : (mediaBase64.includes('base64,') ? mediaBase64.split('base64,')[1] : mediaBase64).trim();
+      const defaultExt = mimeType.includes('png') ? 'recibo.png' : (mimeType.includes('pdf') ? 'recibo.pdf' : 'imagem.jpg');
       body = {
         number: number,
         mediatype: mediatype,
+        mimetype: mimeType,
         caption: text,
-        media: mediaBase64,
+        media: cleanBase64,
+        fileName: defaultExt,
         options: {
           delay: 1000,
           presence: "composing"

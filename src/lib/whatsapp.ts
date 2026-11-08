@@ -609,6 +609,7 @@ export const sendEvolutionMessage = async (
         text: text || '',
         mediaBase64,
         mimeType: mimeType || 'image/png',
+        waSettings,
         message_client_id
       })
     });
@@ -646,15 +647,17 @@ export const sendEvolutionMessage = async (
 
     if (mediaBase64 && mimeType) {
       const isUrl = mediaBase64.startsWith('http://') || mediaBase64.startsWith('https://');
-      const dataUri = isUrl 
+      // Evolution API valida com @IsUrlOrBase64: strings base64 NÃO podem conter o prefixo 'data:...;base64,'
+      const rawBase64 = isUrl 
         ? mediaBase64 
-        : (mediaBase64.startsWith('data:') ? mediaBase64 : `data:${mimeType};base64,${mediaBase64}`);
+        : (mediaBase64.includes('base64,') ? mediaBase64.split('base64,')[1] : mediaBase64).trim();
+      const mediaParam = isUrl ? mediaBase64 : rawBase64;
 
       if (mimeType.startsWith('audio/')) {
         url = `${baseUrl}/message/sendWhatsAppAudio/${waSettings.evolutionInstanceName}`;
         bodyObj = {
           number: currentNumber,
-          audio: dataUri,
+          audio: mediaParam,
           options: { delay: 500, presence: "recording", encoding: true }
         };
       } else {
@@ -663,7 +666,7 @@ export const sendEvolutionMessage = async (
         const defaultExt = mimeType.includes('png') ? 'recibo.png' : (mimeType.includes('pdf') ? 'recibo.pdf' : 'imagem.jpg');
         bodyObj = {
           number: currentNumber,
-          media: dataUri,
+          media: mediaParam,
           mediatype: mediatype,
           mimetype: mimeType,
           caption: text || '',

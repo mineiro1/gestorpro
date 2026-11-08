@@ -2011,13 +2011,15 @@ setInterval(() => {
           };
 
           if (publicMediaUrl || mediaBase64) {
-            const mediaSource = publicMediaUrl || (mediaBase64 ? (mediaBase64.startsWith('data:') || mediaBase64.startsWith('http') ? mediaBase64 : `data:${mimeType};base64,${mediaBase64}`) : '');
+            const isUrl = Boolean(publicMediaUrl && publicMediaUrl.startsWith('http')) || (typeof mediaBase64 === 'string' && (mediaBase64.startsWith('http://') || mediaBase64.startsWith('https://')));
+            const rawBase64 = typeof mediaBase64 === 'string' ? (mediaBase64.includes('base64,') ? mediaBase64.split('base64,')[1] : mediaBase64).trim() : '';
+            const mediaValue = (publicMediaUrl && publicMediaUrl.startsWith('http')) ? publicMediaUrl : (isUrl ? mediaBase64 : rawBase64);
             const defaultExt = mimeType?.includes('png') ? 'recibo.png' : (mimeType?.includes('pdf') ? 'recibo.pdf' : 'imagem.jpg');
             if (mimeType?.startsWith('audio/')) {
               evoUrl = `${baseUrl}/message/sendWhatsAppAudio/${waSettings.evolutionInstanceName}`;
               evoBody = {
                 number: currentTarget,
-                audio: publicMediaUrl || mediaSource,
+                audio: mediaValue,
                 options: { delay: 500, presence: 'recording', encoding: true }
               };
             } else {
@@ -2025,7 +2027,7 @@ setInterval(() => {
               const mediatype = mimeType?.startsWith('video/') ? 'video' : (mimeType?.startsWith('image/') ? 'image' : 'document');
               evoBody = {
                 number: currentTarget,
-                media: publicMediaUrl || mediaSource,
+                media: mediaValue,
                 mediatype: mediatype,
                 mimetype: mimeType || 'image/png',
                 caption: text || '',
