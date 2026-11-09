@@ -390,7 +390,9 @@ export async function checkWhatsAppMessageStatus(
       // 3. AstraCalls
       const astracallsUrl = (waSettings?.astracallsUrl || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
       const astracallsApiKey = waSettings?.astracallsApiKey || 'rs_piscinas_segredo_2026';
-      const sessionId = waSettings?.astracallsSessionId || '8090cca3add0b8eb3e41efb9eec363e4';
+      const sessionId = (waSettings?.astracallsSessionId && waSettings.astracallsSessionId !== '8090cca3add0b8eb3e41efb9eec363e4')
+        ? waSettings.astracallsSessionId
+        : '757dd05190fdb99d166f4e1651fb4963';
       const url = `${astracallsUrl}/api/sessions/${sessionId}/messages/${externalId}`;
       const res = await fetch(url, {
         headers: { 'X-Api-Key': astracallsApiKey }
@@ -441,9 +443,12 @@ export const sendAstraCallsMessage = async (
 
   const astracallsUrl = (waSettings?.astracallsUrl || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
   const astracallsApiKey = waSettings?.astracallsApiKey || 'rs_piscinas_segredo_2026';
-  let sessionId = waSettings?.astracallsSessionId || '8090cca3add0b8eb3e41efb9eec363e4';
+  let sessionId = (waSettings?.astracallsSessionId && waSettings.astracallsSessionId !== '8090cca3add0b8eb3e41efb9eec363e4')
+    ? waSettings.astracallsSessionId
+    : '757dd05190fdb99d166f4e1651fb4963';
 
-  if (!waSettings?.astracallsSessionId) {
+  // Se a sessão configurada for inexistente ou legada, busca a sessão ativa no servidor
+  if (!waSettings?.astracallsSessionId || waSettings?.astracallsSessionId === '8090cca3add0b8eb3e41efb9eec363e4') {
     try {
       const sRes = await fetch(`${astracallsUrl}/api/sessions`, {
         headers: { 'X-Api-Key': astracallsApiKey }
@@ -500,31 +505,32 @@ export const sendAstraCallsMessage = async (
 
     if (mediaBase64 && mimeType) {
       const cleanCaption = (text && text !== '📸 Foto' && text !== '🎥 Vídeo') ? text : '';
+      const cleanBase64 = mediaBase64.includes('base64,') ? mediaBase64.split('base64,')[1] : mediaBase64;
       if (mimeType.startsWith('image/')) {
         endpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/image`;
         bodyObj = {
           to: currentTarget,
-          base64: mediaBase64,
+          base64: cleanBase64,
           caption: cleanCaption
         };
       } else if (mimeType.startsWith('video/')) {
         endpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/video`;
         bodyObj = {
           to: currentTarget,
-          base64: mediaBase64,
+          base64: cleanBase64,
           caption: cleanCaption
         };
       } else if (mimeType.startsWith('audio/')) {
         endpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/audio`;
         bodyObj = {
           to: currentTarget,
-          base64: mediaBase64
+          base64: cleanBase64
         };
       } else {
         endpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/document`;
         bodyObj = {
           to: currentTarget,
-          base64: mediaBase64,
+          base64: cleanBase64,
           filename: 'documento',
           caption: text || ''
         };
@@ -532,7 +538,7 @@ export const sendAstraCallsMessage = async (
     }
 
     try {
-      const response = await fetch(endpoint, {
+      let response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -541,12 +547,39 @@ export const sendAstraCallsMessage = async (
         body: JSON.stringify(bodyObj)
       });
 
-      const respText = await response.text().catch(() => '');
+      let respText = await response.text().catch(() => '');
       let parsed: any = null;
       try {
         parsed = JSON.parse(respText);
       } catch (e) {
         parsed = { text: respText };
+      }
+
+      // Se a sessão retornou 404 (sessão fechada ou ID mudou), descobre a sessão aberta em tempo real e tenta de novo
+      if (response.status === 404 || (parsed?.error && String(parsed.error).includes('no such session'))) {
+        try {
+          const sRes = await fetch(`${astracallsUrl}/api/sessions`, {
+            headers: { 'X-Api-Key': astracallsApiKey }
+          });
+          if (sRes.ok) {
+            const sData = await sRes.json();
+            const active = sData?.sessions?.find((s: any) => s.state === 'open' || s.paired) || sData?.sessions?.[0];
+            if (active?.id && active.id !== sessionId) {
+              sessionId = active.id;
+              endpoint = endpoint.replace(/\/api\/sessions\/[^/]+/, `/api/sessions/${sessionId}`);
+              response = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'X-Api-Key': astracallsApiKey
+                },
+                body: JSON.stringify(bodyObj)
+              });
+              respText = await response.text().catch(() => '');
+              try { parsed = JSON.parse(respText); } catch (e) { parsed = { text: respText }; }
+            }
+          }
+        } catch (recoverErr) {}
       }
 
       if (response.ok) {

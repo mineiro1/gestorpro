@@ -90,7 +90,7 @@ export default function Billing() {
     useAstracalls: true,
     astracallsUrl: 'https://calls.rspiscinas.app.br',
     astracallsApiKey: 'rs_piscinas_segredo_2026',
-    astracallsSessionId: '8090cca3add0b8eb3e41efb9eec363e4',
+    astracallsSessionId: '757dd05190fdb99d166f4e1651fb4963',
     useEvolutionApi: false,
     evolutionApiUrl: '',
     evolutionApiKey: '',
@@ -169,7 +169,9 @@ export default function Billing() {
         useAstracalls: isAstra,
         astracallsUrl: s?.astracallsUrl || 'https://calls.rspiscinas.app.br',
         astracallsApiKey: s?.astracallsApiKey || 'rs_piscinas_segredo_2026',
-        astracallsSessionId: s?.astracallsSessionId || '8090cca3add0b8eb3e41efb9eec363e4',
+        astracallsSessionId: (s?.astracallsSessionId && s.astracallsSessionId !== '8090cca3add0b8eb3e41efb9eec363e4')
+          ? s.astracallsSessionId
+          : '757dd05190fdb99d166f4e1651fb4963',
         useEvolutionApi: isEvo,
         evolutionApiUrl: s?.evolutionApiUrl || '',
         evolutionApiKey: s?.evolutionApiKey || '',

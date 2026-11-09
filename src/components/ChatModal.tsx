@@ -8,9 +8,11 @@ import { useAuth } from '../contexts/AuthContext';
 import { evaluateSessionExpiry, checkDailyChatAvailability, markClientChatAsRead } from '../lib/chatSessionUtils';
 import { getApiUrl } from '../lib/apiConfig';
 import { sendAstraCallsMessage, sendMetaMessage, sendEvolutionMessage, checkWhatsAppMessageStatus, uploadMediaToPublicStorage, getEffectiveWhatsAppProvider, openWhatsApp, resolveAdminWhatsAppSettings } from '../lib/whatsapp';
+import { useCall } from '../contexts/CallContext';
 
 export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
   const { userProfile } = useAuth();
+  const { startCall } = useCall();
   const queryClient = useQueryClient();
   const [newMessage, setNewMessage] = useState('');
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
@@ -1138,6 +1140,23 @@ export function ChatModal({ isOpen, onClose, visit, client, waSettings }: any) {
           </div>
           
           <div className="flex items-center space-x-2">
+            {clientPhone && (
+              <button 
+                type="button"
+                onClick={() => {
+                  startCall({
+                    clientId: client?.id,
+                    clientPhone,
+                    clientName: client?.name || 'Cliente'
+                  });
+                }}
+                title="Fazer Ligação via WhatsApp (AstraCalls VoIP)"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+              >
+                <Phone size={14} className="fill-current" />
+                <span className="hidden sm:inline">Ligar</span>
+              </button>
+            )}
             {session?.status === 'open' && timeLeft !== null && timeLeft > 0 && (
               <div className="flex items-center space-x-1 bg-white/20 px-2.5 py-1 rounded-full text-xs font-mono">
                 <Clock size={12} className="animate-spin-slow" />

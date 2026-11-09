@@ -9,7 +9,7 @@ import {
   Share2, FileText, Map, Camera, CheckCircle, MapPin, Image as ImageIcon, 
   ArrowUp, ArrowDown, Save, ListOrdered, Search, RefreshCw, Phone,
   Clock, ShieldAlert, AlertTriangle, AlertCircle, Key, Zap, ArrowRightLeft, Trash2, Edit2, Users, Check, X,
-  Navigation, CloudSun
+  Navigation, CloudSun, Calendar
 } from 'lucide-react';
 import { useCall } from '../contexts/CallContext';
 import { openMap, openRouteMap, openWaze } from '../lib/maps';
@@ -195,9 +195,12 @@ export default function RoutesPage() {
   const [handoffType, setHandoffType] = useState<'today_only' | 'definitive'>('today_only');
   const [isExecutingHandoff, setIsExecutingHandoff] = useState(false);
 
-  // Anticipation state
+  // Anticipation & Postpone state
   const [selectedForAnticipation, setSelectedForAnticipation] = useState<Set<string>>(new Set());
   const [anticipating, setAnticipating] = useState(false);
+  const [anticipateModalOpen, setAnticipateModalOpen] = useState(false);
+  const [postponeModalOpen, setPostponeModalOpen] = useState(false);
+  const [routeSuccessBanner, setRouteSuccessBanner] = useState<string | null>(null);
 
   // Report Modal State
   const [reportModalOpen, setReportModalOpen] = useState(false);
@@ -461,11 +464,22 @@ export default function RoutesPage() {
       
       const clientsData = allEmployeeClients.filter((client: any) => {
         if (client.active === false) return false;
-        let visitDays = [];
+        let visitDays: string[] = [];
         try { visitDays = Array.isArray(client.visit_days) ? client.visit_days : (client.visit_days ? JSON.parse(client.visit_days) : []); } catch(e) {}
-        let extraVisits = [];
+        let extraVisits: any[] = [];
         try { extraVisits = Array.isArray(client.extra_visits) ? client.extra_visits : (client.extra_visits ? JSON.parse(client.extra_visits) : []); } catch(e) {}
         
+        // Se a visita regular deste cliente foi remarcada/antecipada/adiada para fora de routeDate, não deve aparecer nesta data
+        const isMovedAwayFromRouteDate = routeDate ? extraVisits.some((v: any) => {
+          if (typeof v !== 'string' || !v.includes(':from:')) return false;
+          const parts = v.split(':from:');
+          return parts[1] === routeDate;
+        }) : false;
+
+        if (isMovedAwayFromRouteDate) {
+          return false;
+        }
+
         const extraVisitsDates = extraVisits.map(v => typeof v === 'string' ? v.split(':from:')[0] : v);
         
         const matchesDayOfWeek = selectedDay ? (visitDays.includes(selectedDay)) : false;
@@ -1061,12 +1075,22 @@ export default function RoutesPage() {
     setGenerated(true);
   };
 
-  const handleAnticipate = async () => {
+  const handleAnticipate = () => {
+    if (selectedForAnticipation.size === 0) {
+      alert('Selecione ao menos um cliente marcando a caixinha ao lado do nome para antecipar a visita para hoje.');
+      return;
+    }
+    setAnticipateModalOpen(true);
+  };
+
+  const executeAnticipate = async () => {
     if (selectedForAnticipation.size === 0) return;
-    if (!confirm('Deseja antecipar as visitas dos clientes selecionados para hoje? Eles passarão a aparecer na rota de hoje.')) return;
     
     setAnticipating(true);
     const today = getLocalISODate();
+    const sourceDate = routeDate || today;
+    const selectedCount = selectedForAnticipation.size;
+
     try {
       for (const clientId of selectedForAnticipation) {
         const client = routeClients.find(c => c.id === clientId);
@@ -1074,43 +1098,83 @@ export default function RoutesPage() {
 
         if (client.isOneOffJob) {
           const updates: any = { updated_at: new Date().toISOString() };
-          if (client.return_date === routeDate) {
+          if (client.return_date === sourceDate) {
             updates.return_date = today;
           } else {
             updates.date = today;
           }
-          await supabase.from('oneoffjobs').update(updates).eq('id', client.id);
+          const { error: jobErr } = await supabase.from('oneoffjobs').update(updates).eq('id', client.id);
+          if (jobErr) throw jobErr;
         } else {
-          const extraVisits = client.extra_visits || [];
-          const newEntry = today + ':from:' + (routeDate || today);
-          if (!extraVisits.includes(newEntry) && !extraVisits.includes(today)) {
-            await supabase.from('clients').update({
-              extra_visits: [...extraVisits, newEntry]
-            }).eq('id', client.id);
+          let currentExtra: string[] = [];
+          if (Array.isArray(client.extra_visits)) {
+            currentExtra = [...client.extra_visits];
+          } else if (typeof client.extra_visits === 'string') {
+            try {
+              const parsed = JSON.parse(client.extra_visits);
+              currentExtra = Array.isArray(parsed) ? parsed : [client.extra_visits];
+            } catch {
+              currentExtra = [client.extra_visits];
+            }
           }
+
+          const newEntry = `${today}:from:${sourceDate}`;
+          const filtered = currentExtra.filter(v => v !== newEntry && v !== today);
+          filtered.push(newEntry);
+
+          const { error: cErr } = await supabase.from('clients').update({
+            extra_visits: filtered
+          }).eq('id', client.id);
+          if (cErr) throw cErr;
         }
       }
-      alert('Visitas antecipadas com sucesso!');
+
+      // Limpa cache local offline das rotas afetadas
+      try {
+        const adminId = isAdmin ? userProfile?.uid : userProfile?.adminId;
+        if (adminId && selectedEmployee) {
+          localStorage.removeItem(`cached_routes_${adminId}_${selectedEmployee}_${sourceDate}`);
+          localStorage.removeItem(`cached_routes_${adminId}_${selectedEmployee}_${today}`);
+        }
+      } catch (e) {}
+
+      // Invalida o TanStack Query e força atualização imediata
+      await queryClient.invalidateQueries({ queryKey: ['routeData'] });
+      await queryClient.invalidateQueries({ queryKey: ['clients'] });
+      await queryClient.invalidateQueries({ queryKey: ['oneoffjobs'] });
+      await refetch();
+
       setSelectedForAnticipation(new Set());
-    } catch (error) {
-      console.error(error);
-      alert('Erro ao tentar antecipar visitas.');
+      setAnticipateModalOpen(false);
+      setRouteSuccessBanner(`✅ ${selectedCount} visita(s) antecipada(s) com sucesso para hoje (${today.split('-').reverse().join('/')})!`);
+      setTimeout(() => setRouteSuccessBanner(null), 6000);
+    } catch (error: any) {
+      console.error('Erro ao antecipar visitas:', error);
+      alert('Erro ao tentar antecipar visitas: ' + (error?.message || 'Falha de conexão.'));
     } finally {
       setAnticipating(false);
     }
   };
-  const handlePostpone = async () => {
+
+  const handlePostpone = () => {
+    if (selectedForAnticipation.size === 0) {
+      alert('Selecione ao menos um cliente marcando a caixinha ao lado do nome para adiar a visita para amanhã.');
+      return;
+    }
+    setPostponeModalOpen(true);
+  };
+
+  const executePostpone = async () => {
     if (selectedForAnticipation.size === 0) return;
-    if (!confirm('Deseja adiar as visitas dos clientes selecionados para amanhã? Eles passarão a aparecer na rota de amanhã.')) return;
     
     setAnticipating(true);
     const tomorrowDate = new Date();
     tomorrowDate.setDate(tomorrowDate.getDate() + 1);
-    
-    // Convert to ISO local
     tomorrowDate.setMinutes(tomorrowDate.getMinutes() - tomorrowDate.getTimezoneOffset());
     const tomorrowStr = tomorrowDate.toISOString().split('T')[0];
-    
+    const sourceDate = routeDate || getLocalISODate();
+    const selectedCount = selectedForAnticipation.size;
+
     try {
       for (const clientId of selectedForAnticipation) {
         const client = routeClients.find(c => c.id === clientId);
@@ -1118,27 +1182,59 @@ export default function RoutesPage() {
 
         if (client.isOneOffJob) {
           const updates: any = { updated_at: new Date().toISOString() };
-          if (client.return_date === routeDate) {
+          if (client.return_date === sourceDate) {
             updates.return_date = tomorrowStr;
           } else {
             updates.date = tomorrowStr;
           }
-          await supabase.from('oneoffjobs').update(updates).eq('id', client.id);
+          const { error: jobErr } = await supabase.from('oneoffjobs').update(updates).eq('id', client.id);
+          if (jobErr) throw jobErr;
         } else {
-          const extraVisits = client.extra_visits || [];
-          const newEntry = tomorrowStr + ':from:' + (routeDate || getLocalISODate());
-          if (!extraVisits.includes(newEntry) && !extraVisits.includes(tomorrowStr)) {
-            await supabase.from('clients').update({
-              extra_visits: [...extraVisits, newEntry]
-            }).eq('id', client.id);
+          let currentExtra: string[] = [];
+          if (Array.isArray(client.extra_visits)) {
+            currentExtra = [...client.extra_visits];
+          } else if (typeof client.extra_visits === 'string') {
+            try {
+              const parsed = JSON.parse(client.extra_visits);
+              currentExtra = Array.isArray(parsed) ? parsed : [client.extra_visits];
+            } catch {
+              currentExtra = [client.extra_visits];
+            }
           }
+
+          const newEntry = `${tomorrowStr}:from:${sourceDate}`;
+          const filtered = currentExtra.filter(v => v !== newEntry && v !== tomorrowStr);
+          filtered.push(newEntry);
+
+          const { error: cErr } = await supabase.from('clients').update({
+            extra_visits: filtered
+          }).eq('id', client.id);
+          if (cErr) throw cErr;
         }
       }
-      alert('Visitas adiadas com sucesso!');
+
+      // Limpa cache local offline das rotas afetadas
+      try {
+        const adminId = isAdmin ? userProfile?.uid : userProfile?.adminId;
+        if (adminId && selectedEmployee) {
+          localStorage.removeItem(`cached_routes_${adminId}_${selectedEmployee}_${sourceDate}`);
+          localStorage.removeItem(`cached_routes_${adminId}_${selectedEmployee}_${tomorrowStr}`);
+        }
+      } catch (e) {}
+
+      // Invalida o TanStack Query e força atualização imediata
+      await queryClient.invalidateQueries({ queryKey: ['routeData'] });
+      await queryClient.invalidateQueries({ queryKey: ['clients'] });
+      await queryClient.invalidateQueries({ queryKey: ['oneoffjobs'] });
+      await refetch();
+
       setSelectedForAnticipation(new Set());
-    } catch (error) {
-      console.error(error);
-      alert('Erro ao tentar adiar visitas.');
+      setPostponeModalOpen(false);
+      setRouteSuccessBanner(`✅ ${selectedCount} visita(s) adiada(s) com sucesso para amanhã (${tomorrowStr.split('-').reverse().join('/')})!`);
+      setTimeout(() => setRouteSuccessBanner(null), 6000);
+    } catch (error: any) {
+      console.error('Erro ao adiar visitas:', error);
+      alert('Erro ao tentar adiar visitas: ' + (error?.message || 'Falha de conexão.'));
     } finally {
       setAnticipating(false);
     }
@@ -2384,7 +2480,18 @@ export default function RoutesPage() {
             <input
               type="date"
               value={routeDate}
-              onChange={(e) => setRouteDate(e.target.value)}
+              onChange={(e) => {
+                const val = e.target.value;
+                setRouteDate(val);
+                if (val) {
+                  const dayIdx = new Date(val + 'T12:00:00').getDay();
+                  if (dayIdx >= 1 && dayIdx <= 6) {
+                    setSelectedDay(DAYS_OF_WEEK[dayIdx - 1]);
+                  } else {
+                    setSelectedDay('');
+                  }
+                }
+              }}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none"
             />
           </div>
@@ -2393,7 +2500,23 @@ export default function RoutesPage() {
             <label className="block text-sm font-medium text-gray-700 mb-1">Dia da Semana</label>
             <select
               value={selectedDay}
-              onChange={(e) => setSelectedDay(e.target.value)}
+              onChange={(e) => {
+                const val = e.target.value;
+                setSelectedDay(val);
+                if (val) {
+                  const dayIdx = DAYS_OF_WEEK.indexOf(val);
+                  if (dayIdx !== -1) {
+                    const targetDayNumber = dayIdx + 1;
+                    const now = new Date();
+                    const currentDayNumber = now.getDay();
+                    let diff = targetDayNumber - currentDayNumber;
+                    const targetDate = new Date();
+                    targetDate.setDate(now.getDate() + diff);
+                    targetDate.setMinutes(targetDate.getMinutes() - targetDate.getTimezoneOffset());
+                    setRouteDate(targetDate.toISOString().split('T')[0]);
+                  }
+                }
+              }}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary outline-none"
             >
               <option value="">Selecione...</option>
@@ -2433,6 +2556,21 @@ export default function RoutesPage() {
 
       {generated && (
         <div className="bg-white rounded-xl shadow-sm p-6">
+          {routeSuccessBanner && (
+            <div className="bg-emerald-50 border-l-4 border-emerald-500 p-4 mb-5 rounded-r-xl shadow-xs flex items-center justify-between">
+              <div className="flex items-center space-x-2 text-emerald-800 text-sm font-medium">
+                <CheckCircle size={18} className="text-emerald-600 shrink-0" />
+                <span>{routeSuccessBanner}</span>
+              </div>
+              <button 
+                onClick={() => setRouteSuccessBanner(null)}
+                className="text-emerald-600 hover:text-emerald-900 font-bold px-2 py-0.5 text-sm cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 space-y-4 md:space-y-0">
             <div>
               <div className="flex items-center space-x-2.5">
@@ -2461,14 +2599,26 @@ export default function RoutesPage() {
                   <span className="hidden md:inline">Organizar Rota</span>
                 </button>
               )}
-              {(isAdmin || isManager) && routeDate > getLocalISODate() && routeClients.length > 0 && !isOrderingMode && (
+              {routeDate > getLocalISODate() && routeClients.length > 0 && !isOrderingMode && (
                 <button
                   onClick={handleAnticipate}
-                  disabled={selectedForAnticipation.size === 0 || anticipating}
-                  className="flex items-center bg-orange-500 text-white px-4 py-2 rounded-lg hover:bg-orange-600 transition-colors disabled:opacity-50 text-sm whitespace-nowrap"
-                  title="Antecipar clientes selecionados para hoje"
+                  disabled={anticipating}
+                  className="flex items-center bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg font-semibold transition-colors disabled:opacity-50 text-sm whitespace-nowrap shadow-xs cursor-pointer"
+                  title="Antecipar clientes selecionados para a rota de hoje"
                 >
-                  {anticipating ? 'Processando...' : `Antecipar ${selectedForAnticipation.size > 0 ? `(${selectedForAnticipation.size})` : ''}`}
+                  <Clock size={16} className="mr-1.5" />
+                  {anticipating ? 'Processando...' : `Antecipar para Hoje ${selectedForAnticipation.size > 0 ? `(${selectedForAnticipation.size})` : ''}`}
+                </button>
+              )}
+              {routeDate === getLocalISODate() && routeClients.length > 0 && !isOrderingMode && (
+                <button
+                  onClick={handlePostpone}
+                  disabled={anticipating}
+                  className="flex items-center bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded-lg font-semibold transition-colors disabled:opacity-50 text-sm whitespace-nowrap shadow-xs cursor-pointer"
+                  title="Adiar clientes selecionados para a rota de amanhã"
+                >
+                  <Calendar size={16} className="mr-1.5" />
+                  {anticipating ? 'Processando...' : `Adiar para Amanhã ${selectedForAnticipation.size > 0 ? `(${selectedForAnticipation.size})` : ''}`}
                 </button>
               )}
               <button
@@ -2725,7 +2875,7 @@ export default function RoutesPage() {
                               : 'border-gray-100 hover:border-primary/50 hover:bg-gray-50 cursor-pointer'
                       }`}
                     >
-                      {(isAdmin || isManager) && routeDate >= getLocalISODate() && !isCompleted && !isOrderingMode && (
+                      {routeDate >= getLocalISODate() && !isCompleted && !isOrderingMode && (
                         <div className="flex items-center justify-center mr-3 mt-1" onClick={e => e.stopPropagation()}>
                           <input
                             type="checkbox"
@@ -2737,6 +2887,7 @@ export default function RoutesPage() {
                               setSelectedForAnticipation(newSet);
                             }}
                             className="w-5 h-5 rounded text-orange-500 focus:ring-orange-500 border-gray-300 cursor-pointer"
+                            title="Selecionar para antecipar ou adiar"
                           />
                         </div>
                       )}
@@ -3667,6 +3818,114 @@ export default function RoutesPage() {
                 {isExecutingHandoff
                   ? 'Transferindo...'
                   : `Confirmar Repasse (${handoffSelectedClientIds.size})`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Confirmação de Antecipação */}
+      {anticipateModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl animate-scaleUp">
+            <div className="flex items-center space-x-3 text-orange-600 mb-4">
+              <div className="p-3 bg-orange-100 rounded-full">
+                <Clock size={24} />
+              </div>
+              <h3 className="text-lg font-bold text-gray-900">Antecipar para Hoje</h3>
+            </div>
+            
+            <p className="text-sm text-gray-600 mb-3">
+              Deseja antecipar a visita de <strong>{selectedForAnticipation.size}</strong> cliente(s) selecionado(s) para a rota de hoje (<strong>{getLocalISODate().split('-').reverse().join('/')}</strong>)?
+            </p>
+            
+            <div className="max-h-40 overflow-y-auto bg-gray-50 rounded-xl p-3 mb-4 border border-gray-100 space-y-1 text-xs">
+              {Array.from(selectedForAnticipation).map(cid => {
+                const c = routeClients.find(rc => rc.id === cid);
+                return (
+                  <div key={cid} className="font-medium text-gray-800 flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-orange-500"></span>
+                    <span className="truncate">{c?.name || 'Cliente'}</span>
+                  </div>
+                );
+              })}
+            </div>
+
+            <p className="text-xs text-gray-500 mb-5">
+              Eles passarão a aparecer na rota de hoje para atendimento imediato e não constarão mais na rota do dia {routeDate.split('-').reverse().join('/')}.
+            </p>
+
+            <div className="flex justify-end space-x-2 pt-2 border-t border-gray-100">
+              <button
+                type="button"
+                onClick={() => setAnticipateModalOpen(false)}
+                disabled={anticipating}
+                className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-xl font-medium transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={executeAnticipate}
+                disabled={anticipating}
+                className="flex items-center px-5 py-2 text-sm bg-orange-500 hover:bg-orange-600 text-white rounded-xl font-semibold shadow-xs transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                <Clock size={16} className="mr-1.5" />
+                {anticipating ? 'Processando...' : `Confirmar Antecipação (${selectedForAnticipation.size})`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Confirmação de Adiamento */}
+      {postponeModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl animate-scaleUp">
+            <div className="flex items-center space-x-3 text-amber-600 mb-4">
+              <div className="p-3 bg-amber-100 rounded-full">
+                <Calendar size={24} />
+              </div>
+              <h3 className="text-lg font-bold text-gray-900">Adiar para Amanhã</h3>
+            </div>
+            
+            <p className="text-sm text-gray-600 mb-3">
+              Deseja adiar a visita de <strong>{selectedForAnticipation.size}</strong> cliente(s) selecionado(s) para a rota de amanhã?
+            </p>
+            
+            <div className="max-h-40 overflow-y-auto bg-gray-50 rounded-xl p-3 mb-4 border border-gray-100 space-y-1 text-xs">
+              {Array.from(selectedForAnticipation).map(cid => {
+                const c = routeClients.find(rc => rc.id === cid);
+                return (
+                  <div key={cid} className="font-medium text-gray-800 flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                    <span className="truncate">{c?.name || 'Cliente'}</span>
+                  </div>
+                );
+              })}
+            </div>
+
+            <p className="text-xs text-gray-500 mb-5">
+              Eles deixarão a rota de hoje e passarão a constar na rota do dia seguinte.
+            </p>
+
+            <div className="flex justify-end space-x-2 pt-2 border-t border-gray-100">
+              <button
+                type="button"
+                onClick={() => setPostponeModalOpen(false)}
+                disabled={anticipating}
+                className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-xl font-medium transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={executePostpone}
+                disabled={anticipating}
+                className="flex items-center px-5 py-2 text-sm bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-semibold shadow-xs transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                <Calendar size={16} className="mr-1.5" />
+                {anticipating ? 'Processando...' : `Confirmar Adiamento (${selectedForAnticipation.size})`}
               </button>
             </div>
           </div>

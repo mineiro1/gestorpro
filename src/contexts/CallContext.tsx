@@ -31,9 +31,12 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   const { userProfile } = useAuth();
 
   const startCall = async ({ clientId, clientPhone, clientName, avatarUrl }: { clientId?: string; clientPhone?: string; clientName: string; avatarUrl?: string }) => {
-    let sessionId = '8090cca3add0b8eb3e41efb9eec363e4';
-    let astracallsUrl = 'https://calls.rspiscinas.app.br';
-    let astracallsApiKey = 'rs_piscinas_segredo_2026';
+    const ws = (userProfile?.whatsappSettings || {}) as any;
+    let sessionId = (ws.astracallsSessionId && ws.astracallsSessionId !== '8090cca3add0b8eb3e41efb9eec363e4')
+      ? ws.astracallsSessionId
+      : '757dd05190fdb99d166f4e1651fb4963';
+    let astracallsUrl = ws.astracallsUrl || 'https://calls.rspiscinas.app.br';
+    let astracallsApiKey = ws.astracallsApiKey || 'rs_piscinas_segredo_2026';
 
     const currentCallerName = (userProfile?.name || 'Colaborador').trim();
 
@@ -115,7 +118,13 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
               'Content-Type': 'application/json',
               'X-Api-Key': astracallsApiKey
             },
-            body: JSON.stringify({ to: targetNumber, phone: targetNumber })
+            body: JSON.stringify({
+              phone: targetNumber,
+              to: targetNumber,
+              duration_ms: 300000,
+              record: false,
+              video: false
+            })
           });
           if (directRes.ok) {
             const directData = await directRes.json().catch(() => null);

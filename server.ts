@@ -1042,7 +1042,9 @@ setInterval(() => {
     try {
       const astracallsUrl = (waSettings?.astracallsUrl || process.env.ASTRACALLS_URL || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
       const astracallsApiKey = waSettings?.astracallsApiKey || process.env.ASTRACALLS_API_KEY || 'rs_piscinas_segredo_2026';
-      const astraSessionId = waSettings?.astracallsSessionId || '8090cca3add0b8eb3e41efb9eec363e4';
+      const astraSessionId = (waSettings?.astracallsSessionId && waSettings.astracallsSessionId !== '8090cca3add0b8eb3e41efb9eec363e4')
+        ? waSettings.astracallsSessionId
+        : '757dd05190fdb99d166f4e1651fb4963';
 
       let session: any = null;
       if (sessionId) {
@@ -1870,10 +1872,12 @@ setInterval(() => {
       if (provider === 'astracalls') {
         const astracallsUrl = (waSettings?.astracallsUrl || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
         const astracallsApiKey = waSettings?.astracallsApiKey || 'rs_piscinas_segredo_2026';
-        let sessionId = waSettings?.astracallsSessionId || '8090cca3add0b8eb3e41efb9eec363e4';
+        let sessionId = (waSettings?.astracallsSessionId && waSettings.astracallsSessionId !== '8090cca3add0b8eb3e41efb9eec363e4')
+          ? waSettings.astracallsSessionId
+          : '757dd05190fdb99d166f4e1651fb4963';
 
         try {
-          if (!waSettings?.astracallsSessionId) {
+          if (!waSettings?.astracallsSessionId || waSettings?.astracallsSessionId === '8090cca3add0b8eb3e41efb9eec363e4') {
             try {
               const sessRes = await fetch(`${astracallsUrl}/api/sessions`, {
                 headers: { 'X-Api-Key': astracallsApiKey }
@@ -1914,6 +1918,20 @@ setInterval(() => {
           if (thirteenDigit) numbersToTry.push(thirteenDigit);
           if (!twelveDigit && !thirteenDigit) numbersToTry.push(targetNumber);
 
+          // Preparação e sanitização estrita da mídia em Base64 puro para o AstraCalls
+          let cleanBase64Media = '';
+          if (typeof mediaBase64 === 'string' && mediaBase64.trim().length > 0) {
+            cleanBase64Media = mediaBase64.includes('base64,') ? mediaBase64.split('base64,')[1].trim() : mediaBase64.trim();
+          } else if (publicMediaUrl && publicMediaUrl.startsWith('http')) {
+            try {
+              const imgFetch = await fetch(publicMediaUrl);
+              if (imgFetch.ok) {
+                const arr = await imgFetch.arrayBuffer();
+                cleanBase64Media = Buffer.from(arr).toString('base64');
+              }
+            } catch (dlErr) {}
+          }
+
           let lastResponseText = '';
           for (const num of numbersToTry) {
             let sendEndpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/text`;
@@ -1925,44 +1943,40 @@ setInterval(() => {
               message: text || ''
             };
 
-            const mediaData = mediaBase64 || publicMediaUrl;
-            if (mediaData) {
+            if (cleanBase64Media && mimeType) {
               const cleanCaption = (text && text !== '📸 Foto' && text !== '🎥 Vídeo') ? text : '';
-              if (mimeType?.startsWith('image/')) {
+              if (mimeType.startsWith('image/')) {
                 sendEndpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/image`;
-                const cleanBase64 = mediaBase64?.includes('base64,') ? mediaBase64.split('base64,')[1] : (mediaBase64 || '');
                 payload = {
                   to: num,
-                  base64: cleanBase64 || mediaData,
-                  image: cleanBase64 || mediaData,
-                  url: publicMediaUrl || undefined,
+                  base64: cleanBase64Media,
                   caption: cleanCaption
                 };
-              } else if (mimeType?.startsWith('video/')) {
+              } else if (mimeType.startsWith('video/')) {
                 sendEndpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/video`;
                 payload = {
                   to: num,
-                  base64: mediaData,
+                  base64: cleanBase64Media,
                   caption: cleanCaption
                 };
-              } else if (mimeType?.startsWith('audio/')) {
+              } else if (mimeType.startsWith('audio/')) {
                 sendEndpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/audio`;
                 payload = {
                   to: num,
-                  base64: mediaData
+                  base64: cleanBase64Media
                 };
               } else {
                 sendEndpoint = `${astracallsUrl}/api/sessions/${sessionId}/messages/document`;
                 payload = {
                   to: num,
-                  base64: mediaData,
+                  base64: cleanBase64Media,
                   filename: 'documento',
                   caption: text || ''
                 };
               }
             }
 
-            const response = await fetch(sendEndpoint, {
+            let response = await fetch(sendEndpoint, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -1971,17 +1985,58 @@ setInterval(() => {
               body: JSON.stringify(payload)
             });
 
+            let parsed: any = null;
+            let respText = await response.text().catch(() => '');
+            try { parsed = JSON.parse(respText); } catch (e) { parsed = { text: respText }; }
+
+            // Se AstraCalls retornar 404 ("no such session"), auto-descobre a nova sessão aberta e retenta imediatamente
+            if (response.status === 404 || (parsed?.error && String(parsed.error).includes('no such session'))) {
+              try {
+                const refreshRes = await fetch(`${astracallsUrl}/api/sessions`, {
+                  headers: { 'X-Api-Key': astracallsApiKey }
+                });
+                if (refreshRes.ok) {
+                  const rData = await refreshRes.json();
+                  const freshSess = rData?.sessions?.find((s: any) => s.state === 'open' || s.paired) || rData?.sessions?.[0];
+                  if (freshSess?.id && freshSess.id !== sessionId) {
+                    console.log(`[AstraCalls Auto-Heal] Sessão defasada detectada. Atualizando para sessão ativa ${freshSess.id}...`);
+                    sessionId = freshSess.id;
+                    sendEndpoint = sendEndpoint.replace(/\/api\/sessions\/[^/]+/, `/api/sessions/${sessionId}`);
+                    response = await fetch(sendEndpoint, {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        'X-Api-Key': astracallsApiKey
+                      },
+                      body: JSON.stringify(payload)
+                    });
+                    respText = await response.text().catch(() => '');
+                    try { parsed = JSON.parse(respText); } catch (e) { parsed = { text: respText }; }
+
+                    // Atualiza em background no Supabase para manter o banco sincronizado
+                    const adminIdToSync = waSettings?.adminId || '698dfcdd-7c91-4df5-aaee-eae9e67f15ae';
+                    supabaseAdmin.from('users').select('whatsapp_settings').eq('id', adminIdToSync).maybeSingle().then(({ data: uData }) => {
+                      if (uData?.whatsapp_settings) {
+                        supabaseAdmin.from('users').update({
+                          whatsapp_settings: { ...uData.whatsapp_settings, astracallsSessionId: freshSess.id }
+                        }).eq('id', adminIdToSync).then(() => {});
+                      }
+                    });
+                  }
+                }
+              } catch (healErr) {}
+            }
+
             if (response.ok) {
               sendSuccess = true;
               try {
-                const astraData = await response.json();
-                externalId = astraData?.id || astraData?.messageId || astraData?.key?.id || `astra_${Date.now()}`;
+                externalId = parsed?.id || parsed?.messageId || parsed?.key?.id || `astra_${Date.now()}`;
               } catch (e) {
                 externalId = `astra_${Date.now()}`;
               }
               break;
             } else {
-              lastResponseText = await response.text().catch(() => '');
+              lastResponseText = respText;
             }
           }
 
@@ -2380,7 +2435,7 @@ setInterval(() => {
       // 2. AstraCalls session settings
       const astracallsUrl = (process.env.ASTRACALLS_URL || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
       const astracallsApiKey = process.env.ASTRACALLS_API_KEY || 'rs_piscinas_segredo_2026';
-      let sessionId = '8090cca3add0b8eb3e41efb9eec363e4';
+      let sessionId = '757dd05190fdb99d166f4e1651fb4963';
 
       try {
         const sessRes = await fetch(`${astracallsUrl}/api/sessions`, {
@@ -2407,8 +2462,11 @@ setInterval(() => {
               'X-Api-Key': astracallsApiKey
             },
             body: JSON.stringify({
+              phone: targetNumber,
               to: targetNumber,
-              phone: targetNumber
+              duration_ms: 300000,
+              record: false,
+              video: false
             })
           });
 
@@ -2449,7 +2507,7 @@ setInterval(() => {
       const { callId, sessionId, sdp_offer } = req.body;
       const astracallsUrl = (process.env.ASTRACALLS_URL || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
       const astracallsApiKey = process.env.ASTRACALLS_API_KEY || 'rs_piscinas_segredo_2026';
-      const sid = sessionId || '8090cca3add0b8eb3e41efb9eec363e4';
+      const sid = (sessionId && sessionId !== '8090cca3add0b8eb3e41efb9eec363e4') ? sessionId : '757dd05190fdb99d166f4e1651fb4963';
 
       const webrtcRes = await fetch(`${astracallsUrl}/api/sessions/${sid}/calls/${callId}/webrtc`, {
         method: 'POST',
@@ -2472,7 +2530,7 @@ setInterval(() => {
       const { callId, sessionId, clientId, duration, clientName, callerName } = req.body;
       console.log(`[Call Ended] Call hung up: ${callId || clientId} (duration: ${duration || 0}s)`);
 
-      const sid = sessionId || 'd4f80e0ee23755d62116e25eabe7501b';
+      const sid = (sessionId && sessionId !== '8090cca3add0b8eb3e41efb9eec363e4') ? sessionId : '757dd05190fdb99d166f4e1651fb4963';
       const astracallsUrl = (process.env.ASTRACALLS_URL || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
       const astracallsApiKey = process.env.ASTRACALLS_API_KEY || 'rs_piscinas_segredo_2026';
 
@@ -2506,7 +2564,9 @@ setInterval(() => {
   app.get(["/api/call/status", "/call/status"], async (req, res) => {
     try {
       const callId = req.query.callId as string;
-      const sid = (req.query.sessionId as string) || '8090cca3add0b8eb3e41efb9eec363e4';
+      const sid = (req.query.sessionId as string && req.query.sessionId !== '8090cca3add0b8eb3e41efb9eec363e4')
+        ? (req.query.sessionId as string)
+        : '757dd05190fdb99d166f4e1651fb4963';
       const astracallsUrl = (process.env.ASTRACALLS_URL || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
       const astracallsApiKey = process.env.ASTRACALLS_API_KEY || 'rs_piscinas_segredo_2026';
 
@@ -2556,9 +2616,33 @@ setInterval(() => {
       if (response.ok) {
         const data = await response.json();
         const activeSess = data?.sessions?.find((s: any) => s.state === 'open' || s.paired) || data?.sessions?.[0] || null;
+
+        if (activeSess?.id) {
+          // Sincroniza em background no Supabase caso o admin esteja com sessão antiga salva
+          (async () => {
+            try {
+              const { data: admins } = await supabaseAdmin
+                .from('users')
+                .select('id, whatsapp_settings')
+                .eq('role', 'admin')
+                .not('whatsapp_settings', 'is', null);
+
+              if (admins) {
+                for (const a of admins) {
+                  if (a.whatsapp_settings?.astracallsSessionId && a.whatsapp_settings.astracallsSessionId !== activeSess.id) {
+                    await supabaseAdmin.from('users').update({
+                      whatsapp_settings: { ...a.whatsapp_settings, astracallsSessionId: activeSess.id }
+                    }).eq('id', a.id);
+                  }
+                }
+              }
+            } catch (err) {}
+          })();
+        }
+
         return res.json({
           success: true,
-          online: true,
+          online: activeSess?.state === 'open' || activeSess?.paired === true,
           url: astracallsUrl,
           session: activeSess,
           sessions: data?.sessions || []
@@ -2577,6 +2661,54 @@ setInterval(() => {
         online: false,
         error: e.message
       });
+    }
+  });
+
+  // Sincroniza a sessão ativa do AstraCalls diretamente nas configurações do sistema
+  app.post("/api/astracalls/sync-session", async (req, res) => {
+    try {
+      const astracallsUrl = process.env.ASTRACALLS_URL || 'https://calls.rspiscinas.app.br';
+      const astracallsApiKey = process.env.ASTRACALLS_API_KEY || 'rs_piscinas_segredo_2026';
+
+      const response = await fetch(`${astracallsUrl}/api/sessions`, {
+        headers: { 'X-Api-Key': astracallsApiKey }
+      });
+
+      if (!response.ok) {
+        return res.status(502).json({ success: false, error: "Servidor AstraCalls inacessível" });
+      }
+
+      const data = await response.json();
+      const activeSess = data?.sessions?.find((s: any) => s.state === 'open' || s.paired) || data?.sessions?.[0];
+
+      if (!activeSess?.id) {
+        return res.status(404).json({ success: false, error: "Nenhuma sessão ativa encontrada no AstraCalls" });
+      }
+
+      // Atualiza todos os admins no Supabase
+      const { data: admins } = await supabaseAdmin
+        .from('users')
+        .select('id, whatsapp_settings')
+        .eq('role', 'admin')
+        .not('whatsapp_settings', 'is', null);
+
+      if (admins) {
+        for (const a of admins) {
+          const ws = a.whatsapp_settings || {};
+          await supabaseAdmin.from('users').update({
+            whatsapp_settings: { ...ws, astracallsSessionId: activeSess.id }
+          }).eq('id', a.id);
+        }
+      }
+
+      return res.json({
+        success: true,
+        sessionId: activeSess.id,
+        session: activeSess,
+        message: `Sessão ${activeSess.id} sincronizada com sucesso!`
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
     }
   });
 
@@ -2681,7 +2813,9 @@ setInterval(() => {
 
       const astracallsUrl = 'https://calls.rspiscinas.app.br';
       const astracallsApiKey = 'rs_piscinas_segredo_2026';
-      let sessionId = req.body.sessionId || '8090cca3add0b8eb3e41efb9eec363e4';
+      let sessionId = (req.body.sessionId && req.body.sessionId !== '8090cca3add0b8eb3e41efb9eec363e4')
+        ? req.body.sessionId
+        : '757dd05190fdb99d166f4e1651fb4963';
 
       try {
         const sessRes = await fetch(`${astracallsUrl}/api/sessions`, {
@@ -3399,7 +3533,18 @@ setInterval(() => {
     try {
       const astracallsUrl = (process.env.ASTRACALLS_URL || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
       const astracallsApiKey = process.env.ASTRACALLS_API_KEY || 'rs_piscinas_segredo_2026';
-      const sessionId = '8090cca3add0b8eb3e41efb9eec363e4';
+      let sessionId = '757dd05190fdb99d166f4e1651fb4963';
+
+      try {
+        const sRes = await fetch(`${astracallsUrl}/api/sessions`, {
+          headers: { 'X-Api-Key': astracallsApiKey }
+        });
+        if (sRes.ok) {
+          const sData = await sRes.json();
+          const openSess = sData?.sessions?.find((s: any) => s.state === 'open' || s.paired) || sData?.sessions?.[0];
+          if (openSess?.id) sessionId = openSess.id;
+        }
+      } catch (e) {}
 
       const res = await fetch(`${astracallsUrl}/api/sessions/${sessionId}/contacts`, {
         headers: { 'X-Api-Key': astracallsApiKey }
@@ -5535,7 +5680,9 @@ await getMessaging().send({
         if (wa?.astracallsUrl || wa?.useAstracalls) {
           const astracallsUrl = (wa.astracallsUrl || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
           const astracallsApiKey = wa.astracallsApiKey || 'rs_piscinas_segredo_2026';
-          const sessionId = wa.astracallsSessionId || '8090cca3add0b8eb3e41efb9eec363e4';
+          const sessionId = (wa.astracallsSessionId && wa.astracallsSessionId !== '8090cca3add0b8eb3e41efb9eec363e4')
+            ? wa.astracallsSessionId
+            : '757dd05190fdb99d166f4e1651fb4963';
           const webhookUrl = `${(process.env.PUBLIC_URL || 'https://www.rspiscinas.app.br')}/api/webhook/astracalls`;
 
           await fetch(`${astracallsUrl}/api/sessions/${sessionId}/webhook`, {

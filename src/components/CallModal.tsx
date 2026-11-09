@@ -237,9 +237,9 @@ export default function CallModal({ call, onClose }: CallModalProps) {
   // Motor WebRTC VoIP do AstraCalls com Detecção de Atendimento e Som de Chamada Real
   useEffect(() => {
     // 1. Inicia som realista de telefone chamando
-    playRingTone();
-
-    const sessionId = call.sessionId || '8090cca3add0b8eb3e41efb9eec363e4';
+    const sessionId = (call.sessionId && call.sessionId !== '8090cca3add0b8eb3e41efb9eec363e4')
+      ? call.sessionId
+      : '757dd05190fdb99d166f4e1651fb4963';
     const apiKey = call.astracallsApiKey || 'rs_piscinas_segredo_2026';
     const astracallsUrl = (call.astracallsUrl || 'https://calls.rspiscinas.app.br').trim().replace(/\/$/, '');
 
@@ -368,25 +368,44 @@ export default function CallModal({ call, onClose }: CallModalProps) {
           }
         });
 
-        // Exchange SDP with AstraCalls WebRTC endpoint
-        const res = await fetch(`${astracallsUrl}/api/sessions/${sessionId}/calls/${call.callId}/webrtc`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Api-Key': apiKey
-          },
-          body: JSON.stringify({ sdp_offer: pc.localDescription?.sdp })
-        });
+        // Exchange SDP with AstraCalls WebRTC endpoint (Backend proxy + Direct fallback)
+        let sdpAnswer: string | null = null;
+        try {
+          const proxyRes = await fetch(getApiUrl('/api/call/webrtc'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ callId: call.callId, sessionId, sdp_offer: pc.localDescription?.sdp })
+          });
+          if (proxyRes.ok) {
+            const pData = await proxyRes.json();
+            if (pData?.sdp_answer) sdpAnswer = pData.sdp_answer;
+          }
+        } catch (e) {}
 
-        if (res.ok) {
-          const data = await res.json();
-          if (data.sdp_answer) {
-            await pc.setRemoteDescription({ type: 'answer', sdp: data.sdp_answer });
-            // Chamada enviada com sucesso ao WhatsApp -> tocando no aparelho do cliente
-            if (callStatusRef.current === 'dialing') {
-              setCallStatus('ringing');
-              callStatusRef.current = 'ringing';
+        if (!sdpAnswer) {
+          try {
+            const res = await fetch(`${astracallsUrl}/api/sessions/${sessionId}/calls/${call.callId}/webrtc`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Api-Key': apiKey
+              },
+              body: JSON.stringify({ sdp_offer: pc.localDescription?.sdp })
+            });
+
+            if (res.ok) {
+              const data = await res.json();
+              if (data?.sdp_answer) sdpAnswer = data.sdp_answer;
             }
+          } catch (e) {}
+        }
+
+        if (sdpAnswer) {
+          await pc.setRemoteDescription({ type: 'answer', sdp: sdpAnswer });
+          // Chamada enviada com sucesso ao WhatsApp -> tocando no aparelho do cliente
+          if (callStatusRef.current === 'dialing') {
+            setCallStatus('ringing');
+            callStatusRef.current = 'ringing';
           }
         }
       } catch (err) {

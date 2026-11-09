@@ -45,7 +45,9 @@ export default function Settings() {
   // AstraCalls Live Integration
   const [astracallsUrl, setAstracallsUrl] = useState('https://calls.rspiscinas.app.br');
   const [astracallsApiKey, setAstracallsApiKey] = useState('rs_piscinas_segredo_2026');
-  const [astracallsSessionId, setAstracallsSessionId] = useState('8090cca3add0b8eb3e41efb9eec363e4');
+  const [astracallsSessionId, setAstracallsSessionId] = useState('757dd05190fdb99d166f4e1651fb4963');
+  const [syncingAstraSession, setSyncingAstraSession] = useState(false);
+  const [syncAstraMessage, setSyncAstraMessage] = useState<string | null>(null);
   const [wavoipDeviceId, setWavoipDeviceId] = useState('');
   const [copiedWebhook, setCopiedWebhook] = useState(false);
 
@@ -114,7 +116,10 @@ export default function Settings() {
       // AstraCalls values
       setAstracallsUrl(s.astracallsUrl || s.wavoipApiUrl || 'https://calls.rspiscinas.app.br');
       setAstracallsApiKey(s.astracallsApiKey || s.wavoipApiKey || 'rs_piscinas_segredo_2026');
-      setAstracallsSessionId(s.astracallsSessionId || s.sessionId || '8090cca3add0b8eb3e41efb9eec363e4');
+      const loadedAstraSession = (s.astracallsSessionId && s.astracallsSessionId !== '8090cca3add0b8eb3e41efb9eec363e4')
+        ? s.astracallsSessionId
+        : (s.sessionId && s.sessionId !== '8090cca3add0b8eb3e41efb9eec363e4' ? s.sessionId : '757dd05190fdb99d166f4e1651fb4963');
+      setAstracallsSessionId(loadedAstraSession);
       setWavoipDeviceId(s.wavoipDeviceId || '');
 
       // Evolution API values
@@ -165,6 +170,9 @@ export default function Settings() {
           const data = await res.json();
           if (data && data.session) {
             const isConnected = data.session.state === 'open' || data.session.paired === true;
+            if (data.session.id) {
+              setAstracallsSessionId(data.session.id);
+            }
             setAstracallsStatus({
               online: isConnected,
               session: data.session,
@@ -183,6 +191,9 @@ export default function Settings() {
         const dData = await directRes.json().catch(() => null);
         const sess = dData?.sessions?.find((s: any) => s.state === 'open' || s.paired) || dData?.sessions?.[0];
         const isConnected = sess && (sess.state === 'open' || sess.paired === true);
+        if (sess?.id) {
+          setAstracallsSessionId(sess.id);
+        }
         setAstracallsStatus({
           online: !!isConnected,
           session: sess,
@@ -193,6 +204,74 @@ export default function Settings() {
       }
     } catch (e) {
       setAstracallsStatus({ online: false, checking: false });
+    }
+  };
+
+  const handleSyncAstraSession = async () => {
+    setSyncingAstraSession(true);
+    setSyncAstraMessage(null);
+    try {
+      let activeId = '';
+      let activeSess: any = null;
+
+      // 1. Tentar via backend sync endpoint
+      try {
+        const res = await fetch(getApiUrl('/api/astracalls/sync-session'), { method: 'POST' });
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.sessionId) {
+            activeId = data.sessionId;
+            activeSess = data.session;
+          }
+        }
+      } catch (e) {}
+
+      // 2. Fallback direto
+      if (!activeId) {
+        const directRes = await fetch('https://calls.rspiscinas.app.br/api/sessions', {
+          headers: { 'X-Api-Key': astracallsApiKey || 'rs_piscinas_segredo_2026' }
+        });
+        if (directRes.ok) {
+          const dData = await directRes.json();
+          const found = dData?.sessions?.find((s: any) => s.state === 'open' || s.paired) || dData?.sessions?.[0];
+          if (found?.id) {
+            activeId = found.id;
+            activeSess = found;
+          }
+        }
+      }
+
+      if (activeId) {
+        setAstracallsSessionId(activeId);
+        setAstracallsStatus({
+          online: activeSess?.state === 'open' || activeSess?.paired === true,
+          session: activeSess,
+          checking: false
+        });
+
+        // Salva diretamente no banco Supabase para persistir imediatamente
+        if (userProfile?.uid) {
+          const { data: uRow } = await supabase.from('users').select('whatsapp_settings').eq('id', userProfile.uid).single();
+          const current = (uRow?.whatsapp_settings || {}) as any;
+          await supabase.from('users').update({
+            whatsapp_settings: {
+              ...current,
+              astracallsSessionId: activeId,
+              useAstracalls: true,
+              useAstraCalls: true
+            }
+          }).eq('id', userProfile.uid);
+        }
+
+        setSyncAstraMessage(`Sessão sincronizada com sucesso! ID ativo: ${activeId}`);
+      } else {
+        setSyncAstraMessage('Nenhuma sessão aberta encontrada no AstraCalls. Verifique se o WhatsApp está conectado.');
+      }
+    } catch (err: any) {
+      setSyncAstraMessage(`Erro ao sincronizar: ${err.message}`);
+    } finally {
+      setSyncingAstraSession(false);
+      setTimeout(() => setSyncAstraMessage(null), 8000);
     }
   };
 
@@ -1027,14 +1106,30 @@ export default function Settings() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-gray-700 mb-1">ID da Sessão WhatsApp (Session ID)</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-semibold text-gray-700">ID da Sessão WhatsApp (Session ID)</label>
+                    <button
+                      type="button"
+                      onClick={handleSyncAstraSession}
+                      disabled={syncingAstraSession}
+                      className="text-[11px] text-emerald-700 hover:text-emerald-800 font-bold flex items-center gap-1 cursor-pointer hover:underline disabled:opacity-50"
+                    >
+                      <RefreshCw size={12} className={syncingAstraSession ? "animate-spin" : ""} />
+                      {syncingAstraSession ? "Detectando..." : "Sincronizar Sessão"}
+                    </button>
+                  </div>
                   <input
                     type="text"
                     value={astracallsSessionId}
                     onChange={(e) => setAstracallsSessionId(e.target.value)}
-                    placeholder="8090cca3add0b8eb3e41efb9eec363e4"
+                    placeholder="757dd05190fdb99d166f4e1651fb4963"
                     className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"
                   />
+                  {syncAstraMessage && (
+                    <p className="mt-1 text-[11px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-md">
+                      {syncAstraMessage}
+                    </p>
+                  )}
                 </div>
               </div>
 
